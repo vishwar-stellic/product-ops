@@ -10,6 +10,18 @@ from .linear_client import LinearClient
 
 UNASSIGNED = "Unassigned"
 
+# Linear's issue state `type` values, in the order they occur in a normal
+# workflow - used to order status columns left-to-right in the same order
+# tickets naturally flow through them, rather than alphabetically.
+STATUS_TYPE_ORDER = {
+    "backlog": 0,
+    "triage": 1,
+    "unstarted": 2,
+    "started": 3,
+    "completed": 4,
+    "canceled": 5,
+}
+
 
 def _assignee_name(issue: Dict[str, Any]) -> str:
     assignee = issue.get("assignee")
@@ -50,20 +62,27 @@ def build_current_sprint(client: LinearClient, team: Dict[str, Any]) -> Optional
     by_assignee: Dict[str, Dict[str, Any]] = defaultdict(
         lambda: {"assignee": None, "total": 0, "statusBreakdown": defaultdict(int), "issues": []}
     )
+    status_types: Dict[str, str] = {}
 
     for issue in issues:
         name = _assignee_name(issue)
         bucket = by_assignee[name]
         bucket["assignee"] = name
         bucket["total"] += 1
-        bucket["statusBreakdown"][issue["state"]["name"]] += 1
+        status_name = issue["state"]["name"]
+        bucket["statusBreakdown"][status_name] += 1
+        status_types[status_name] = issue["state"]["type"]
         bucket["issues"].append(_issue_summary(issue))
 
     assignees = _finalize_assignee_buckets(by_assignee)
+    statuses = sorted(
+        status_types.keys(), key=lambda name: (STATUS_TYPE_ORDER.get(status_types[name], 99), name)
+    )
 
     return {
         "cycle": _cycle_summary(active_cycle),
         "totalIssues": len(issues),
+        "statuses": statuses,
         "byAssignee": assignees,
     }
 

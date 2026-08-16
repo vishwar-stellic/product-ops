@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Product Status Dashboard</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <span class="brand-mark">◆</span>
+        <h1>Product Status</h1>
+      </div>
+      <div class="topbar-actions">
+        <span id="notion-status" class="topbar-hint hidden"></span>
+        <button id="notion-disconnect-btn" class="btn-link hidden" type="button">Disconnect</button>
+        <a id="notion-connect-link" class="btn btn-primary hidden" href="/notion/oauth/start">Connect to Notion</a>
+        <button id="notion-btn" class="btn btn-primary hidden" type="button">
+          <span class="btn-label">Publish to Notion</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <div id="error-banner" class="error-banner hidden"></div>
+    <div id="success-banner" class="success-banner hidden"></div>
+
+    <div id="squads-container"></div>
+
+    <div id="loading-state" class="loading-state">
+      <div class="spinner"></div>
+      <p>Loading dashboard…</p>
+    </div>
+  </main>
+
+  <script src="app.js" defer></script>
+</body>
+</html>

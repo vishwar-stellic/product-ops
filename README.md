@@ -1,9 +1,10 @@
-# Linear Sprint Status Service
+# Linear Product Status Service
 
 Reports the current and previous cycle ("sprint") status for every team in
-Linear, directly via Linear's **GraphQL API** (`https://api.linear.app/graphql`).
-This service never uses the Linear MCP tools — all data comes from raw
-GraphQL queries in `sprint_status/`.
+Linear, plus project summaries (with milestones) for projects tagged with a
+given label, directly via Linear's **GraphQL API**
+(`https://api.linear.app/graphql`). This service never uses the Linear MCP
+tools — all data comes from raw GraphQL queries in `product_status/`.
 
 For each team:
 
@@ -24,6 +25,10 @@ Teams are auto-discovered from the Linear workspace; only teams with
 report). Optionally restrict to specific teams with `--team` / `SPRINT_STATUS_TEAMS`
 (comma-separated team keys or names, e.g. `PROG,PLAN,CARE,EXP,DEVX,PLAT,INT`).
 
+Also reports a **project summary for projects tagged with a given label**
+(default `"For Summit"`): for each matching project, its status, dates, and
+every milestone with its target date and whether it's complete.
+
 ## How it determines each bucket
 
 - **Current sprint** — `Team.activeCycle`, then `Cycle.issues` grouped by
@@ -43,6 +48,11 @@ report). Optionally restrict to specific teams with `--team` / `SPRINT_STATUS_TE
     was created straight into the cycle, so `issue.createdAt` is used
     instead. Either timestamp being after `Cycle.startsAt` means it was
     added mid-cycle rather than present at kickoff.
+- **Project summary** = `Query.projects` filtered by
+  `filter: { labels: { some: { name: { eq: <label> } } } }`, then each
+  project's `projectMilestones` connection. A milestone counts as complete
+  when its `status` enum is `done` (the other possible values are
+  `unstarted`, `next`, and `overdue`).
 
 ## Setup
 
@@ -62,16 +72,19 @@ will pick it up automatically without any extra setup.
 ### CLI (on-demand, one-shot)
 
 ```bash
-.venv/bin/python -m sprint_status.cli                    # all teams, current + previous
-.venv/bin/python -m sprint_status.cli --team CARE,PLAN    # specific teams
-.venv/bin/python -m sprint_status.cli --only previous      # previous sprint only
-.venv/bin/python -m sprint_status.cli --json > report.json # machine-readable output
+.venv/bin/python -m product_status.cli                    # all teams, current + previous
+.venv/bin/python -m product_status.cli --team CARE,PLAN    # specific teams
+.venv/bin/python -m product_status.cli --only previous      # previous sprint only
+.venv/bin/python -m product_status.cli --json > report.json # machine-readable output
+
+.venv/bin/python -m product_status.cli --summit             # projects tagged "For Summit" + milestones
+.venv/bin/python -m product_status.cli --summit --summit-label "Q3 Project" --json
 ```
 
 ### HTTP service (query "at any time")
 
 ```bash
-.venv/bin/uvicorn sprint_status.server:app --port 8008
+.venv/bin/uvicorn product_status.server:app --port 8008
 ```
 
 Then:
@@ -81,23 +94,220 @@ curl http://127.0.0.1:8008/sprints                       # current + previous, a
 curl http://127.0.0.1:8008/sprints/current                # current sprint only
 curl http://127.0.0.1:8008/sprints/previous?team=CARE     # previous sprint, one team
 curl "http://127.0.0.1:8008/sprints?fresh=true"           # bypass the 120s cache
+
+curl http://127.0.0.1:8008/projects/summit                # projects tagged "For Summit" + milestones
+curl "http://127.0.0.1:8008/projects/summit?label=Q3+Project"
 ```
 
 Responses are cached in-process for `SPRINT_STATUS_CACHE_TTL` seconds
 (default 120) so repeated calls are near-instant and don't burn API quota.
 Pass `?fresh=true` to force a live refetch.
 
+### Web dashboard
+
+With the HTTP service running, open **http://127.0.0.1:8008/** for a
+dashboard (with its own favicon, `product_status/static/favicon.svg`)
+organized as one section per squad — Progress, Plan, Care, Explore,
+Platform, Integration, and DevX (`product_status/dashboard.py:DASHBOARD_TEAMS`)
+— in that order, regardless of what other teams exist in the Linear
+workspace.
+
+Each squad's header stays docked just below the top bar while you scroll
+through that squad's section (`position: sticky`, offset by the top bar's
+measured height - see `product_status/static/app.js:syncTopbarHeight`), so
+you always know which team's data you're looking at; scrolling past the
+section lets the next squad's header take over. Click a squad's header to
+collapse/expand its section. Each squad's section has, in order:
+
+1. **Projects** — linked to that squad's team in Linear, each with its
+   milestones (target date + done/not done — completed milestones are
+   shown with a filled checkmark, not struck through). A project shared
+   across multiple teams (e.g. also shared with "Docs") shows up under
+   every squad it's linked to, not just one. Split into two groups
+   (`product_status/projects.py:build_dashboard_projects_report`):
+   1. **For Summit** — projects carrying the configured label (default
+      `"For Summit"`).
+   2. **Other projects** — projects *not* carrying that label, but with a
+      start or target date in the current calendar quarter (e.g. "Q3
+      2026") — surfaces what else is planned/landing this quarter beyond
+      the labeled set. A project matching both is only ever shown once,
+      under "For Summit".
+
+   Within each project card, five canonical lifecycle milestones - Define,
+   Design: Shape, Design: Refine, Early Access, Public Launch
+   (`product_status/static/app.js:KEY_MILESTONE_NAMES`) - are always shown
+   first, in that fixed order, regardless of due date. Any other milestone
+   collapses under an **Other milestones (N)** toggle that expands on
+   click; if a project has none of the five canonical milestones, all of
+   its milestones are just shown normally instead of hiding everything
+   behind a click.
+
+   Below the milestones, each card shows the project's **last update**
+   pulled from Linear's own project updates (author, health -
+   On track/At risk/Off track, colored like the status badges - date, and
+   the update's body text). `ProjectUpdate.body` is markdown; since neither
+   the dashboard nor the Notion export renders markdown, embedded images
+   are shown as `[image]` and link/emphasis syntax is stripped down to
+   plain text (`product_status/projects.py:_clean_update_body`) so raw
+   syntax doesn't leak through. If a project has multiple updates, the one
+   with the latest `createdAt` (from the last 10 fetched) is used.
+2. **Quality** — SLA/bug health for issues carrying the workspace "Bug"
+   label (`product_status/quality.py`), shown in this order:
+   1. **SLA Quality Total** *(bold, scored)* — sum of the next two rows.
+   2. **Currently Out of SLA** — Bug-labeled issues still open past their
+      SLA deadline (Linear's `slaStatus: Breached`). For Progress
+      specifically, bugs also carrying the `gurobi-solves` label are
+      excluded from this row only
+      (`product_status/quality.py:CURRENTLY_OUT_OF_SLA_EXCLUDED_LABELS`).
+   3. **Failed SLA This Month** — Bug-labeled issues closed (completed or
+      canceled) this calendar month after already breaching their SLA
+      (`slaStatus: Failed`).
+   4. **Incoming Bugs with High or Urgent priority this month** *(bold,
+      scored)* — Bug-labeled issues created this calendar month with
+      Urgent or High priority.
+
+   Only Urgent/High priority bugs carry an SLA in this workspace, so rows 2
+   and 3 implicitly cover just those; "this month" is the current UTC
+   calendar month.
+
+   **Scoring:** rows 1 and 4 — the two "main goal" rows — are each shown
+   against a per-team limit and colored green (within limit) or red (over
+   limit). Progress, Plan, and Integration — the higher-volume squads — get
+   a limit of **10**; every other squad gets **5**
+   (`product_status/quality.py:HIGH_VOLUME_QUALITY_TEAMS`/
+   `HIGH_VOLUME_QUALITY_THRESHOLD`/`DEFAULT_QUALITY_THRESHOLD`).
+3. **Current sprint** — a status-totals summary line (issue count per
+   status, summed across assignees), then a table of assignees with total
+   issues and status breakdown.
+4. **Previous sprint** — a totals summary line (assigned / completed /
+   moved to next / removed / added mid-cycle, summed across assignees),
+   then a table of the same counts broken out by assignee.
+
+Unlike the endpoints above, the dashboard is backed by an **on-disk cache**,
+with one cache file per squad (`.cache/dashboard-squad-<key>.json`) plus one
+for the team list (`.cache/dashboard-teams.json`), so each squad refreshes
+independently and the cache persists across server restarts. Loading the
+page only queries Linear for a squad if that squad's cache is missing,
+older than 24h (`DASHBOARD_CACHE_MAX_AGE_SECONDS`), or was written by an
+older cache schema `version` (see below); otherwise it's served instantly
+from disk. Each squad has its own **Update** button next to its header to
+force a fresh pull for just that squad, regardless of age — this hits
+`POST /api/dashboard/refresh/{team_key}` under the hood (`GET
+/api/dashboard` is the read path the page itself uses on load, and `POST
+/api/dashboard/refresh` force-refreshes every squad at once for
+scripting/automation use).
+
+**Cache schema versioning:** because the on-disk cache has no schema of its
+own, changing what `build_squad_data` returns (e.g. adding a new field)
+would otherwise be silently masked by a same-day cache hit for up to 24h.
+`product_status/dashboard.py:SQUAD_CACHE_VERSION` guards against this - bump
+it whenever `build_squad_data`'s shape changes, and every squad's cache is
+treated as stale on the next load regardless of age (see
+`cache.get_or_refresh`'s `version` parameter).
+
+### Publish to Notion
+
+The **Publish to Notion** button in the top bar (`POST
+/api/dashboard/publish-notion`) exports the currently cached dashboard as a
+new Notion page titled `Product Ops <date>`, created as a sub-page of the
+workspace's [Product Ops Reports](https://app.notion.com/p/stellic/Product-Ops-Reports-3be9dd09f473806c875bc8356f5c71a4)
+page. It uses whatever's already cached per squad rather than forcing a
+fresh Linear pull - hit a squad's own Update button first if you want the
+export to reflect the very latest data.
+
+Structure of the generated page (`product_status/notion_report.py`):
+
+```
+Product Ops <date>                    (page)
+  <Team name>                         (toggle, one per squad)
+    Projects                          (toggle)
+      For Summit (Projects with label "<label>")  (bold heading)
+        <project name>                (toggle, one per project)
+          status  ·  dates  ·  N/M milestones done
+          Milestone / Due Date / Status table
+          📁 Last update by <author> · <date> · <health> - <body>   (callout)
+          💡 Additional commentary from PL/TL:     (callout - for manual notes)
+      Other projects (<quarter>)      (bold heading)
+        ...same per-project structure, for projects not labeled "For
+           Summit" but starting/due in the current quarter...
+      Other Asks not covered by Projects   (toggle, empty - for manual notes)
+    Quality                           (toggle)
+      ...same 4-row Metric/Value/Goal table, colored by threshold...
+      💡 Additional commentary from PL/TL:
+    Current Sprint                    (toggle)
+      ...status summary line, then the same per-assignee table...
+      💡 Additional commentary from PL/TL:
+    Previous Sprint                   (toggle)
+      ...status summary line, then the same per-assignee table...
+      💡 Additional commentary from PL/TL:
+```
+
+This calls the Notion REST API directly (`product_status/notion_client.py`,
+`notion_oauth.py`) - it does not use Notion MCP tools, since this runs from
+the FastAPI backend in response to a button click, not from an agent
+session.
+
+Notion's public API has no property for a page's "Full width" layout
+setting - that's a display preference only exposed in the Notion UI, so
+after publishing you'll need to toggle it on by hand once per page (page
+"•••" menu → **Full width**).
+
+**Setup - OAuth (recommended; no Notion "workspace owner" permission
+needed):** creating an *internal* integration under Settings → Connections
+requires being a workspace owner in Notion. A *public connection* avoids
+that entirely - any member can authorize one for just the page(s) they
+personally have access to, via a normal OAuth consent screen.
+
+1. Create a connection at <https://www.notion.so/my-integrations> and
+   switch its type to **Public** (Notion's Developer Portal calls this a
+   "public connection").
+2. Set its redirect URI to `http://localhost:8008/notion/oauth/callback`
+   (or whatever port you run the server on). Notion rejects literal IP
+   addresses here (e.g. `127.0.0.1` → *"Redirect URIs can't use IP
+   addresses"*) but explicitly allows `localhost` for local development -
+   no tunneling (ngrok) or deployment (Vercel, etc.) needed.
+3. Copy its **OAuth Client ID** and **Client Secret** into `.env` as
+   `NOTION_OAUTH_CLIENT_ID` / `NOTION_OAUTH_CLIENT_SECRET` (see
+   `.env.example`). Optionally set `NOTION_OAUTH_REDIRECT_URI` if it
+   differs from the default above.
+4. Restart the server, click **Connect to Notion** in the dashboard's top
+   bar, and on Notion's consent screen pick the
+   [Product Ops Reports](https://app.notion.com/p/stellic/Product-Ops-Reports-3be9dd09f473806c875bc8356f5c71a4)
+   page (or its parent) to share. The button then becomes **Publish to
+   Notion**, and the resulting access token is stored at
+   `.cache/notion_oauth_token.json` (gitignored) so you only authorize once.
+   A **Disconnect** link next to the button lets you re-authorize (e.g. a
+   different workspace) later.
+
+**Setup - internal integration (alternative, only if you *do* have
+workspace-owner permission):** create an internal integration instead,
+share the target Notion page with it via its "•••" menu → **Connections**,
+and set `NOTION_API_KEY=secret_...` in `.env`. If both an OAuth connection
+and `NOTION_API_KEY` are present, the OAuth connection takes priority.
+
+Without either configured, the dashboard shows **Connect to Notion**, and
+clicking it (or attempting to publish) surfaces a clear setup error instead
+of failing silently.
+
 ## Project layout
 
 ```
-sprint_status/
+product_status/
   config.py         # API key + team filter resolution (.env aware)
   linear_client.py   # raw GraphQL client: auth, retries, pagination, aliasing
   cycles.py          # team + cycle (activeCycle / isPrevious) lookups
   issues.py           # cycle issue scope, uncompletedIssuesUponClose, mid-cycle detection via issue.history
   report.py          # assembles the per-team, per-assignee report
+  projects.py         # project summaries (status, dates, milestones) for a given project label
+  quality.py           # per-team SLA/bug counts (out of SLA, failed SLA, incoming high/urgent bugs)
+  dashboard.py         # combines sprints + summit projects + quality, grouped by squad, for the web UI
+  cache.py             # on-disk JSON cache keyed by age (used by the dashboard, 24h default)
+  notion_client.py      # raw Notion REST API client (auth, retries, nested block creation)
+  notion_oauth.py       # Notion OAuth ("public connection") flow - no workspace-owner permission needed
+  notion_report.py      # builds the "Product Ops <date>" Notion page from dashboard data
   cli.py             # command-line entry point (rich tables or --json)
-  server.py           # FastAPI service for on-demand HTTP queries
+  server.py           # FastAPI service for on-demand HTTP queries + the dashboard
+  static/              # dashboard web UI (plain HTML/CSS/JS, no build step)
 ```
 
 ## Notes
