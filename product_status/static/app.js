@@ -2,13 +2,34 @@ const state = {
   summitLabel: "",
   squadsByKey: new Map(),
   collapsed: new Set(),
-  otherMilestonesExpanded: new Set(),
 };
 
-// Canonical project lifecycle milestones, always shown first (in this
-// order) regardless of due date; anything else collapses under "Other
-// milestones" so the card stays scannable.
-const KEY_MILESTONE_NAMES = ["Define", "Design: Shape", "Design: Refine", "Early Access", "Public Launch"];
+// Canonical project lifecycle milestones - the milestones table only shows
+// milestones that fuzzy-match one of these (in this order); anything else
+// is left out entirely so the card stays scannable. Kept in sync by hand
+// with `product_status/milestones.py:KEY_MILESTONE_NAMES` (this runs
+// client-side and can't import that module directly).
+const KEY_MILESTONE_NAMES = ["Product: Define", "Design: Shape", "Design: Refine", "Early Access", "Public Launch"];
+
+// Loose match: lowercase and strip everything but letters/digits, so
+// differences in punctuation, spacing, and casing (e.g. "product define",
+// "Product - Define", "PRODUCT: DEFINE") all still match "Product: Define".
+function normalizeMilestoneName(name) {
+  return (name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function matchKeyMilestones(milestones) {
+  const targets = KEY_MILESTONE_NAMES.map((name) => ({ name, norm: normalizeMilestoneName(name) }));
+  const byTarget = new Map();
+  for (const milestone of milestones) {
+    const norm = normalizeMilestoneName(milestone.name);
+    const target = targets.find((t) => norm === t.norm || norm.includes(t.norm) || t.norm.includes(norm));
+    if (target && !byTarget.has(target.name)) {
+      byTarget.set(target.name, milestone);
+    }
+  }
+  return KEY_MILESTONE_NAMES.filter((name) => byTarget.has(name)).map((name) => byTarget.get(name));
+}
 
 const els = {
   errorBanner: document.getElementById("error-banner"),
@@ -17,6 +38,8 @@ const els = {
   notionDisconnectBtn: document.getElementById("notion-disconnect-btn"),
   notionConnectLink: document.getElementById("notion-connect-link"),
   notionBtn: document.getElementById("notion-btn"),
+  skipSprintLabel: document.getElementById("skip-sprint-label"),
+  skipSprintCheckbox: document.getElementById("skip-sprint-checkbox"),
   squadsContainer: document.getElementById("squads-container"),
   loadingState: document.getElementById("loading-state"),
 };
@@ -105,45 +128,17 @@ function renderMilestone(milestone) {
     </div>`;
 }
 
-function partitionMilestones(milestones) {
-  const byName = new Map();
-  const other = [];
-  for (const milestone of milestones) {
-    if (KEY_MILESTONE_NAMES.includes(milestone.name) && !byName.has(milestone.name)) {
-      byName.set(milestone.name, milestone);
-    } else {
-      other.push(milestone);
-    }
-  }
-  const key = KEY_MILESTONE_NAMES.filter((name) => byName.has(name)).map((name) => byName.get(name));
-  return { key, other };
-}
-
 function renderMilestonesSection(project) {
   if (!project.milestones.length) {
     return '<p class="empty-note">No milestones defined.</p>';
   }
 
-  const { key, other } = partitionMilestones(project.milestones);
-
-  // If none of the canonical milestones are present, there's nothing
-  // meaningful to prioritize - just show everything rather than hiding it
-  // all behind a click.
-  if (!key.length || !other.length) {
-    return project.milestones.map(renderMilestone).join("");
+  const matched = matchKeyMilestones(project.milestones);
+  if (!matched.length) {
+    return '<p class="empty-note">None of the tracked milestones are defined for this project.</p>';
   }
 
-  const expanded = state.otherMilestonesExpanded.has(project.id);
-  return `
-    ${key.map(renderMilestone).join("")}
-    <button class="other-milestones-toggle${expanded ? " expanded" : ""}" type="button" data-project-id="${escapeHtml(
-    project.id
-  )}">
-      <span class="chevron">▾</span> Other milestones (${other.length})
-    </button>
-    <div class="other-milestones${expanded ? "" : " hidden"}" data-project-id="${escapeHtml(project.id)}">
-      ${other.map(renderMilestone).join("")}
-    </div>`;
+  return matched.map(renderMilestone).join("");
 }
 
 function renderLastUpdate(lastUpdate) {
@@ -185,7 +180,6 @@ function renderProjectCard(project) {
       </div>
       <div class="project-meta-row">
         <span>${formatDate(project.startDate)} → ${formatDate(project.targetDate)}</span>
-        <span>${project.completedMilestones}/${project.totalMilestones} milestones done</span>
       </div>
       <div class="progress-bar-track">
         <div class="progress-bar-fill" style="width: ${progressPct}%"></div>
@@ -219,7 +213,7 @@ function renderProjectsBlock(squad, summitLabel) {
 
   const groups =
     renderProjectGroup(
-      "For Summit",
+      "Star Project",
       `Projects with label "${summitLabel}"`,
       summitProjects,
       `No projects tagged "${summitLabel}" for this squad.`
@@ -518,24 +512,6 @@ function toggleSquad(teamKey) {
   if (body) body.classList.toggle("hidden", collapsed);
 }
 
-function toggleOtherMilestones(projectId) {
-  const expanded = !state.otherMilestonesExpanded.has(projectId);
-  if (expanded) {
-    state.otherMilestonesExpanded.add(projectId);
-  } else {
-    state.otherMilestonesExpanded.delete(projectId);
-  }
-  // Flip the DOM directly instead of a full re-render so scroll position
-  // and other cards' state are untouched.
-  const selector = `[data-project-id="${CSS.escape(projectId)}"]`;
-  document.querySelectorAll(`.other-milestones-toggle${selector}`).forEach((btn) => {
-    btn.classList.toggle("expanded", expanded);
-  });
-  document.querySelectorAll(`.other-milestones${selector}`).forEach((el) => {
-    el.classList.toggle("hidden", !expanded);
-  });
-}
-
 async function loadDashboard() {
   clearError();
   try {
@@ -590,6 +566,7 @@ async function loadNotionStatus() {
     const connected = Boolean(status.connected);
     els.notionConnectLink.classList.toggle("hidden", connected);
     els.notionBtn.classList.toggle("hidden", !connected);
+    els.skipSprintLabel.classList.toggle("hidden", !connected);
     els.notionDisconnectBtn.classList.toggle("hidden", !connected);
     if (connected) {
       els.notionStatus.textContent = `Notion: ${status.workspaceName || "connected"}`;
@@ -637,7 +614,10 @@ async function publishToNotion() {
   els.notionBtn.disabled = true;
   els.notionBtn.innerHTML = '<span class="spinner"></span><span class="btn-label">Publishing…</span>';
   try {
-    const res = await fetch("/api/dashboard/publish-notion", { method: "POST" });
+    const skipSprintData = els.skipSprintCheckbox.checked;
+    const res = await fetch(`/api/dashboard/publish-notion?skip_sprint_data=${skipSprintData}`, {
+      method: "POST",
+    });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       throw new Error(body.detail || `Request failed (${res.status})`);
@@ -667,12 +647,6 @@ els.squadsContainer.addEventListener("click", (event) => {
   if (updateBtn) {
     event.stopPropagation();
     refreshSquad(updateBtn.dataset.teamKey);
-    return;
-  }
-  const milestonesToggle = event.target.closest(".other-milestones-toggle");
-  if (milestonesToggle) {
-    event.stopPropagation();
-    toggleOtherMilestones(milestonesToggle.dataset.projectId);
     return;
   }
   const header = event.target.closest(".squad-header");

@@ -1,5 +1,5 @@
 """Per-squad (Linear team) data for the web dashboard: projects (split into
-"For Summit"-labeled and other current-quarter projects), current sprint,
+"Star Project"-labeled and other current-quarter projects), current sprint,
 and previous sprint - restricted to a fixed set of squads.
 
 Each squad's data is built independently so it can be cached and refreshed
@@ -19,10 +19,12 @@ DASHBOARD_TEAMS = ["PROG", "PLAN", "CARE", "EXP", "PLAT", "INT", "DEVX"]
 
 TEAMS_CACHE_KEY = "dashboard-teams"
 
-# Bump whenever `build_squad_data`'s return shape changes (e.g. a new field
-# is added) so same-day cache hits don't silently keep serving the old
-# shape - see `cache.get_or_refresh`'s `version` parameter.
-SQUAD_CACHE_VERSION = 6
+# Bump whenever `build_squad_data`'s return shape *or* its underlying
+# filtering logic changes (e.g. a new field is added, or which projects/
+# updates are included changes) so same-day cache hits don't silently keep
+# serving stale results computed under the old logic - see
+# `cache.get_or_refresh`'s `version` parameter.
+SQUAD_CACHE_VERSION = 8
 
 
 def squad_cache_key(team_key: str) -> str:

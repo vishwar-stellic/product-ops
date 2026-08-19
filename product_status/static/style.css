@@ -88,6 +88,21 @@ body {
   white-space: nowrap;
 }
 
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-faint);
+  font-size: 12.5px;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.checkbox-label input[type="checkbox"] {
+  cursor: pointer;
+}
+
 .btn-sm {
   padding: 6px 12px;
   font-size: 12.5px;
@@ -512,48 +527,6 @@ body {
   color: var(--text-faint);
   font-size: 12px;
   white-space: nowrap;
-}
-
-.other-milestones-toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  background: none;
-  border: none;
-  border-top: 1px solid var(--border);
-  color: var(--text-faint);
-  font-size: 12px;
-  font-weight: 600;
-  padding: 8px 0;
-  margin: 0;
-  cursor: pointer;
-  text-align: left;
-  font-family: inherit;
-}
-
-.other-milestones-toggle:hover {
-  color: var(--text-dim);
-}
-
-.other-milestones-toggle .chevron {
-  display: inline-flex;
-  font-size: 10px;
-  transition: transform 0.15s ease;
-}
-
-.other-milestones-toggle.expanded .chevron {
-  transform: rotate(180deg);
-}
-
-.other-milestones {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.other-milestones.hidden {
-  display: none;
 }
 
 .last-update-section {

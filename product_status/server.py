@@ -10,7 +10,7 @@ Endpoints:
     GET  /sprints/previous        -> previous sprint only, all teams
     GET  /sprints?team=PROG,PLAN  -> restrict to specific teams (key or name)
     GET  /projects/summit         -> project summaries (with milestones) for
-                                      projects tagged "For Summit"
+                                      projects tagged "Star Project"
     GET  /projects/summit?label=X -> same, for a different project label
     GET  /api/dashboard              -> sprints + summit projects for every
                                          squad; each squad is served from its
@@ -22,6 +22,9 @@ Endpoints:
     POST /api/dashboard/publish-notion -> publish the (currently cached)
                                           dashboard to Notion as a new
                                           "Product Ops <date>" sub-page
+                                          (?skip_sprint_data=true to omit
+                                          Previous Sprint and reduce Current
+                                          Sprint to just a heading + callout)
     GET  /api/notion/status       -> whether Notion is connected (OAuth) and
                                       to which workspace
     POST /api/notion/disconnect   -> forget the stored Notion OAuth token
@@ -204,7 +207,12 @@ def dashboard_refresh_all():
 
 
 @app.post("/api/dashboard/publish-notion")
-def dashboard_publish_notion():
+def dashboard_publish_notion(
+    skip_sprint_data: bool = Query(
+        default=False,
+        description="Omit Previous Sprint and reduce Current Sprint to just a heading + commentary callout",
+    ),
+):
     """Publish the currently cached dashboard to Notion as a new
     "Product Ops <date>" sub-page (see `notion_report.py`). Uses whatever
     is already cached per squad rather than forcing a fresh Linear pull -
@@ -213,7 +221,7 @@ def dashboard_publish_notion():
     try:
         teams = _get_dashboard_teams()
         dashboard_data = {"summitLabel": DEFAULT_SUMMIT_LABEL, "squads": [_get_squad(t, force=False) for t in teams]}
-        return publish_dashboard_to_notion(dashboard_data)
+        return publish_dashboard_to_notion(dashboard_data, skip_sprint_data=skip_sprint_data)
     except NotionError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     except LinearGraphQLError as exc:

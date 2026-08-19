@@ -47,16 +47,24 @@ class LinearClient:
                 backoff *= 2
                 continue
 
-            response.raise_for_status()
-            body = response.json()
+            # Linear returns a structured `{"errors": [...]}` body even for
+            # 4xx statuses (e.g. a 400 for an API key missing the "write"
+            # scope) - parse that out for an actionable message instead of
+            # letting `raise_for_status()` below raise a bare, uninformative
+            # `HTTPError`.
+            try:
+                body = response.json()
+            except ValueError:
+                body = None
 
-            if "errors" in body and body["errors"]:
+            if body and body.get("errors"):
                 if attempt < MAX_RETRIES and _is_retryable(body["errors"]):
                     time.sleep(backoff)
                     backoff *= 2
                     continue
                 raise LinearGraphQLError(body["errors"])
 
+            response.raise_for_status()
             return body["data"]
 
         raise RuntimeError("Unreachable: exceeded retry loop without returning")

@@ -4,26 +4,29 @@ publishes it as a sub-page.
 Structure (see README "Publish to Notion" section):
 
     Product Ops <date>                       (page)
-      <Team name>                            (toggle)
-        Projects                             (toggle)
-          For Summit (Projects with label "<label>")   (bold heading)
-            <Project name>                   (toggle, one per project)
+      <Team name>                            (bulleted link, one per squad - table of contents)
+      ...
+      <Team name>                            (heading_2, one per squad)
+        Projects                             (heading_3)
+          Star Project (Projects with label "<label>")   (bold paragraph)
+            <Project name> (<status>)        (toggle, one per project - status
+                                               shown in the title so it's
+                                               visible without expanding)
               ...status / dates / milestones table...
               📁 Last update by <author> · <date> · <health> - <body>
-              Callout: "Additional commentary from PL/TL:"
-          Other projects (<quarter>)         (bold heading)
+              Callout: "Additional commentary from PL/TL/Designer:"
+          Other projects (<quarter>)         (bold paragraph)
             ...same per-project structure, for projects not labeled "For
                Summit" but starting/due in the current quarter...
-          Other Asks not covered by Projects (toggle, empty - for manual notes)
-        Quality                              (toggle)
+        Quality                              (heading_3)
           ...quality table (with Goal column)...
-          Callout: "Additional commentary from PL/TL:"
-        Current Sprint                       (toggle)
+          Callout: "Additional commentary from PL/TL/Designer:"
+        Current Sprint                       (heading_3)
           ...status summary + sprint table...
-          Callout: "Additional commentary from PL/TL:"
-        Previous Sprint                      (toggle)
+          Callout: "Additional commentary from PL/TL/Designer:"
+        Previous Sprint                      (heading_3)
           ...status summary + sprint table...
-          Callout: "Additional commentary from PL/TL:"
+          Callout: "Additional commentary from PL/TL/Designer:"
 
 Note: Notion's public API has no way to set a page's layout to "Full width" -
 that's a per-page display setting only exposed in the Notion UI (the "..."
@@ -32,15 +35,21 @@ created.
 """
 
 import re
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
+from .milestones import match_key_milestones
 from .notion_client import NotionClient, create_nested_blocks, extract_page_id
+
+# Report titles use Pacific time (handles PST/PDT automatically) rather than
+# UTC, matching how the team refers to dates/deadlines day-to-day.
+_PACIFIC = ZoneInfo("America/Los_Angeles")
 
 DEFAULT_PARENT_PAGE_URL = "https://app.notion.com/p/stellic/Product-Ops-Reports-3be9dd09f473806c875bc8356f5c71a4"
 DEFAULT_PARENT_PAGE_ID = extract_page_id(DEFAULT_PARENT_PAGE_URL)
 
-COMMENTARY_TEXT = "Additional commentary from PL/TL:\n"
+COMMENTARY_TEXT = "Additional commentary from PL/TL/Designer:\n"
 
 _DATE_ONLY_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})")
 
@@ -96,6 +105,22 @@ def toggle(title, children: List[Dict[str, Any]]) -> Dict[str, Any]:
         "toggle": {"rich_text": rich},
         "_children": children,
     }
+
+
+def heading_2(title: str) -> Dict[str, Any]:
+    return {"type": "heading_2", "heading_2": {"rich_text": [rich_text(title)]}}
+
+
+def heading_3(title: str) -> Dict[str, Any]:
+    return {"type": "heading_3", "heading_3": {"rich_text": [rich_text(title)]}}
+
+
+def _toc_placeholder(team_name: str) -> Dict[str, Any]:
+    """A bulleted-list item for one squad's table-of-contents entry. Created
+    with plain text first (we don't know the squad's `heading_2` block ID
+    until *after* it's created), then patched in place via `update_block`
+    once the real ID is known - see `publish_dashboard_to_notion`."""
+    return bulleted_item([rich_text(team_name)])
 
 
 def callout(emoji: str, text_runs) -> Dict[str, Any]:
@@ -180,18 +205,25 @@ def _project_toggles(projects: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     for project in projects:
         meta = (
             f"{project.get('status') or '—'}  ·  "
-            f"{_fmt_date(project.get('startDate'))} → {_fmt_date(project.get('targetDate'))}  ·  "
-            f"{project['completedMilestones']}/{project['totalMilestones']} milestones done"
+            f"{_fmt_date(project.get('startDate'))} → {_fmt_date(project.get('targetDate'))}"
         )
         children = [paragraph([rich_text(meta, color="gray")])]
-        if project["milestones"]:
-            children.append(_milestones_table(project["milestones"]))
+        key_milestones = match_key_milestones(project["milestones"])
+        if key_milestones:
+            children.append(_milestones_table(key_milestones))
+        elif project["milestones"]:
+            children.append(
+                paragraph([rich_text("None of the tracked milestones are defined for this project.", color="gray")])
+            )
         else:
             children.append(paragraph([rich_text("No milestones defined.", color="gray")]))
         children.append(_last_update_callout(project.get("lastUpdate")))
         children.append(commentary_callout())
 
-        title_runs = [rich_text(project["name"], bold=True, link=project.get("url"))]
+        title_runs = [
+            rich_text(project["name"], bold=True, link=project.get("url")),
+            rich_text(f" ({project.get('status') or '—'})", bold=True),
+        ]
         project_toggles.append(toggle(title_runs, children))
     return project_toggles
 
@@ -209,7 +241,7 @@ def _project_content(
     quarter_label: str,
 ) -> List[Dict[str, Any]]:
     blocks: List[Dict[str, Any]] = [
-        paragraph([rich_text(f'For Summit (Projects with label "{summit_label}")', bold=True)])
+        paragraph([rich_text(f'Star Project (Projects with label "{summit_label}")', bold=True)])
     ]
     blocks.extend(
         _project_group_content(summit_projects, f'No projects tagged "{summit_label}" for this squad.')
@@ -220,7 +252,6 @@ def _project_content(
             other_projects, f"No other projects starting or due in {quarter_label} for this squad."
         )
     )
-    blocks.append(toggle("Other Asks not covered by Projects", []))
     return blocks
 
 
@@ -343,18 +374,30 @@ def _previous_sprint_content(sprint: Optional[Dict[str, Any]]) -> List[Dict[str,
     return blocks
 
 
-def _section_toggle(title: str, content_blocks: List[Dict[str, Any]], append_commentary: bool = True) -> Dict[str, Any]:
-    children = content_blocks + [commentary_callout()] if append_commentary else content_blocks
-    return toggle(title, children)
+def _section_blocks(content_blocks: List[Dict[str, Any]], append_commentary: bool = True) -> List[Dict[str, Any]]:
+    return content_blocks + [commentary_callout()] if append_commentary else content_blocks
 
 
-def build_team_toggle(squad: Dict[str, Any]) -> Dict[str, Any]:
+def build_team_blocks(squad: Dict[str, Any], skip_sprint_data: bool = False) -> List[Dict[str, Any]]:
+    """Flat block list for one squad: an `heading_2` with the team name,
+    followed by an `heading_3` + content for each of Projects / Quality /
+    Current Sprint / Previous Sprint. Headings can't have children of their
+    own via the API (only *toggleable* headings can), so section content
+    sits as siblings after its heading rather than nested under it - the
+    table of contents at the top of the page is what makes this navigable.
+
+    If `skip_sprint_data` is set, the Previous Sprint section is dropped
+    entirely and Current Sprint is reduced to just its heading plus a
+    commentary callout (no cycle stats/table) - useful for weeks where
+    sprint data isn't relevant to call out."""
     team = squad["team"]
-    sections = [
-        # Projects gets one commentary callout per project (see
-        # `_project_content`) rather than a single one for the whole toggle.
-        _section_toggle(
-            "Projects",
+    blocks: List[Dict[str, Any]] = [heading_2(team["name"])]
+
+    blocks.append(heading_3("Projects"))
+    # Projects gets one commentary callout per project (see
+    # `_project_content`) rather than a single one for the whole section.
+    blocks.extend(
+        _section_blocks(
             _project_content(
                 squad.get("summitProjects", []),
                 squad.get("otherProjects", []),
@@ -362,30 +405,66 @@ def build_team_toggle(squad: Dict[str, Any]) -> Dict[str, Any]:
                 squad.get("quarterLabel", "this quarter"),
             ),
             append_commentary=False,
-        ),
-        _section_toggle("Quality", _quality_content(squad.get("quality"))),
-        _section_toggle("Current Sprint", _current_sprint_content(squad.get("currentSprint"))),
-        _section_toggle("Previous Sprint", _previous_sprint_content(squad.get("previousSprint"))),
-    ]
-    return toggle(team["name"], sections)
+        )
+    )
+
+    blocks.append(heading_3("Quality"))
+    blocks.extend(_section_blocks(_quality_content(squad.get("quality"))))
+
+    blocks.append(heading_3("Current Sprint"))
+    if skip_sprint_data:
+        blocks.append(commentary_callout())
+    else:
+        blocks.extend(_section_blocks(_current_sprint_content(squad.get("currentSprint"))))
+
+        blocks.append(heading_3("Previous Sprint"))
+        blocks.extend(_section_blocks(_previous_sprint_content(squad.get("previousSprint"))))
+
+    return blocks
 
 
 def publish_dashboard_to_notion(
     dashboard_data: Dict[str, Any],
     parent_page_id: Optional[str] = None,
     client: Optional[NotionClient] = None,
+    skip_sprint_data: bool = False,
 ) -> Dict[str, Any]:
     """Create a "Product Ops <date>" sub-page of `parent_page_id` (defaults
-    to the workspace's Product Ops Reports page) with one toggle per team,
-    each containing Projects / Quality / Current Sprint / Previous Sprint
-    sub-toggles."""
+    to the workspace's Product Ops Reports page): a table of contents
+    linking to each squad, then one `heading_2` per team with `heading_3`
+    Projects / Quality / Current Sprint / Previous Sprint sections
+    underneath.
+
+    If `skip_sprint_data` is set, every squad drops its Previous Sprint
+    section and reduces Current Sprint to just a heading + commentary
+    callout - see `build_team_blocks`."""
     client = client or NotionClient()
     parent_page_id = parent_page_id or DEFAULT_PARENT_PAGE_ID
+    squads = dashboard_data["squads"]
 
-    title = f"Product Ops {datetime.now(timezone.utc).strftime('%b %-d, %Y')}"
+    title = f"Product Ops {datetime.now(_PACIFIC).strftime('%b %-d, %Y')}"
     page = client.create_page(parent_page_id, title)
 
-    team_toggles = [build_team_toggle(squad) for squad in dashboard_data["squads"]]
-    create_nested_blocks(client, page["id"], team_toggles)
+    # Build one flat top-level block list: TOC placeholders first (so they
+    # render at the top of the page), then every squad's blocks. We track
+    # where each squad's `heading_2` lands in that list so we can look up
+    # its real block ID once created, and link the matching TOC item to it.
+    blocks: List[Dict[str, Any]] = [_toc_placeholder(squad["team"]["name"]) for squad in squads]
+    heading_positions: List[int] = []
+    for squad in squads:
+        heading_positions.append(len(blocks))
+        blocks.extend(build_team_blocks(squad, skip_sprint_data=skip_sprint_data))
 
-    return {"pageId": page["id"], "url": page.get("url"), "title": title}
+    created = create_nested_blocks(client, page["id"], blocks)
+
+    page_url = page.get("url")
+    if page_url:
+        for i, squad in enumerate(squads):
+            heading_id = created[heading_positions[i]]["id"].replace("-", "")
+            link = f"{page_url}#{heading_id}"
+            client.update_block(
+                created[i]["id"],
+                bulleted_item([rich_text(squad["team"]["name"], link=link)]),
+            )
+
+    return {"pageId": page["id"], "url": page_url, "title": title}

@@ -26,7 +26,7 @@ report). Optionally restrict to specific teams with `--team` / `SPRINT_STATUS_TE
 (comma-separated team keys or names, e.g. `PROG,PLAN,CARE,EXP,DEVX,PLAT,INT`).
 
 Also reports a **project summary for projects tagged with a given label**
-(default `"For Summit"`): for each matching project, its status, dates, and
+(default `"Star Project"`): for each matching project, its status, dates, and
 every milestone with its target date and whether it's complete.
 
 ## How it determines each bucket
@@ -77,8 +77,28 @@ will pick it up automatically without any extra setup.
 .venv/bin/python -m product_status.cli --only previous      # previous sprint only
 .venv/bin/python -m product_status.cli --json > report.json # machine-readable output
 
-.venv/bin/python -m product_status.cli --summit             # projects tagged "For Summit" + milestones
+.venv/bin/python -m product_status.cli --summit             # projects tagged "Star Project" + milestones
 .venv/bin/python -m product_status.cli --summit --summit-label "Q3 Project" --json
+
+# Add any missing canonical tracked milestones (Product: Define, Design: Shape,
+# Design: Refine, Early Access, Public Launch) to every project for a team
+# that has a start or target date in the current calendar quarter (same
+# quarter window as the dashboard's "Other projects" group - see
+# product_status/projects.py:quarter_bounds). Safe to re-run - projects that
+# already have a matching milestone are skipped (fuzzy-matched by name, see
+# product_status/milestones.py). --team accepts a team key or name,
+# comma-separated for multiple teams. By default, for each project with
+# missing milestones, lists them and asks which ones (by number, 'all', or
+# 'none') to actually create - different projects can get different
+# answers, since not every project needs every milestone.
+.venv/bin/python -m product_status.cli --add-tracked-milestones --team Progress --dry-run  # preview only, no prompts
+.venv/bin/python -m product_status.cli --add-tracked-milestones --team Progress            # asks per project
+.venv/bin/python -m product_status.cli --add-tracked-milestones --team Progress --yes      # no prompts, create all missing
+
+# --milestones narrows which of the five are ever offered/created (default: all
+# five) - still applies uniformly across projects; use the per-project prompt
+# above for per-project differences. Fuzzy-matched, comma-separated.
+.venv/bin/python -m product_status.cli --add-tracked-milestones --team Progress --milestones "Product: Define,Early Access"
 ```
 
 ### HTTP service (query "at any time")
@@ -95,7 +115,7 @@ curl http://127.0.0.1:8008/sprints/current                # current sprint only
 curl http://127.0.0.1:8008/sprints/previous?team=CARE     # previous sprint, one team
 curl "http://127.0.0.1:8008/sprints?fresh=true"           # bypass the 120s cache
 
-curl http://127.0.0.1:8008/projects/summit                # projects tagged "For Summit" + milestones
+curl http://127.0.0.1:8008/projects/summit                # projects tagged "Star Project" + milestones
 curl "http://127.0.0.1:8008/projects/summit?label=Q3+Project"
 ```
 
@@ -125,22 +145,23 @@ collapse/expand its section. Each squad's section has, in order:
    across multiple teams (e.g. also shared with "Docs") shows up under
    every squad it's linked to, not just one. Split into two groups
    (`product_status/projects.py:build_dashboard_projects_report`):
-   1. **For Summit** — projects carrying the configured label (default
-      `"For Summit"`).
+   1. **Star Project** — projects carrying the configured label (default
+      `"Star Project"`).
    2. **Other projects** — projects *not* carrying that label, but with a
       start or target date in the current calendar quarter (e.g. "Q3
       2026") — surfaces what else is planned/landing this quarter beyond
       the labeled set. A project matching both is only ever shown once,
-      under "For Summit".
+      under "Star Project".
 
-   Within each project card, five canonical lifecycle milestones - Define,
-   Design: Shape, Design: Refine, Early Access, Public Launch
-   (`product_status/static/app.js:KEY_MILESTONE_NAMES`) - are always shown
-   first, in that fixed order, regardless of due date. Any other milestone
-   collapses under an **Other milestones (N)** toggle that expands on
-   click; if a project has none of the five canonical milestones, all of
-   its milestones are just shown normally instead of hiding everything
-   behind a click.
+   Each project card's milestones table only shows five canonical lifecycle
+   milestones - Product: Define, Design: Shape, Design: Refine, Early
+   Access, Public Launch (`product_status/static/app.js:KEY_MILESTONE_NAMES`,
+   mirrored in `product_status/notion_report.py:KEY_MILESTONE_NAMES`) - in
+   that fixed order, regardless of due date. Any other milestone the
+   project has is left out of the table entirely. Matching is fuzzy
+   (case/punctuation/whitespace-insensitive, e.g. "product define" or
+   "PRODUCT - DEFINE (v2)" both match "Product: Define") so small naming
+   variations in Linear don't cause a milestone to be dropped.
 
    Below the milestones, each card shows the project's **last update**
    pulled from Linear's own project updates (author, health -
@@ -150,7 +171,10 @@ collapse/expand its section. Each squad's section has, in order:
    are shown as `[image]` and link/emphasis syntax is stripped down to
    plain text (`product_status/projects.py:_clean_update_body`) so raw
    syntax doesn't leak through. If a project has multiple updates, the one
-   with the latest `createdAt` (from the last 10 fetched) is used.
+   with the latest `createdAt` (from the last 10 fetched) is used - but only
+   if it's from the last 2 weeks; anything exactly 2 weeks old or older is
+   treated as if there's no update at all, rather than showing a stale one
+   (`product_status/projects.py:LATEST_UPDATE_MAX_AGE`).
 2. **Quality** — SLA/bug health for issues carrying the workspace "Bug"
    label (`product_status/quality.py`), shown in this order:
    1. **SLA Quality Total** *(bold, scored)* — sum of the next two rows.
@@ -209,38 +233,56 @@ treated as stale on the next load regardless of age (see
 
 The **Publish to Notion** button in the top bar (`POST
 /api/dashboard/publish-notion`) exports the currently cached dashboard as a
-new Notion page titled `Product Ops <date>`, created as a sub-page of the
-workspace's [Product Ops Reports](https://app.notion.com/p/stellic/Product-Ops-Reports-3be9dd09f473806c875bc8356f5c71a4)
+new Notion page titled `Product Ops <date>` (`<date>` is today's date in
+Pacific time - `product_status/notion_report.py:_PACIFIC` - not UTC), created
+as a sub-page of the workspace's [Product Ops Reports](https://app.notion.com/p/stellic/Product-Ops-Reports-3be9dd09f473806c875bc8356f5c71a4)
 page. It uses whatever's already cached per squad rather than forcing a
 fresh Linear pull - hit a squad's own Update button first if you want the
 export to reflect the very latest data.
+
+The **Skip sprint data** checkbox next to the button (sent as the
+`skip_sprint_data` query param) omits each squad's Previous Sprint section
+entirely and reduces Current Sprint to just its heading plus a commentary
+callout - useful for weeks where sprint stats aren't the focus of the
+write-up.
 
 Structure of the generated page (`product_status/notion_report.py`):
 
 ```
 Product Ops <date>                    (page)
-  <Team name>                         (toggle, one per squad)
-    Projects                          (toggle)
-      For Summit (Projects with label "<label>")  (bold heading)
-        <project name>                (toggle, one per project)
-          status  ·  dates  ·  N/M milestones done
-          Milestone / Due Date / Status table
+  <Team name>                         (bulleted link, one per squad - table of contents)
+  ...
+  <Team name>                         (heading_2, one per squad)
+    Projects                          (heading_3)
+      Star Project (Projects with label "<label>")  (bold paragraph)
+        <project name> (<status>)    (toggle, one per project - status shown
+                                       in the title, visible without expanding)
+          status  ·  dates
+          Milestone / Due Date / Status table (canonical milestones only, see below)
           📁 Last update by <author> · <date> · <health> - <body>   (callout)
-          💡 Additional commentary from PL/TL:     (callout - for manual notes)
-      Other projects (<quarter>)      (bold heading)
+          💡 Additional commentary from PL/TL/Designer:     (callout - for manual notes)
+      Other projects (<quarter>)      (bold paragraph)
         ...same per-project structure, for projects not labeled "For
            Summit" but starting/due in the current quarter...
-      Other Asks not covered by Projects   (toggle, empty - for manual notes)
-    Quality                           (toggle)
+    Quality                           (heading_3)
       ...same 4-row Metric/Value/Goal table, colored by threshold...
-      💡 Additional commentary from PL/TL:
-    Current Sprint                    (toggle)
+      💡 Additional commentary from PL/TL/Designer:
+    Current Sprint                    (heading_3)
       ...status summary line, then the same per-assignee table...
-      💡 Additional commentary from PL/TL:
-    Previous Sprint                   (toggle)
+      💡 Additional commentary from PL/TL/Designer:
+    Previous Sprint                   (heading_3)
       ...status summary line, then the same per-assignee table...
-      💡 Additional commentary from PL/TL:
+      💡 Additional commentary from PL/TL/Designer:
 ```
+
+Section content sits as plain siblings after its `heading_3` rather than
+nested under it - Notion headings can't have children unless they're
+*toggleable* headings. The table of contents at the top only links to each
+squad's `heading_2` (not the `heading_3` sub-sections): since Notion's
+built-in table-of-contents block can't be filtered by heading level, it's
+built manually - one bulleted item per squad, created as a placeholder and
+then patched with a `#<block-id>` link once that squad's `heading_2` block
+exists.
 
 This calls the Notion REST API directly (`product_status/notion_client.py`,
 `notion_oauth.py`) - it does not use Notion MCP tools, since this runs from

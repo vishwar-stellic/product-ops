@@ -91,10 +91,21 @@ class NotionClient:
             results.extend(resp["results"])
         return results
 
+    def update_block(self, block_id: str, block: Dict[str, Any]) -> Dict[str, Any]:
+        """Overwrite an existing block's content (e.g. to fill in a table-of-
+        contents link once we know the target heading's block ID)."""
+        body = {k: v for k, v in block.items() if k not in ("type", "_children")}
+        return self._request("PATCH", f"/blocks/{block_id}", body)
 
-def create_nested_blocks(client: NotionClient, parent_block_id: str, blocks: List[Dict[str, Any]]) -> None:
+
+def create_nested_blocks(
+    client: NotionClient, parent_block_id: str, blocks: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
     """Append `blocks` under `parent_block_id`, then recursively append any
     `_children` each block carries under that block's freshly created ID.
+    Returns the top-level created blocks (in the same order as `blocks`),
+    so callers can look up the real ID of a just-created block (e.g. to
+    link to it from elsewhere on the page).
 
     Notion only allows two levels of nesting per request, so arbitrarily
     deep trees (team toggle -> section toggle -> content) are built with
@@ -103,9 +114,10 @@ def create_nested_blocks(client: NotionClient, parent_block_id: str, blocks: Lis
     `blocks[i]`'s `_children` line up positionally with `created[i]`.
     """
     if not blocks:
-        return
+        return []
     created = client.append_children(parent_block_id, blocks)
     for input_block, created_block in zip(blocks, created):
         nested = input_block.get("_children")
         if nested:
             create_nested_blocks(client, created_block["id"], nested)
+    return created

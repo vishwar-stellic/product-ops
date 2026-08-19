@@ -1,5 +1,5 @@
 """Project summaries for the dashboard's Projects section: projects tagged
-with a given label (e.g. "For Summit") plus, separately, any project whose
+with a given label (e.g. "Star Project") plus, separately, any project whose
 start or target date falls in the current calendar quarter.
 
 Fetches each matching project's milestones (name, target date, status) and
@@ -8,15 +8,20 @@ API, independent of the cycle/sprint reporting in `report.py`.
 """
 
 import re
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from .linear_client import LinearClient
 
-DEFAULT_SUMMIT_LABEL = "For Summit"
+DEFAULT_SUMMIT_LABEL = "Star Project"
 
 # ProjectMilestoneStatus enum values that count as "done".
 COMPLETED_MILESTONE_STATUSES = {"done"}
+
+# Project updates older than this aren't shown as the project's "last
+# update" - a 2-week-old (or older) update is more likely to be stale than
+# useful, so it's treated the same as having no update at all.
+LATEST_UPDATE_MAX_AGE = timedelta(days=14)
 
 _PROJECTS_QUERY = """
 query Projects($first: Int!, $after: String, $filter: ProjectFilter!) {
@@ -98,9 +103,12 @@ def fetch_projects_by_label(client: LinearClient, label_name: str) -> List[Dict[
     return fetch_projects(client, {"labels": {"some": {"name": {"eq": label_name}}}})
 
 
-def _quarter_bounds(now: Optional[datetime] = None) -> Tuple[str, str]:
+def quarter_bounds(now: Optional[datetime] = None) -> Tuple[str, str]:
     """(start, end) `TimelessDate` strings for the current UTC calendar
-    quarter, e.g. `("2026-07-01", "2026-10-01")` for Q3. `end` is exclusive."""
+    quarter, e.g. `("2026-07-01", "2026-10-01")` for Q3. `end` is exclusive.
+
+    Also used by `milestone_setup.fetch_team_projects` to scope
+    `--add-tracked-milestones` to the current quarter's projects."""
     now = now or datetime.now(timezone.utc)
     quarter_start_month = ((now.month - 1) // 3) * 3 + 1
     start = date(now.year, quarter_start_month, 1)
@@ -112,7 +120,7 @@ def _quarter_bounds(now: Optional[datetime] = None) -> Tuple[str, str]:
     return start.isoformat(), end.isoformat()
 
 
-def _quarter_label(now: Optional[datetime] = None) -> str:
+def quarter_label(now: Optional[datetime] = None) -> str:
     now = now or datetime.now(timezone.utc)
     return f"Q{(now.month - 1) // 3 + 1} {now.year}"
 
@@ -137,7 +145,18 @@ def health_label(health: Optional[str]) -> str:
     return _HEALTH_LABELS.get(health, health or "—")
 
 
-def _latest_update_summary(project: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _latest_update_summary(
+    project: Dict[str, Any], now: Optional[datetime] = None
+) -> Optional[Dict[str, Any]]:
     # `projectUpdates`'s default connection order isn't documented as
     # newest-first, so rather than rely on that, fetch a batch (10 - plenty
     # for how often these are posted) and pick the max `createdAt` client-side.
@@ -145,6 +164,13 @@ def _latest_update_summary(project: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not updates:
         return None
     latest = max(updates, key=lambda u: u.get("createdAt") or "")
+
+    created_dt = _parse_datetime(latest.get("createdAt"))
+    if created_dt is not None:
+        now = now or datetime.now(timezone.utc)
+        if now - created_dt >= LATEST_UPDATE_MAX_AGE:
+            return None
+
     user = latest.get("user") or {}
     return {
         "id": latest["id"],
@@ -229,7 +255,7 @@ def build_dashboard_projects_report(
     """Projects for the dashboard's Projects section, split into two groups:
 
     - `summitProjects` - projects carrying the `summit_label` label (e.g.
-      "For Summit").
+      "Star Project").
     - `otherProjects` - projects *not* carrying that label, but with a start
       or target date in the current calendar quarter. Lets each squad also
       see what else is planned/landing this quarter beyond the labeled set.
@@ -238,7 +264,7 @@ def build_dashboard_projects_report(
     counted once, under `summitProjects` (the explicit label wins).
     """
     client = client or LinearClient()
-    quarter_start, quarter_end = _quarter_bounds()
+    quarter_start, quarter_end = quarter_bounds()
 
     summit_raw = fetch_projects_by_label(client, summit_label)
     summit_ids = {p["id"] for p in summit_raw}
@@ -257,7 +283,7 @@ def build_dashboard_projects_report(
     return {
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "summitLabel": summit_label,
-        "quarterLabel": _quarter_label(),
+        "quarterLabel": quarter_label(),
         "quarterStart": quarter_start,
         "quarterEnd": quarter_end,
         "summitProjects": summit_projects,
