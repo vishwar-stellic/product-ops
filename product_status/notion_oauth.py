@@ -22,9 +22,12 @@ Notion rejects literal IP addresses (e.g. `127.0.0.1`) in redirect URIs, but
 explicitly allows the `localhost` hostname for local development - use
 `http://localhost:<port>/notion/oauth/callback`, not `127.0.0.1`.
 
-The resulting access token is stored on disk (`.cache/notion_oauth_token.json`,
-already gitignored) and reused for every publish - each user who wants to
-publish from their own machine authorizes once.
+The resulting access token is stored on disk (`.cache/notion_oauth_token.json`
+locally, already gitignored - see `config.CACHE_DIR` for where this goes on
+serverless hosts) and reused for every publish - each user who wants to
+publish from their own machine authorizes once. On a serverless host (e.g.
+Vercel) this only persists within a single warm function instance - see
+README "Deploying" - so prefer a persistent host if that matters to you.
 """
 
 import base64
@@ -38,7 +41,7 @@ from urllib.parse import urlencode
 
 import requests
 
-from .config import PROJECT_ROOT
+from .config import CACHE_DIR
 
 NOTION_AUTHORIZE_URL = "https://api.notion.com/v1/oauth/authorize"
 NOTION_TOKEN_URL = "https://api.notion.com/v1/oauth/token"
@@ -46,7 +49,7 @@ NOTION_TOKEN_URL = "https://api.notion.com/v1/oauth/token"
 # allows the "localhost" hostname for local development - see module docstring.
 DEFAULT_REDIRECT_URI = "http://localhost:8008/notion/oauth/callback"
 
-TOKEN_PATH = PROJECT_ROOT / ".cache" / "notion_oauth_token.json"
+TOKEN_PATH = CACHE_DIR / "notion_oauth_token.json"
 
 # CSRF protection for the OAuth `state` param. In-memory is fine - this is a
 # single-process local server and the flow completes within seconds.

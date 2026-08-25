@@ -9,6 +9,7 @@ API key resolution order:
 """
 
 import os
+import tempfile
 from pathlib import Path
 from typing import List, Optional
 
@@ -18,6 +19,24 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 FALLBACK_ENV_PATH = Path("/Users/vishwa/.claude/skills/product-ops/.env")
 
 LINEAR_GRAPHQL_URL = "https://api.linear.app/graphql"
+
+
+def _default_cache_dir() -> Path:
+    # Serverless platforms (Vercel, AWS Lambda, ...) ship the deployed code
+    # on a read-only filesystem and only allow writes under `/tmp` - which
+    # is itself ephemeral (wiped on cold start, not shared across scaled-out
+    # instances), so this is a "works for now" fallback rather than a real
+    # fix for the dashboard cache / Notion OAuth token needing to persist -
+    # see README "Deploying" for details. Vercel sets `VERCEL=1` in the
+    # function's environment, which is what triggers this.
+    if os.environ.get("VERCEL"):
+        return Path(tempfile.gettempdir()) / "product-ops-cache"
+    return PROJECT_ROOT / ".cache"
+
+
+# Override with `PRODUCT_OPS_CACHE_DIR` to point at a persistent volume/mount
+# on other hosts where the project root itself isn't writable.
+CACHE_DIR = Path(os.environ.get("PRODUCT_OPS_CACHE_DIR") or _default_cache_dir())
 
 
 def _load_env_files() -> None:

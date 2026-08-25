@@ -12,9 +12,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from .config import PROJECT_ROOT
+from .config import CACHE_DIR
 
-CACHE_DIR = PROJECT_ROOT / ".cache"
 DEFAULT_MAX_AGE_SECONDS = 24 * 60 * 60
 
 

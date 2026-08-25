@@ -418,11 +418,42 @@ Without either configured, the dashboard shows **Connect to Notion**, and
 clicking it (or attempting to publish) surfaces a clear setup error instead
 of failing silently.
 
+## Deploying (e.g. Vercel)
+
+`main.py` at the project root re-exports the FastAPI `app` from
+`product_status/server.py` purely so Vercel's Python/FastAPI framework
+preset can auto-detect it - Vercel only looks for an `app` instance in a
+handful of default locations (`app.py`, `index.py`, `server.py`, `main.py`,
+`wsgi.py`, `asgi.py` at the repo root or under `src/`/`app/`/`api/`), and
+this project's app lives one directory deeper than that. Local development
+is unaffected - keep using `uvicorn product_status.server:app`.
+
+Set `LINEAR_API_KEY` (and, if using Notion publishing,
+`NOTION_OAUTH_CLIENT_ID`/`NOTION_OAUTH_CLIENT_SECRET`/`NOTION_OAUTH_REDIRECT_URI`)
+as environment variables in the Vercel project settings — `.env` is
+gitignored and won't be deployed.
+
+**Caveat:** the dashboard's on-disk cache and the Notion OAuth token
+(`product_status/cache.py`, `notion_oauth.py`) write to `config.CACHE_DIR`,
+which defaults to `.cache/` next to the code - fine for a normal long-running
+process, but serverless platforms ship a read-only filesystem except for
+`/tmp`, which is itself wiped on cold starts and not shared across
+scaled-out instances. `config.py` detects Vercel (`VERCEL=1`, set
+automatically) and points `CACHE_DIR` at `/tmp` there instead, so the app
+won't crash - but that means the 24h dashboard cache and the "stay
+connected to Notion" OAuth token can both silently reset between requests.
+For anything beyond a quick demo, either run this on a normal always-on
+host (a small VM/container, since the app was designed around a persistent
+local disk) or swap `cache.py`/`notion_oauth.py` for a real persistent store
+(e.g. a small Postgres/Redis/Vercel Blob). Override the cache location on
+any host with `PRODUCT_OPS_CACHE_DIR`.
+
 ## Project layout
 
 ```
+main.py             # Vercel/deployment entrypoint - re-exports product_status.server:app
 product_status/
-  config.py         # API key + team filter resolution (.env aware)
+  config.py         # API key + team filter resolution (.env aware), CACHE_DIR
   linear_client.py   # raw GraphQL client: auth, retries, pagination, aliasing
   cycles.py          # team + cycle (activeCycle / isPrevious) lookups
   issues.py           # cycle issue scope, uncompletedIssuesUponClose, mid-cycle detection via issue.history
