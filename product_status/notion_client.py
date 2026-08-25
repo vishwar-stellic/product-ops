@@ -3,9 +3,11 @@
 This runs from the FastAPI backend (triggered by the dashboard's "Publish to
 Notion" button), not from an agent session, so it can't use Notion MCP
 tools - it talks to https://api.notion.com directly, authenticated with
-either an OAuth access token (see `notion_oauth.py`, the default - no
-Notion "workspace owner" permission required) or a static internal
-integration token (`NOTION_API_KEY`).
+either a static internal integration token (`NOTION_API_KEY` - preferred
+when set, see `notion_oauth.resolve_access_token`) or an OAuth access token
+(see `notion_oauth.py`, the fallback - no Notion "workspace owner"
+permission required, but its token doesn't reliably persist on serverless
+hosts).
 """
 
 import re

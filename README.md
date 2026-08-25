@@ -125,19 +125,29 @@ Pass `?fresh=true` to force a live refetch.
 
 ### Web dashboard
 
-With the HTTP service running, open **http://127.0.0.1:8008/** for a
-dashboard (with its own favicon, `product_status/static/favicon.svg`)
-organized as one section per squad — Progress, Plan, Care, Explore,
-Platform, Integration, and DevX (`product_status/dashboard.py:DASHBOARD_TEAMS`)
-— in that order, regardless of what other teams exist in the Linear
-workspace.
+With the HTTP service running, open **http://127.0.0.1:8008/** for the
+dashboard (with its own favicon, `product_status/static/favicon.svg`). The
+tab bar just below the header (`product_status/static/index.html`) splits
+the site into separate capabilities, each its own tab:
 
-Each squad's header stays docked just below the top bar while you scroll
-through that squad's section (`position: sticky`, offset by the top bar's
-measured height - see `product_status/static/app.js:syncTopbarHeight`), so
-you always know which team's data you're looking at; scrolling past the
-section lets the next squad's header take over. Click a squad's header to
-collapse/expand its section. Each squad's section has, in order:
+- **EPD Report** — everything described below: squads, projects, quality,
+  sprints, and Publish to Notion. The only tab with real content today.
+- **Sprint Report** and **Project Milestones** — placeholders for now (no
+  content yet); see `#tab-sprint-report`/`#tab-project-milestones` in
+  `index.html` and `switchTab()` in `app.js` for how tabs are wired up.
+
+The **EPD Report** tab is organized as one section per squad — Progress,
+Plan, Care, Explore, Platform, Integration, and DevX
+(`product_status/dashboard.py:DASHBOARD_TEAMS`) — in that order, regardless
+of what other teams exist in the Linear workspace.
+
+Each squad's header stays docked just below the top bar + tab bar while you
+scroll through that squad's section (`position: sticky`, offset by their
+combined measured height - see
+`product_status/static/app.js:syncTopbarHeight`), so you always know which
+team's data you're looking at; scrolling past the section lets the next
+squad's header take over. Click a squad's header to collapse/expand its
+section. Each squad's section has, in order:
 
 1. **Projects** — linked to that squad's team in Linear, each with its
    milestones (target date + done/not done — completed milestones are
@@ -220,10 +230,11 @@ collapse/expand its section. Each squad's section has, in order:
 Both are replaced with a single "Sprint data hidden." note when the
 **Sprint data** checkbox (see below) is unchecked.
 
-**Top bar checkboxes** — the first two control the web view's own rendering
-(re-rendering everything already loaded, no refetch needed), and are also
-sent to **Publish to Notion** as the `skip_sprint_data`/`only_star_projects`
-query params (`product_status/static/app.js:renderAll`, mirrored in
+**EPD Report toolbar checkboxes** — the first two control the web view's own
+rendering (re-rendering everything already loaded, no refetch needed), and
+are also sent to **Publish to Notion** as the
+`skip_sprint_data`/`only_star_projects` query params
+(`product_status/static/app.js:renderAll`, mirrored in
 `product_status/notion_report.py:build_team_blocks`); the third only
 affects the Notion export:
 - **Sprint data** *(unchecked by default)* — on the web page, check to show
@@ -273,7 +284,7 @@ treated as stale on the next load regardless of age (see
 
 ### Publish to Notion
 
-The **Publish to Notion** button in the top bar (`POST
+The **Publish to Notion** button in the EPD Report tab (`POST
 /api/dashboard/publish-notion`) exports the currently cached dashboard as a
 new Notion page titled `EPD Report <date>` (`<date>` is today's date in
 Pacific time - `product_status/notion_report.py:_PACIFIC` - not UTC), created
@@ -282,8 +293,8 @@ page. It uses whatever's already cached per squad rather than forcing a
 fresh Linear pull - hit a squad's own Update button first if you want the
 export to reflect the very latest data.
 
-The **Sprint data** and **Only Star Projects** checkboxes in the top bar
-(see "Top bar checkboxes" above) are sent along as the `skip_sprint_data`
+The **Sprint data** and **Only Star Projects** checkboxes in the EPD Report
+tab (see "EPD Report toolbar checkboxes" above) are sent along as the `skip_sprint_data`
 (inverted - unchecking **Sprint data** sends `skip_sprint_data=true`) and
 `only_star_projects` query params, controlling the Notion export as
 described below. **Demo run** is sent as `demo_run` and only changes *which
@@ -294,7 +305,7 @@ Structure of the generated page (`product_status/notion_report.py`) with
 both checkboxes checked (**Sprint data** checked shows the Previous Sprint
 section below; **Only Star Projects** checked shows just the labeled set,
 without the "Other Projects" toggle) - both are unchecked by default, see
-"Top bar checkboxes" above:
+"EPD Report toolbar checkboxes" above:
 
 ```
 EPD Report <date>                     (page)
@@ -381,11 +392,22 @@ setting - that's a display preference only exposed in the Notion UI, so
 after publishing you'll need to toggle it on by hand once per page (page
 "•••" menu → **Full width**).
 
-**Setup - OAuth (recommended; no Notion "workspace owner" permission
-needed):** creating an *internal* integration under Settings → Connections
-requires being a workspace owner in Notion. A *public connection* avoids
-that entirely - any member can authorize one for just the page(s) they
-personally have access to, via a normal OAuth consent screen.
+**Setup - internal integration (recommended, requires Notion
+"workspace owner" permission):** create an internal integration at
+<https://www.notion.so/my-integrations>, share the target Notion page with
+it via its "•••" menu → **Connections**, and set `NOTION_API_KEY=secret_...`
+in `.env` (see `.env.example`). This is the simplest and most robust
+option - it's just a static token, so it works identically on any host
+(serverless included) and doesn't depend on a connect/disconnect flow or a
+token file surviving between requests. When set, the dashboard's EPD Report
+tab shows **Publish to Notion** directly - no "Connect to Notion" step, and
+the Notion status badge reads "Notion: connected (API key)".
+
+**Setup - OAuth (fallback; use only if you *don't* have workspace-owner
+permission and can't set `NOTION_API_KEY` above):** creating an *internal*
+integration requires being a workspace owner in Notion. A *public
+connection* avoids that - any member can authorize one for just the
+page(s) they personally have access to, via a normal OAuth consent screen.
 
 1. Create a connection at <https://www.notion.so/my-integrations> and
    switch its type to **Public** (Notion's Developer Portal calls this a
@@ -399,8 +421,8 @@ personally have access to, via a normal OAuth consent screen.
    `NOTION_OAUTH_CLIENT_ID` / `NOTION_OAUTH_CLIENT_SECRET` (see
    `.env.example`). Optionally set `NOTION_OAUTH_REDIRECT_URI` if it
    differs from the default above.
-4. Restart the server, click **Connect to Notion** in the dashboard's top
-   bar, and on Notion's consent screen pick the
+4. Restart the server, click **Connect to Notion** in the dashboard's EPD
+   Report tab, and on Notion's consent screen pick the
    [Product Ops Reports](https://app.notion.com/p/stellic/Product-Ops-Reports-3be9dd09f473806c875bc8356f5c71a4)
    page (or its parent) to share. The button then becomes **Publish to
    Notion**, and the resulting access token is stored at
@@ -408,11 +430,10 @@ personally have access to, via a normal OAuth consent screen.
    A **Disconnect** link next to the button lets you re-authorize (e.g. a
    different workspace) later.
 
-**Setup - internal integration (alternative, only if you *do* have
-workspace-owner permission):** create an internal integration instead,
-share the target Notion page with it via its "•••" menu → **Connections**,
-and set `NOTION_API_KEY=secret_...` in `.env`. If both an OAuth connection
-and `NOTION_API_KEY` are present, the OAuth connection takes priority.
+If both `NOTION_API_KEY` and an OAuth connection are present,
+`NOTION_API_KEY` takes priority (`notion_oauth.resolve_access_token`) - the
+OAuth token is only ever used as a fallback for hosts/users without an
+internal integration token.
 
 Without either configured, the dashboard shows **Connect to Notion**, and
 clicking it (or attempting to publish) surfaces a clear setup error instead

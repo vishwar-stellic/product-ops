@@ -1,10 +1,15 @@
 """Notion OAuth ("public connection") flow.
 
-Creating an *internal* integration (Settings -> Connections) requires
-"workspace owner" permission in Notion, which not everyone has. A *public
-connection* sidesteps that: any Notion member can authorize one for just the
-pages they personally have access to, via a standard OAuth consent screen -
-no admin/owner role needed on the target workspace.
+This is the *fallback* auth path - see `resolve_access_token` below. If a
+static `NOTION_API_KEY` (an internal integration token) is set, that's used
+instead and none of this OAuth machinery matters: it's simpler and works
+identically on any host, since it doesn't depend on a token file surviving
+between requests (see `config.CACHE_DIR`'s serverless caveat). This module
+exists for teammates who *can't* create an internal integration (requires
+Notion "workspace owner" permission) - a *public connection* sidesteps that:
+any Notion member can authorize one for just the pages they personally have
+access to, via a standard OAuth consent screen, no admin/owner role needed
+on the target workspace.
 
 Setup (one-time, done once by whoever sets this up - not per-user):
 1. Go to https://www.notion.so/my-integrations and create a new connection,
@@ -148,30 +153,41 @@ def disconnect() -> None:
 
 
 def status() -> Dict[str, Any]:
+    # A static `NOTION_API_KEY` takes priority over any OAuth token (see
+    # `resolve_access_token`) - report that as "connected" outright rather
+    # than making the dashboard depend on the OAuth connect/disconnect flow
+    # at all when one is configured.
+    if os.environ.get("NOTION_API_KEY"):
+        return {"connected": True, "method": "api_key", "oauthConfigured": is_configured()}
+
     token = load_token()
     if not token:
-        return {"connected": False, "oauthConfigured": is_configured()}
+        return {"connected": False, "method": None, "oauthConfigured": is_configured()}
     return {
         "connected": True,
+        "method": "oauth",
         "workspaceName": token.get("workspace_name"),
         "workspaceIcon": token.get("workspace_icon"),
     }
 
 
 def resolve_access_token() -> str:
-    """The token to authenticate Notion API calls with: a connected OAuth
-    token if one exists, otherwise a static `NOTION_API_KEY` (for teammates
-    who *can* create an internal integration and prefer that instead)."""
-    token = load_token()
-    if token and token.get("access_token"):
-        return token["access_token"]
-
+    """The token to authenticate Notion API calls with: a static
+    `NOTION_API_KEY` if one is set (preferred - works the same on any host,
+    doesn't depend on the OAuth token surviving between requests, see
+    `config.CACHE_DIR`'s serverless caveat), otherwise a connected OAuth
+    token (for teammates who can't create an internal integration)."""
     env_key = os.environ.get("NOTION_API_KEY")
     if env_key:
         return env_key
 
+    token = load_token()
+    if token and token.get("access_token"):
+        return token["access_token"]
+
     raise RuntimeError(
-        'Notion isn\'t connected yet. Click "Connect to Notion" in the dashboard to '
-        "authorize via OAuth (no workspace-owner permission needed), or set "
-        "NOTION_API_KEY in .env if you have an internal integration token instead."
+        "Notion isn't connected yet. Set NOTION_API_KEY in .env if you have an "
+        'internal integration token, or click "Connect to Notion" in the '
+        "dashboard to authorize via OAuth instead (no workspace-owner "
+        "permission needed)."
     )

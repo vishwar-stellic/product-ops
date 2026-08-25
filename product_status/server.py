@@ -249,9 +249,11 @@ def dashboard_publish_notion(
 
 @app.get("/api/notion/status")
 def notion_status():
-    """Whether a Notion OAuth connection is stored, and for which
-    workspace. Lets the dashboard show "Connect to Notion" vs "Publish to
-    Notion" without attempting a publish first."""
+    """Whether Notion publishing is available right now, and how
+    (`method`: "api_key" if NOTION_API_KEY is set - takes priority - or
+    "oauth" if a connection is stored, plus which workspace). Lets the
+    dashboard show "Connect to Notion" vs "Publish to Notion" without
+    attempting a publish first."""
     return notion_oauth.status()
 
 

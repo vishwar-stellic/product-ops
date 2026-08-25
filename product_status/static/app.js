@@ -51,6 +51,8 @@ const els = {
   demoRunCheckbox: document.getElementById("demo-run-checkbox"),
   squadsContainer: document.getElementById("squads-container"),
   loadingState: document.getElementById("loading-state"),
+  tabButtons: document.querySelectorAll(".tab-btn"),
+  tabPanels: document.querySelectorAll(".tab-panel"),
 };
 
 function escapeHtml(value) {
@@ -111,11 +113,19 @@ function formatRelativeDays(isoString) {
 // Keeps each squad header docked directly below the (sticky) topbar - see
 // `.squad-header`'s `top: var(--topbar-h)` in style.css. Measured rather
 // than hardcoded so it stays correct across browsers/font rendering and if
-// the topbar's contents ever change height.
+// the topbar/tabbar's contents ever change height. `--topbar-h` positions
+// the tabbar right below the topbar; `--sticky-offset` (topbar + tabbar)
+// positions each squad-header right below both.
 function syncTopbarHeight() {
   const topbar = document.querySelector(".topbar");
+  const tabbar = document.querySelector(".tabbar");
   if (!topbar) return;
-  document.documentElement.style.setProperty("--topbar-h", `${topbar.offsetHeight}px`);
+  const topbarHeight = topbar.offsetHeight;
+  document.documentElement.style.setProperty("--topbar-h", `${topbarHeight}px`);
+  document.documentElement.style.setProperty(
+    "--sticky-offset",
+    `${topbarHeight + (tabbar ? tabbar.offsetHeight : 0)}px`
+  );
 }
 
 function cycleDisplayName(cycle) {
@@ -624,11 +634,17 @@ async function loadNotionStatus() {
     const res = await fetch("/api/notion/status");
     const status = await res.json();
     const connected = Boolean(status.connected);
+    // A static NOTION_API_KEY is a plain env var, not a connect/disconnect
+    // flow - there's nothing to "Connect to Notion" or "Disconnect" from,
+    // so both of those stay hidden in that case (see notion_oauth.status).
+    const viaApiKey = status.method === "api_key";
     els.notionConnectLink.classList.toggle("hidden", connected);
     els.notionBtn.classList.toggle("hidden", !connected);
-    els.notionDisconnectBtn.classList.toggle("hidden", !connected);
+    els.notionDisconnectBtn.classList.toggle("hidden", !connected || viaApiKey);
     if (connected) {
-      els.notionStatus.textContent = `Notion: ${status.workspaceName || "connected"}`;
+      els.notionStatus.textContent = viaApiKey
+        ? "Notion: connected (API key)"
+        : `Notion: ${status.workspaceName || "connected"}`;
       els.notionStatus.classList.remove("hidden");
     } else {
       els.notionStatus.classList.add("hidden");
@@ -747,12 +763,28 @@ setInterval(() => {
 
 syncTopbarHeight();
 window.addEventListener("resize", syncTopbarHeight);
-// Notion connect/publish buttons appearing or disappearing can change the
-// topbar's height, so re-measure once its content has settled.
-new MutationObserver(syncTopbarHeight).observe(document.querySelector(".topbar-actions"), {
-  childList: true,
-  attributes: true,
-  subtree: true,
+// Notion connect/publish buttons appearing or disappearing (in the EPD
+// Report toolbar) can wrap onto a second line on narrow viewports, which
+// doesn't change the topbar/tabbar height itself but re-measuring is cheap
+// insurance against that assumption ever changing.
+const epdToolbar = document.querySelector(".epd-toolbar");
+if (epdToolbar) {
+  new MutationObserver(syncTopbarHeight).observe(epdToolbar, {
+    childList: true,
+    attributes: true,
+    subtree: true,
+  });
+}
+
+// ---- Tabs ----
+
+function switchTab(tabName) {
+  els.tabButtons.forEach((btn) => btn.classList.toggle("active", btn.dataset.tab === tabName));
+  els.tabPanels.forEach((panel) => panel.classList.toggle("hidden", panel.id !== `tab-${tabName}`));
+}
+
+els.tabButtons.forEach((btn) => {
+  btn.addEventListener("click", () => switchTab(btn.dataset.tab));
 });
 
 handleNotionRedirectParams();

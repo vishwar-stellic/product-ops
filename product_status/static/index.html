@@ -14,7 +14,23 @@
         <span class="brand-mark">◆</span>
         <h1>Product Operations</h1>
       </div>
-      <div class="topbar-actions">
+    </div>
+  </header>
+
+  <nav class="tabbar">
+    <div class="tabbar-inner">
+      <button class="tab-btn active" data-tab="epd-report" type="button">EPD Report</button>
+      <button class="tab-btn" data-tab="sprint-report" type="button">Sprint Report</button>
+      <button class="tab-btn" data-tab="project-milestones" type="button">Project Milestones</button>
+    </div>
+  </nav>
+
+  <main class="container">
+    <div id="error-banner" class="error-banner hidden"></div>
+    <div id="success-banner" class="success-banner hidden"></div>
+
+    <section id="tab-epd-report" class="tab-panel">
+      <div class="epd-toolbar">
         <span id="notion-status" class="topbar-hint hidden"></span>
         <label class="checkbox-label" for="sprint-data-checkbox">
           <input type="checkbox" id="sprint-data-checkbox" />
@@ -34,19 +50,28 @@
           <span class="btn-label">Publish to Notion</span>
         </button>
       </div>
-    </div>
-  </header>
 
-  <main class="container">
-    <div id="error-banner" class="error-banner hidden"></div>
-    <div id="success-banner" class="success-banner hidden"></div>
+      <div id="squads-container"></div>
 
-    <div id="squads-container"></div>
+      <div id="loading-state" class="loading-state">
+        <div class="spinner"></div>
+        <p>Loading dashboard…</p>
+      </div>
+    </section>
 
-    <div id="loading-state" class="loading-state">
-      <div class="spinner"></div>
-      <p>Loading dashboard…</p>
-    </div>
+    <section id="tab-sprint-report" class="tab-panel hidden">
+      <div class="placeholder-tab">
+        <h2>Sprint Report</h2>
+        <p>Coming soon.</p>
+      </div>
+    </section>
+
+    <section id="tab-project-milestones" class="tab-panel hidden">
+      <div class="placeholder-tab">
+        <h2>Project Milestones</h2>
+        <p>Coming soon.</p>
+      </div>
+    </section>
   </main>
 
   <script src="app.js" defer></script>
