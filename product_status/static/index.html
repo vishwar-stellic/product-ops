@@ -16,9 +16,13 @@
       </div>
       <div class="topbar-actions">
         <span id="notion-status" class="topbar-hint hidden"></span>
-        <label id="skip-sprint-label" class="checkbox-label hidden" for="skip-sprint-checkbox">
-          <input type="checkbox" id="skip-sprint-checkbox" />
-          Skip sprint data
+        <label class="checkbox-label" for="sprint-data-checkbox">
+          <input type="checkbox" id="sprint-data-checkbox" />
+          Sprint data
+        </label>
+        <label class="checkbox-label" for="only-star-projects-checkbox">
+          <input type="checkbox" id="only-star-projects-checkbox" />
+          Only Star Projects
         </label>
         <button id="notion-disconnect-btn" class="btn-link hidden" type="button">Disconnect</button>
         <a id="notion-connect-link" class="btn btn-primary hidden" href="/notion/oauth/start">Connect to Notion</a>

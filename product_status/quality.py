@@ -1,5 +1,6 @@
 """SLA / quality metrics per team: currently-breached bugs, bugs that failed
-their SLA this month, and incoming high/urgent bugs this month.
+their SLA this month, currently-open High-priority bugs, and incoming
+high/urgent bugs this month.
 
 A "bug" is any issue carrying the workspace-level "Bug" label. Only Urgent
 and High priority bugs carry an SLA in this workspace. Rather than
@@ -123,6 +124,17 @@ def build_quality_summary(
         },
     )
 
+    currently_active_high_bugs = _count_issues(
+        client,
+        {
+            "team": team_filter,
+            "labels": bug_label_filter,
+            "priority": {"eq": 2},  # 2 = High
+            "completedAt": {"null": True},
+            "canceledAt": {"null": True},
+        },
+    )
+
     sla_quality_total = currently_out_of_sla + failed_sla_this_month
     threshold = _quality_threshold_for_team(team["key"])
 
@@ -131,6 +143,7 @@ def build_quality_summary(
         "currentlyOutOfSla": currently_out_of_sla,
         "failedSlaThisMonth": failed_sla_this_month,
         "slaQualityTotal": sla_quality_total,
+        "currentlyActiveHighBugs": currently_active_high_bugs,
         "incomingHighUrgentThisMonth": incoming_high_urgent_this_month,
         "threshold": threshold,
         "slaQualityWithinThreshold": sla_quality_total <= threshold,

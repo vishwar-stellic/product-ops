@@ -147,11 +147,13 @@ collapse/expand its section. Each squad's section has, in order:
    (`product_status/projects.py:build_dashboard_projects_report`):
    1. **Star Project** — projects carrying the configured label (default
       `"Star Project"`).
-   2. **Other projects** — projects *not* carrying that label, but with a
-      start or target date in the current calendar quarter (e.g. "Q3
-      2026") — surfaces what else is planned/landing this quarter beyond
-      the labeled set. A project matching both is only ever shown once,
-      under "Star Project".
+   2. **Other Projects** — projects *not* carrying that label, but with a
+      start or target date in the current calendar quarter. A project
+      matching both is only ever shown once, under "Star Project". Hidden
+      entirely when the **Only Star Projects** checkbox (see below) is
+      checked; shown otherwise (collapsed under an "Other Projects" toggle
+      heading in the Notion export, immediately followed by an "Other
+      Asks" toggle heading - see "Publish to Notion" below).
 
    Each project card's milestones table only shows five canonical lifecycle
    milestones - Product: Define, Design: Shape, Design: Refine, Early
@@ -165,8 +167,9 @@ collapse/expand its section. Each squad's section has, in order:
 
    Below the milestones, each card shows the project's **last update**
    pulled from Linear's own project updates (author, health -
-   On track/At risk/Off track, colored like the status badges - date, and
-   the update's body text). `ProjectUpdate.body` is markdown; since neither
+   On track/At risk/Off track, colored like the status badges - date (with
+   how long ago it was posted, e.g. "Aug 12 (3 days ago)"), and the
+   update's body text). `ProjectUpdate.body` is markdown; since neither
    the dashboard nor the Notion export renders markdown, embedded images
    are shown as `[image]` and link/emphasis syntax is stripped down to
    plain text (`product_status/projects.py:_clean_update_body`) so raw
@@ -176,17 +179,24 @@ collapse/expand its section. Each squad's section has, in order:
    treated as if there's no update at all, rather than showing a stale one
    (`product_status/projects.py:LATEST_UPDATE_MAX_AGE`).
 2. **Quality** — SLA/bug health for issues carrying the workspace "Bug"
-   label (`product_status/quality.py`), shown in this order:
-   1. **SLA Quality Total** *(bold, scored)* — sum of the next two rows.
-   2. **Currently Out of SLA** — Bug-labeled issues still open past their
-      SLA deadline (Linear's `slaStatus: Breached`). For Progress
-      specifically, bugs also carrying the `gurobi-solves` label are
-      excluded from this row only
-      (`product_status/quality.py:CURRENTLY_OUT_OF_SLA_EXCLUDED_LABELS`).
-   3. **Failed SLA This Month** — Bug-labeled issues closed (completed or
-      canceled) this calendar month after already breaching their SLA
-      (`slaStatus: Failed`).
-   4. **Incoming Bugs with High or Urgent priority this month** *(bold,
+   label (`product_status/quality.py`), preceded by two definitions
+   (`product_status/notion_report.py:_QUALITY_DEFINITIONS`, mirrored on the
+   web page) and then a table shown in this order:
+   1. **SLA Quality Total** *(bold, scored)* — sum of "Currently Out of
+      SLA" and "Failed SLA This Month".
+   2. **Currently Out of SLA** — open bugs that have breached SLA
+      (Linear's `slaStatus: Breached`). For Progress specifically, bugs
+      also carrying the `gurobi-solves` label are excluded from this row
+      only (`product_status/quality.py:CURRENTLY_OUT_OF_SLA_EXCLUDED_LABELS`).
+   3. **Failed SLA This Month** — bugs that were fixed this month after
+      they had breached their SLA (closed - completed or canceled - this
+      calendar month with `slaStatus: Failed`).
+   4. **Currently Active High Bugs** — currently open Bug-labeled issues
+      with High priority.
+   5. **Number of bugs because of missing tests** — no automatic data pull
+      for this row; the Value column is always left blank, filled in by
+      hand.
+   6. **Incoming Bugs with High or Urgent priority this month** *(bold,
       scored)* — Bug-labeled issues created this calendar month with
       Urgent or High priority.
 
@@ -194,7 +204,7 @@ collapse/expand its section. Each squad's section has, in order:
    and 3 implicitly cover just those; "this month" is the current UTC
    calendar month.
 
-   **Scoring:** rows 1 and 4 — the two "main goal" rows — are each shown
+   **Scoring:** rows 1 and 6 — the two "main goal" rows — are each shown
    against a per-team limit and colored green (within limit) or red (over
    limit). Progress, Plan, and Integration — the higher-volume squads — get
    a limit of **10**; every other squad gets **5**
@@ -206,6 +216,32 @@ collapse/expand its section. Each squad's section has, in order:
 4. **Previous sprint** — a totals summary line (assigned / completed /
    moved to next / removed / added mid-cycle, summed across assignees),
    then a table of the same counts broken out by assignee.
+
+Both are replaced with a single "Sprint data hidden." note when the
+**Sprint data** checkbox (see below) is unchecked.
+
+**Top bar checkboxes** — these two checkboxes control the web view's own
+rendering (re-rendering everything already loaded, no refetch needed), and
+are also sent to **Publish to Notion** as the `skip_sprint_data`/
+`only_star_projects` query params (`product_status/static/app.js:renderAll`,
+mirrored in `product_status/notion_report.py:build_team_blocks`):
+- **Sprint data** *(unchecked by default)* — on the web page, check to show
+  Current Sprint and Previous Sprint; unchecked (the default) collapses
+  Current Sprint down to just its heading + a "Sprint data hidden." note,
+  and drops Previous Sprint entirely. In the Notion export there's no
+  separate "Current Sprint" section to collapse (see "Publish to Notion"
+  below) - unchecked there just drops the "Previous Sprint" section
+  entirely.
+- **Only Star Projects** *(unchecked by default)* — check to hide every
+  non-"Star Project" project; unchecked (the default) also shows every
+  other current-quarter project, under an "Other Projects" group (both on
+  the web page and, collapsed into a toggle heading, in the Notion
+  export).
+
+Note the web page still shows its own Current/Previous Sprint blocks
+either way - only the Notion export has fully replaced "Current Sprint"
+with the Kudos/Dependency-Availability sections below, so the two surfaces
+aren't a byte-for-byte match on the sprint section anymore.
 
 Unlike the endpoints above, the dashboard is backed by an **on-disk cache**,
 with one cache file per squad (`.cache/dashboard-squad-<key>.json`) plus one
@@ -233,56 +269,99 @@ treated as stale on the next load regardless of age (see
 
 The **Publish to Notion** button in the top bar (`POST
 /api/dashboard/publish-notion`) exports the currently cached dashboard as a
-new Notion page titled `Product Ops <date>` (`<date>` is today's date in
+new Notion page titled `EPD Report <date>` (`<date>` is today's date in
 Pacific time - `product_status/notion_report.py:_PACIFIC` - not UTC), created
 as a sub-page of the workspace's [Product Ops Reports](https://app.notion.com/p/stellic/Product-Ops-Reports-3be9dd09f473806c875bc8356f5c71a4)
 page. It uses whatever's already cached per squad rather than forcing a
 fresh Linear pull - hit a squad's own Update button first if you want the
 export to reflect the very latest data.
 
-The **Skip sprint data** checkbox next to the button (sent as the
-`skip_sprint_data` query param) omits each squad's Previous Sprint section
-entirely and reduces Current Sprint to just its heading plus a commentary
-callout - useful for weeks where sprint stats aren't the focus of the
-write-up.
+The **Sprint data** and **Only Star Projects** checkboxes in the top bar
+(see "Top bar checkboxes" above) are sent along as the `skip_sprint_data`
+(inverted - unchecking **Sprint data** sends `skip_sprint_data=true`) and
+`only_star_projects` query params, controlling the Notion export as
+described below.
 
-Structure of the generated page (`product_status/notion_report.py`):
+Structure of the generated page (`product_status/notion_report.py`) with
+both checkboxes checked (**Sprint data** checked shows the Previous Sprint
+section below; **Only Star Projects** checked shows just the labeled set,
+without the "Other Projects" toggle) - both are unchecked by default, see
+"Top bar checkboxes" above:
 
 ```
-Product Ops <date>                    (page)
+EPD Report <date>                     (page)
+  🤖 Report automatically generated from Linear...   (callout - standing
+                                        disclaimer, shown once at the top)
   <Team name>                         (bulleted link, one per squad - table of contents)
   ...
   <Team name>                         (heading_2, one per squad)
-    Projects                          (heading_3)
-      Star Project (Projects with label "<label>")  (bold paragraph)
-        <project name> (<status>)    (toggle, one per project - status shown
-                                       in the title, visible without expanding)
+    Projects with label "<label>"  Learn more   (heading_3 - title and
+                                        content shift based on Only Star
+                                        Projects; when unchecked, heading
+                                        reverts to "Projects", the Star
+                                        Project set is still shown directly,
+                                        and every other current-quarter
+                                        project is collapsed under an
+                                        "Other Projects" toggle heading.
+                                        "Learn more" links to the team's
+                                        guidelines doc)
+        <project name> (<status>, Last Update: <health>)   (toggle, one per
+                                       project - status and latest update's
+                                       health both shown in the title,
+                                       visible without expanding)
           status  ·  dates
           Milestone / Due Date / Status table (canonical milestones only, see below)
-          📁 Last update by <author> · <date> · <health> - <body>   (callout)
-          💡 Additional commentary from PL/TL/Designer:     (callout - for manual notes)
-      Other projects (<quarter>)      (bold paragraph)
-        ...same per-project structure, for projects not labeled "For
-           Summit" but starting/due in the current quarter...
-    Quality                           (heading_3)
-      ...same 4-row Metric/Value/Goal table, colored by threshold...
-      💡 Additional commentary from PL/TL/Designer:
-    Current Sprint                    (heading_3)
+          📁 Last update by <author> · <date> (<n> days ago) · <health> - <body>   (callout)
+          💡 Additional commentary from PL/TL/Designer:     (callout, bold - for manual notes)
+      Other Projects                    (toggle heading_4 - only when Only
+                                          Star Projects is unchecked; same
+                                          per-project toggle structure above)
+      Other Asks                        (toggle heading_4 - always shown,
+                                          right after "Other Projects")
+        Asks / Goal / Status/Outcome / Commentary/analysis table - blank,
+        filled in by hand
+    Quality  Learn more               (heading_3 - "Learn more" as above)
+      - Currently out of SLA: Open bugs that have breached SLA.
+      - Failed SLA this month: Bugs that were fixed this month after they
+        had breached their SLA
+      Metric / Goal / Value / Notes table, colored by threshold - "Notes"
+      is a blank column for jotting notes directly in the table (no
+      separate commentary callout for this section)
+    Previous Sprint                   (heading_3 - dropped entirely when
+                                        Sprint data is unchecked; there's no
+                                        "Current Sprint" section anymore)
       ...status summary line, then the same per-assignee table...
-      💡 Additional commentary from PL/TL/Designer:
-    Previous Sprint                   (heading_3)
-      ...status summary line, then the same per-assignee table...
-      💡 Additional commentary from PL/TL/Designer:
+      💡 Additional commentary from PL/TL/Designer:     (bold)
+    Kudos                             (heading_3)
+      Name / Contribution / Why it matters table - blank, filled in by hand
+    Dependency/Availability  Learn more   (heading_3 - "Learn more" as above)
+      (blank paragraph - filled in by hand)
 ```
 
 Section content sits as plain siblings after its `heading_3` rather than
 nested under it - Notion headings can't have children unless they're
-*toggleable* headings. The table of contents at the top only links to each
-squad's `heading_2` (not the `heading_3` sub-sections): since Notion's
-built-in table-of-contents block can't be filtered by heading level, it's
-built manually - one bulleted item per squad, created as a placeholder and
-then patched with a `#<block-id>` link once that squad's `heading_2` block
-exists.
+*toggleable* headings. "Other Projects" and "Other Asks" are the exception:
+they're `heading_4` blocks with `is_toggleable: true` set
+(`product_status/notion_report.py:toggle_heading`), so their content
+collapses into them the way a regular toggle's would, while still showing
+up as a heading in Notion's block hierarchy. The table of contents at the
+top only links to each squad's `heading_2` (not the `heading_3`
+sub-sections): since Notion's built-in table-of-contents block can't be
+filtered by heading level, it's built manually - one bulleted item per
+squad, created as a placeholder and then patched with a `#<block-id>` link
+once that squad's `heading_2` block exists.
+
+**"Learn more" links** on the Projects, Quality, and Dependency/Availability
+headings point at anchors inside the team's "Engineering Reviews: Some
+Guidelines" Notion doc (`product_status/notion_report.py:LEARN_MORE_URL_PROJECTS`/
+`LEARN_MORE_URL_QUALITY`/`LEARN_MORE_URL_DEPENDENCY`).
+
+**Column widths:** the Notion API has no way to make the Kudos table's
+"Contribution"/"Why it matters" columns wider than "Name" - per-column
+width on a plain `table` block isn't exposed by the API (only `width_ratio`
+for side-by-side page *columns*, and a `width` in pixels for full Notion
+*database* views - neither applies to a basic table block). Resize those
+columns by hand in the Notion UI after publishing if you want them wider.
 
 This calls the Notion REST API directly (`product_status/notion_client.py`,
 `notion_oauth.py`) - it does not use Notion MCP tools, since this runs from
@@ -346,7 +425,7 @@ product_status/
   cache.py             # on-disk JSON cache keyed by age (used by the dashboard, 24h default)
   notion_client.py      # raw Notion REST API client (auth, retries, nested block creation)
   notion_oauth.py       # Notion OAuth ("public connection") flow - no workspace-owner permission needed
-  notion_report.py      # builds the "Product Ops <date>" Notion page from dashboard data
+  notion_report.py      # builds the "EPD Report <date>" Notion page from dashboard data
   cli.py             # command-line entry point (rich tables or --json)
   server.py           # FastAPI service for on-demand HTTP queries + the dashboard
   static/              # dashboard web UI (plain HTML/CSS/JS, no build step)

@@ -56,8 +56,7 @@ def find_team(client: LinearClient, team_name: str) -> Optional[Dict[str, Any]]:
 
 def fetch_team_projects(client: LinearClient, team_id: str) -> List[Dict[str, Any]]:
     """Non-archived projects accessible to (shared with) this team that also
-    have a start or target date in the current calendar quarter (same
-    quarter window as the dashboard's "Other projects" group - see
+    have a start or target date in the current calendar quarter (see
     `projects.quarter_bounds`) - keeps `--add-tracked-milestones` scoped to
     projects actually being planned/delivered right now, rather than every
     project the team has ever touched."""

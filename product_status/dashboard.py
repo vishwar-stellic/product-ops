@@ -24,7 +24,7 @@ TEAMS_CACHE_KEY = "dashboard-teams"
 # updates are included changes) so same-day cache hits don't silently keep
 # serving stale results computed under the old logic - see
 # `cache.get_or_refresh`'s `version` parameter.
-SQUAD_CACHE_VERSION = 8
+SQUAD_CACHE_VERSION = 10
 
 
 def squad_cache_key(team_key: str) -> str:
@@ -76,7 +76,6 @@ def build_squad_data(
     return {
         "team": {"id": team["id"], "key": team["key"], "name": team["name"]},
         "summitLabel": projects_report["summitLabel"],
-        "quarterLabel": projects_report["quarterLabel"],
         "summitProjects": _for_team(projects_report["summitProjects"]),
         "otherProjects": _for_team(projects_report["otherProjects"]),
         "currentSprint": build_current_sprint(client, team),

@@ -129,7 +129,9 @@ def fetch_projects_in_quarter(
     client: LinearClient, quarter_start: str, quarter_end: str
 ) -> List[Dict[str, Any]]:
     """All non-archived projects with a start date or target date falling in
-    the given quarter (`quarter_end` exclusive) - either one counts."""
+    the given quarter (`quarter_end` exclusive) - either one counts. Used to
+    build the dashboard's "Other Projects" bucket (see
+    `build_dashboard_projects_report`)."""
     return fetch_projects(
         client,
         {
@@ -256,9 +258,10 @@ def build_dashboard_projects_report(
 
     - `summitProjects` - projects carrying the `summit_label` label (e.g.
       "Star Project").
-    - `otherProjects` - projects *not* carrying that label, but with a start
-      or target date in the current calendar quarter. Lets each squad also
-      see what else is planned/landing this quarter beyond the labeled set.
+    - `otherProjects` - projects *not* carrying that label, but with a
+      start or target date in the current calendar quarter. The Notion
+      export shows these collapsed under a single "Other Projects" toggle
+      so the Star-labeled set stays the primary focus.
 
     A project that's both labeled and in the current quarter is only
     counted once, under `summitProjects` (the explicit label wins).
@@ -283,9 +286,6 @@ def build_dashboard_projects_report(
     return {
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "summitLabel": summit_label,
-        "quarterLabel": quarter_label(),
-        "quarterStart": quarter_start,
-        "quarterEnd": quarter_end,
         "summitProjects": summit_projects,
         "otherProjects": other_projects,
     }

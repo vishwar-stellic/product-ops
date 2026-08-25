@@ -2,6 +2,11 @@ const state = {
   summitLabel: "",
   squadsByKey: new Map(),
   collapsed: new Set(),
+  // Mirror the two checkboxes in the top bar - the web view renders exactly
+  // what would be published to Notion given their current state (see
+  // `renderAll`), rather than these only affecting the Notion export.
+  showSprintData: false,
+  onlyStarProjects: false,
 };
 
 // Canonical project lifecycle milestones - the milestones table only shows
@@ -38,8 +43,8 @@ const els = {
   notionDisconnectBtn: document.getElementById("notion-disconnect-btn"),
   notionConnectLink: document.getElementById("notion-connect-link"),
   notionBtn: document.getElementById("notion-btn"),
-  skipSprintLabel: document.getElementById("skip-sprint-label"),
-  skipSprintCheckbox: document.getElementById("skip-sprint-checkbox"),
+  sprintDataCheckbox: document.getElementById("sprint-data-checkbox"),
+  onlyStarProjectsCheckbox: document.getElementById("only-star-projects-checkbox"),
   squadsContainer: document.getElementById("squads-container"),
   loadingState: document.getElementById("loading-state"),
 };
@@ -84,6 +89,19 @@ function formatRelativeTime(epochSeconds) {
 
 function isStale(fetchedAt) {
   return Date.now() / 1000 - fetchedAt > 24 * 60 * 60;
+}
+
+// "(<n> days ago)"-style text for a project update's `createdAt` - mirrors
+// `notion_report.py:_relative_days_ago`. Day-granularity (not hours/minutes)
+// to match how the Notion export reads.
+function formatRelativeDays(isoString) {
+  if (!isoString) return "";
+  const created = new Date(isoString);
+  if (Number.isNaN(created.getTime())) return "";
+  const diffDays = Math.floor((Date.now() - created.getTime()) / (24 * 60 * 60 * 1000));
+  if (diffDays <= 0) return "today";
+  if (diffDays === 1) return "1 day ago";
+  return `${diffDays} days ago`;
 }
 
 // Keeps each squad header docked directly below the (sticky) topbar - see
@@ -150,6 +168,8 @@ function renderLastUpdate(lastUpdate) {
   // escaped text render as-is without needing `<br>` tags.
   const bodyHtml = bodyText ? escapeHtml(bodyText) : '<span class="empty-note">No update content.</span>';
   const dateTitle = lastUpdate.createdAt ? new Date(lastUpdate.createdAt).toLocaleString() : "";
+  const relative = formatRelativeDays(lastUpdate.createdAt);
+  const dateText = relative ? `${formatDate(lastUpdate.createdAt)} (${relative})` : formatDate(lastUpdate.createdAt);
 
   return `
     <div class="last-update">
@@ -158,7 +178,7 @@ function renderLastUpdate(lastUpdate) {
         <span class="status-badge ${healthBadgeClass(lastUpdate.health)}">${escapeHtml(
     lastUpdate.healthLabel || "—"
   )}</span>
-        <span class="last-update-date" title="${escapeHtml(dateTitle)}">${formatDate(lastUpdate.createdAt)}</span>
+        <span class="last-update-date" title="${escapeHtml(dateTitle)}">${escapeHtml(dateText)}</span>
       </div>
       <div class="last-update-body">${bodyHtml}</div>
     </div>`;
@@ -192,47 +212,65 @@ function renderProjectCard(project) {
     </div>`;
 }
 
-function renderProjectGroup(title, badge, projects, emptyNote) {
-  const body = projects.length
+function renderProjectGroupBody(projects, emptyNote) {
+  return projects.length
     ? `<div class="squad-grid">${projects.map(renderProjectCard).join("")}</div>`
     : `<p class="empty-note">${escapeHtml(emptyNote)}</p>`;
+}
 
+function renderProjectGroup(title, badge, projects, emptyNote) {
   return `
     <div class="project-group">
       <h4 class="project-group-title">${escapeHtml(title)}${
     badge ? ` <span class="label-badge">${escapeHtml(badge)}</span>` : ""
   }</h4>
-      ${body}
+      ${renderProjectGroupBody(projects, emptyNote)}
     </div>`;
 }
 
-function renderProjectsBlock(squad, summitLabel) {
+// Mirrors `notion_report.py:build_team_blocks` / `_project_content`: when
+// `onlyStarProjects` is set, the block title itself states the label and
+// only that group is shown (no separate subtitle needed); otherwise the
+// title reverts to the generic "Projects", the Star Project group is shown
+// under its own subtitle, and every other current-quarter project is shown
+// under an "Other Projects" subtitle (collapsed into a toggle heading in
+// the Notion export).
+function renderProjectsBlock(squad, summitLabel, onlyStarProjects) {
   const summitProjects = squad.summitProjects || [];
   const otherProjects = squad.otherProjects || [];
-  const quarterLabel = squad.quarterLabel || "this quarter";
 
-  const groups =
-    renderProjectGroup(
-      "Star Project",
-      `Projects with label "${summitLabel}"`,
-      summitProjects,
-      `No projects tagged "${summitLabel}" for this squad.`
-    ) +
-    renderProjectGroup(
-      "Other projects",
-      quarterLabel,
-      otherProjects,
-      `No other projects starting or due in ${quarterLabel} for this squad.`
-    );
+  const title = onlyStarProjects ? `Projects with label "${summitLabel}"` : "Projects";
+  const groups = onlyStarProjects
+    ? renderProjectGroupBody(summitProjects, `No projects tagged "${summitLabel}" for this squad.`)
+    : renderProjectGroup(
+        "Star Project",
+        `Projects with label "${summitLabel}"`,
+        summitProjects,
+        `No projects tagged "${summitLabel}" for this squad.`
+      ) + renderProjectGroup("Other Projects", null, otherProjects, "No other projects for this squad.");
 
   return `
     <div class="squad-block">
-      <h3 class="block-title">Projects</h3>
+      <h3 class="block-title">${escapeHtml(title)}</h3>
       ${groups}
     </div>`;
 }
 
 // ---- Quality ----
+
+// Mirrors `notion_report.py:_QUALITY_DEFINITIONS` - shown above the table
+// so readers don't have to guess what these two rows mean.
+const QUALITY_DEFINITIONS = [
+  ["Currently out of SLA", "Open bugs that have breached SLA."],
+  ["Failed SLA this month", "Bugs that were fixed this month after they had breached their SLA"],
+];
+
+function renderQualityDefinitions() {
+  const items = QUALITY_DEFINITIONS.map(
+    ([label, text]) => `<li><strong>${escapeHtml(label)}:</strong> ${escapeHtml(text)}</li>`
+  ).join("");
+  return `<ul class="quality-definitions">${items}</ul>`;
+}
 
 function renderQualityBlock(quality) {
   if (!quality) {
@@ -252,6 +290,9 @@ function renderQualityBlock(quality) {
     },
     { label: "Currently Out of SLA", value: quality.currentlyOutOfSla },
     { label: "Failed SLA This Month", value: quality.failedSlaThisMonth },
+    { label: "Currently Active High Bugs", value: quality.currentlyActiveHighBugs },
+    // No data pull for this one - always blank, filled in by hand.
+    { label: "Number of bugs because of missing tests", value: "" },
     {
       label: "Incoming Bugs with High or Urgent priority this month",
       value: quality.incomingHighUrgentThisMonth,
@@ -278,6 +319,7 @@ function renderQualityBlock(quality) {
   return `
     <div class="squad-block">
       <h3 class="block-title">Quality</h3>
+      ${renderQualityDefinitions()}
       <table class="data-table">
         <tbody>${body}</tbody>
       </table>
@@ -425,12 +467,27 @@ function renderPreviousSprintBlock(sprint) {
     </div>`;
 }
 
+// Mirrors `notion_report.py:build_team_blocks` when `skip_sprint_data` is
+// set: Current Sprint keeps its heading but drops all stats/table, and
+// Previous Sprint is omitted entirely (no heading either).
+function renderSprintDataHiddenBlock() {
+  return `
+    <div class="squad-block">
+      <h3 class="block-title">Current sprint</h3>
+      <p class="empty-note">Sprint data hidden.</p>
+    </div>`;
+}
+
 // ---- Squad section ----
 
-function renderSquadSection(squad, summitLabel) {
+function renderSquadSection(squad, summitLabel, showSprintData, onlyStarProjects) {
   const teamKey = squad.team.key;
   const collapsed = state.collapsed.has(teamKey);
   const stale = isStale(squad.fetchedAt);
+
+  const sprintBlocks = showSprintData
+    ? `${renderCurrentSprintBlock(squad.currentSprint)}${renderPreviousSprintBlock(squad.previousSprint)}`
+    : renderSprintDataHiddenBlock();
 
   return `
     <section class="squad-section${collapsed ? " collapsed" : ""}" data-team-key="${escapeHtml(
@@ -453,17 +510,16 @@ function renderSquadSection(squad, summitLabel) {
         </div>
       </div>
       <div class="squad-body${collapsed ? " hidden" : ""}" data-team-key="${escapeHtml(teamKey)}">
-        ${renderProjectsBlock(squad, summitLabel)}
+        ${renderProjectsBlock(squad, summitLabel, onlyStarProjects)}
         ${renderQualityBlock(squad.quality)}
-        ${renderCurrentSprintBlock(squad.currentSprint)}
-        ${renderPreviousSprintBlock(squad.previousSprint)}
+        ${sprintBlocks}
       </div>
     </section>`;
 }
 
 function renderAll() {
   els.squadsContainer.innerHTML = Array.from(state.squadsByKey.values())
-    .map((squad) => renderSquadSection(squad, state.summitLabel))
+    .map((squad) => renderSquadSection(squad, state.summitLabel, state.showSprintData, state.onlyStarProjects))
     .join("");
 }
 
@@ -546,7 +602,7 @@ async function refreshSquad(teamKey) {
     const squad = await res.json();
     state.squadsByKey.set(teamKey, squad);
     if (section) {
-      section.outerHTML = renderSquadSection(squad, state.summitLabel);
+      section.outerHTML = renderSquadSection(squad, state.summitLabel, state.showSprintData, state.onlyStarProjects);
     }
   } catch (err) {
     showError(`Couldn't update ${teamKey}: ${err.message}`);
@@ -566,7 +622,6 @@ async function loadNotionStatus() {
     const connected = Boolean(status.connected);
     els.notionConnectLink.classList.toggle("hidden", connected);
     els.notionBtn.classList.toggle("hidden", !connected);
-    els.skipSprintLabel.classList.toggle("hidden", !connected);
     els.notionDisconnectBtn.classList.toggle("hidden", !connected);
     if (connected) {
       els.notionStatus.textContent = `Notion: ${status.workspaceName || "connected"}`;
@@ -614,10 +669,12 @@ async function publishToNotion() {
   els.notionBtn.disabled = true;
   els.notionBtn.innerHTML = '<span class="spinner"></span><span class="btn-label">Publishing…</span>';
   try {
-    const skipSprintData = els.skipSprintCheckbox.checked;
-    const res = await fetch(`/api/dashboard/publish-notion?skip_sprint_data=${skipSprintData}`, {
-      method: "POST",
-    });
+    const skipSprintData = !state.showSprintData;
+    const onlyStarProjects = state.onlyStarProjects;
+    const res = await fetch(
+      `/api/dashboard/publish-notion?skip_sprint_data=${skipSprintData}&only_star_projects=${onlyStarProjects}`,
+      { method: "POST" }
+    );
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       throw new Error(body.detail || `Request failed (${res.status})`);
@@ -639,6 +696,19 @@ async function publishToNotion() {
 }
 
 els.notionBtn.addEventListener("click", publishToNotion);
+
+// Both checkboxes drive the web view's own rendering (see `renderAll`), not
+// just what gets sent to Notion - so toggling either immediately re-renders
+// every squad already loaded, no refetch needed.
+els.sprintDataCheckbox.addEventListener("change", () => {
+  state.showSprintData = els.sprintDataCheckbox.checked;
+  renderAll();
+});
+
+els.onlyStarProjectsCheckbox.addEventListener("change", () => {
+  state.onlyStarProjects = els.onlyStarProjectsCheckbox.checked;
+  renderAll();
+});
 
 // Event delegation: squad sections are re-rendered/replaced individually,
 // so listeners live on the (stable) container instead of per-section.
