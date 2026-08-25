@@ -24,8 +24,11 @@ Structure (see README "Publish to Notion" section):
                                                LEARN_MORE_URL_PROJECTS)
             <Project name> (<status>,        (toggle, one per project - status
              Last Update: <health>)           and latest update's health both
-                                               shown in the title so they're
-                                               visible without expanding)
+                                               shown in the title, colored to
+                                               match their badges elsewhere
+                                               (_STATUS_COLORS/_HEALTH_COLORS),
+                                               so they're visible without
+                                               expanding)
               ...status / dates / milestones table...
               📁 Last update by <author> · <date> (<n> days ago) · <health> - <body>
               Callout: "Additional commentary from PL/TL/Designer:"  (bold)
@@ -249,6 +252,23 @@ def _health_color(health: Optional[str]) -> Optional[str]:
     return _HEALTH_COLORS.get(health)
 
 
+# Mirrors the web dashboard's `statusBadgeClass`/`.status-*` colors
+# (`product_status/static/app.js`, `style.css`) so a project's status reads
+# the same way in both places.
+_STATUS_COLORS = {
+    "backlog": "gray",
+    "planned": "yellow",
+    "started": "blue",
+    "completed": "green",
+    "canceled": "red",
+    "paused": "yellow",
+}
+
+
+def _status_color(status_type: Optional[str]) -> str:
+    return _STATUS_COLORS.get(status_type, "gray")
+
+
 # ---- Per-block-type content -------------------------------------------------
 
 
@@ -309,9 +329,17 @@ def _project_toggles(projects: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         last_update_status = (last_update.get("healthLabel") if last_update else None) or "—"
         title_runs = [
             rich_text(project["name"], bold=True, link=project.get("url")),
+            rich_text(" (", bold=True),
             rich_text(
-                f" ({project.get('status') or '—'}, Last Update: {last_update_status})", bold=True
+                project.get("status") or "—", bold=True, color=_status_color(project.get("statusType"))
             ),
+            rich_text(", Last Update: ", bold=True),
+            rich_text(
+                last_update_status,
+                bold=True,
+                color=_health_color(last_update.get("health")) if last_update else None,
+            ),
+            rich_text(")", bold=True),
         ]
         project_toggles.append(toggle(title_runs, children))
     return project_toggles

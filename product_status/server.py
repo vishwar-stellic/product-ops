@@ -25,9 +25,11 @@ Endpoints:
                                           (?skip_sprint_data=true to omit
                                           Previous Sprint and reduce Current
                                           Sprint to just a heading + callout;
-                                          ?only_star_projects=false to also
-                                          include the quarter-based "Other
-                                          projects" group, default true)
+                                          ?only_star_projects=true to omit
+                                          the quarter-based "Other projects"
+                                          group; both default to false.
+                                          ?demo_run=true to only publish the
+                                          "Progress" squad, default false)
     GET  /api/notion/status       -> whether Notion is connected (OAuth) and
                                       to which workspace
     POST /api/notion/disconnect   -> forget the stored Notion OAuth token
@@ -219,6 +221,10 @@ def dashboard_publish_notion(
         default=False,
         description='Only include projects labeled "Star Project" - omits the "Other Projects" group',
     ),
+    demo_run: bool = Query(
+        default=False,
+        description='Only publish the "Progress" squad - for trying out the export without writing every squad',
+    ),
 ):
     """Publish the currently cached dashboard to Notion as a new
     "EPD Report <date>" sub-page (see `notion_report.py`). Uses whatever
@@ -227,6 +233,8 @@ def dashboard_publish_notion(
     the very latest data."""
     try:
         teams = _get_dashboard_teams()
+        if demo_run:
+            teams = [t for t in teams if t["key"].upper() == "PROG"]
         dashboard_data = {"summitLabel": DEFAULT_SUMMIT_LABEL, "squads": [_get_squad(t, force=False) for t in teams]}
         return publish_dashboard_to_notion(
             dashboard_data, skip_sprint_data=skip_sprint_data, only_star_projects=only_star_projects

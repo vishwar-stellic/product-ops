@@ -7,6 +7,9 @@ const state = {
   // `renderAll`), rather than these only affecting the Notion export.
   showSprintData: false,
   onlyStarProjects: false,
+  // Only affects the Notion export (see `publishToNotion`) - the web view
+  // always shows every squad regardless of this checkbox.
+  demoRun: false,
 };
 
 // Canonical project lifecycle milestones - the milestones table only shows
@@ -45,6 +48,7 @@ const els = {
   notionBtn: document.getElementById("notion-btn"),
   sprintDataCheckbox: document.getElementById("sprint-data-checkbox"),
   onlyStarProjectsCheckbox: document.getElementById("only-star-projects-checkbox"),
+  demoRunCheckbox: document.getElementById("demo-run-checkbox"),
   squadsContainer: document.getElementById("squads-container"),
   loadingState: document.getElementById("loading-state"),
 };
@@ -671,8 +675,9 @@ async function publishToNotion() {
   try {
     const skipSprintData = !state.showSprintData;
     const onlyStarProjects = state.onlyStarProjects;
+    const demoRun = state.demoRun;
     const res = await fetch(
-      `/api/dashboard/publish-notion?skip_sprint_data=${skipSprintData}&only_star_projects=${onlyStarProjects}`,
+      `/api/dashboard/publish-notion?skip_sprint_data=${skipSprintData}&only_star_projects=${onlyStarProjects}&demo_run=${demoRun}`,
       { method: "POST" }
     );
     if (!res.ok) {
@@ -708,6 +713,12 @@ els.sprintDataCheckbox.addEventListener("change", () => {
 els.onlyStarProjectsCheckbox.addEventListener("change", () => {
   state.onlyStarProjects = els.onlyStarProjectsCheckbox.checked;
   renderAll();
+});
+
+// Demo run only affects what `publishToNotion` sends - it doesn't change
+// the web view, so no re-render here.
+els.demoRunCheckbox.addEventListener("change", () => {
+  state.demoRun = els.demoRunCheckbox.checked;
 });
 
 // Event delegation: squad sections are re-rendered/replaced individually,

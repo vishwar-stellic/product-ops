@@ -220,11 +220,12 @@ collapse/expand its section. Each squad's section has, in order:
 Both are replaced with a single "Sprint data hidden." note when the
 **Sprint data** checkbox (see below) is unchecked.
 
-**Top bar checkboxes** — these two checkboxes control the web view's own
-rendering (re-rendering everything already loaded, no refetch needed), and
-are also sent to **Publish to Notion** as the `skip_sprint_data`/
-`only_star_projects` query params (`product_status/static/app.js:renderAll`,
-mirrored in `product_status/notion_report.py:build_team_blocks`):
+**Top bar checkboxes** — the first two control the web view's own rendering
+(re-rendering everything already loaded, no refetch needed), and are also
+sent to **Publish to Notion** as the `skip_sprint_data`/`only_star_projects`
+query params (`product_status/static/app.js:renderAll`, mirrored in
+`product_status/notion_report.py:build_team_blocks`); the third only
+affects the Notion export:
 - **Sprint data** *(unchecked by default)* — on the web page, check to show
   Current Sprint and Previous Sprint; unchecked (the default) collapses
   Current Sprint down to just its heading + a "Sprint data hidden." note,
@@ -237,6 +238,11 @@ mirrored in `product_status/notion_report.py:build_team_blocks`):
   other current-quarter project, under an "Other Projects" group (both on
   the web page and, collapsed into a toggle heading, in the Notion
   export).
+- **Demo run** *(unchecked by default)* — only affects **Publish to
+  Notion**: check to only publish the "Progress" squad (`?demo_run=true` on
+  `/api/dashboard/publish-notion` - `product_status/server.py`), instead of
+  every squad on the dashboard. Handy for trying out the export without
+  writing every team's data to Notion.
 
 Note the web page still shows its own Current/Previous Sprint blocks
 either way - only the Notion export has fully replaced "Current Sprint"
@@ -280,7 +286,9 @@ The **Sprint data** and **Only Star Projects** checkboxes in the top bar
 (see "Top bar checkboxes" above) are sent along as the `skip_sprint_data`
 (inverted - unchecking **Sprint data** sends `skip_sprint_data=true`) and
 `only_star_projects` query params, controlling the Notion export as
-described below.
+described below. **Demo run** is sent as `demo_run` and only changes *which
+squads* get published (just "Progress" instead of all of them) - it
+doesn't change the structure of the page itself.
 
 Structure of the generated page (`product_status/notion_report.py`) with
 both checkboxes checked (**Sprint data** checked shows the Previous Sprint
