@@ -131,10 +131,19 @@ tab bar just below the header (`product_status/static/index.html`) splits
 the site into separate capabilities, each its own tab:
 
 - **EPD Report** — everything described below: squads, projects, quality,
-  sprints, and Publish to Notion. The only tab with real content today.
-- **Sprint Report** and **Project Milestones** — placeholders for now (no
-  content yet); see `#tab-sprint-report`/`#tab-project-milestones` in
-  `index.html` and `switchTab()` in `app.js` for how tabs are wired up.
+  sprints, and Publish to Notion.
+- **Sprint Report** — one table per squad for the *current* sprint only:
+  one row per team member with their **Assigned**, **Completed**, and
+  **Added mid-cycle** counts (`product_status/static/app.js:renderSprintReportTab`).
+  Reuses the same per-squad data already loaded for the EPD Report tab
+  (`state.squadsByKey`), so it needs no separate fetch or cache - "Added
+  mid-cycle" comes from the same per-issue history walk used for the
+  Previous Sprint section's own "Added mid-cycle" column (see
+  `product_status/issues.py:fetch_added_during_cycle`), just applied to the
+  active cycle instead (`product_status/report.py:build_current_sprint`).
+- **Project Milestones** — placeholder for now (no content yet); see
+  `#tab-project-milestones` in `index.html` and `switchTab()` in `app.js`
+  for how tabs are wired up.
 
 The **EPD Report** tab is organized as one section per squad — Progress,
 Plan, Care, Explore, Platform, Integration, and DevX
@@ -220,30 +229,20 @@ section. Each squad's section has, in order:
    a limit of **10**; every other squad gets **5**
    (`product_status/quality.py:HIGH_VOLUME_QUALITY_TEAMS`/
    `HIGH_VOLUME_QUALITY_THRESHOLD`/`DEFAULT_QUALITY_THRESHOLD`).
-3. **Current sprint** — a status-totals summary line (issue count per
-   status, summed across assignees), then a table of assignees with total
-   issues and status breakdown.
-4. **Previous sprint** — a totals summary line (assigned / completed /
-   moved to next / removed / added mid-cycle, summed across assignees),
-   then a table of the same counts broken out by assignee.
+3. **Current sprint** and **Previous sprint** — still fetched per squad
+   (issue counts and assignee breakdowns), but always hidden: the section
+   collapses to just the "Current sprint" heading plus a "Sprint data
+   hidden." note, with no checkbox to reveal it (`showSprintData` is a
+   permanent `false` in `product_status/static/app.js`). This mirrors the
+   Notion export, which never includes sprint data either - see "Publish to
+   Notion" below.
 
-Both are replaced with a single "Sprint data hidden." note when the
-**Sprint data** checkbox (see below) is unchecked.
-
-**EPD Report toolbar checkboxes** — the first two control the web view's own
+**EPD Report toolbar checkboxes** — these control the web view's own
 rendering (re-rendering everything already loaded, no refetch needed), and
-are also sent to **Publish to Notion** as the
-`skip_sprint_data`/`only_star_projects` query params
-(`product_status/static/app.js:renderAll`, mirrored in
-`product_status/notion_report.py:build_team_blocks`); the third only
-affects the Notion export:
-- **Sprint data** *(unchecked by default)* — on the web page, check to show
-  Current Sprint and Previous Sprint; unchecked (the default) collapses
-  Current Sprint down to just its heading + a "Sprint data hidden." note,
-  and drops Previous Sprint entirely. In the Notion export there's no
-  separate "Current Sprint" section to collapse (see "Publish to Notion"
-  below) - unchecked there just drops the "Previous Sprint" section
-  entirely.
+**Only Star Projects** is also sent to **Publish to Notion** as the
+`only_star_projects` query param (`product_status/static/app.js:renderAll`,
+mirrored in `product_status/notion_report.py:build_team_blocks`); **Demo
+run** only affects the Notion export:
 - **Only Star Projects** *(unchecked by default)* — check to hide every
   non-"Star Project" project; unchecked (the default) also shows every
   other current-quarter project, under an "Other Projects" group (both on
@@ -254,11 +253,6 @@ affects the Notion export:
   `/api/dashboard/publish-notion` - `product_status/server.py`), instead of
   every squad on the dashboard. Handy for trying out the export without
   writing every team's data to Notion.
-
-Note the web page still shows its own Current/Previous Sprint blocks
-either way - only the Notion export has fully replaced "Current Sprint"
-with the Kudos/Dependency-Availability sections below, so the two surfaces
-aren't a byte-for-byte match on the sprint section anymore.
 
 Unlike the endpoints above, the dashboard is backed by an **on-disk cache**,
 with one cache file per squad (`.cache/dashboard-squad-<key>.json`) plus one
@@ -293,19 +287,20 @@ page. It uses whatever's already cached per squad rather than forcing a
 fresh Linear pull - hit a squad's own Update button first if you want the
 export to reflect the very latest data.
 
-The **Sprint data** and **Only Star Projects** checkboxes in the EPD Report
-tab (see "EPD Report toolbar checkboxes" above) are sent along as the `skip_sprint_data`
-(inverted - unchecking **Sprint data** sends `skip_sprint_data=true`) and
-`only_star_projects` query params, controlling the Notion export as
+Sprint data is always omitted from the export (`skip_sprint_data=true` is
+always sent - there's no checkbox for it, see "Current sprint"/"Previous
+sprint" above). The **Only Star Projects** checkbox in the EPD Report tab
+(see "EPD Report toolbar checkboxes" above) is sent along as the
+`only_star_projects` query param, controlling the Notion export as
 described below. **Demo run** is sent as `demo_run` and only changes *which
 squads* get published (just "Progress" instead of all of them) - it
 doesn't change the structure of the page itself.
 
 Structure of the generated page (`product_status/notion_report.py`) with
-both checkboxes checked (**Sprint data** checked shows the Previous Sprint
-section below; **Only Star Projects** checked shows just the labeled set,
-without the "Other Projects" toggle) - both are unchecked by default, see
-"EPD Report toolbar checkboxes" above:
+**Only Star Projects** checked (shows just the labeled set, without the
+"Other Projects" toggle - unchecked by default, see "EPD Report toolbar
+checkboxes" above). Sprint data (Previous Sprint) is never included - see
+below:
 
 ```
 EPD Report <date>                     (page)
@@ -346,12 +341,9 @@ EPD Report <date>                     (page)
       Metric / Goal / Value / Notes table, colored by threshold - "Notes"
       is a blank column for jotting notes directly in the table (no
       separate commentary callout for this section)
-    Previous Sprint                   (heading_3 - dropped entirely when
-                                        Sprint data is unchecked; there's no
-                                        "Current Sprint" section anymore)
-      ...status summary line, then the same per-assignee table...
-      💡 Additional commentary from PL/TL/Designer:     (bold)
-    Kudos                             (heading_3)
+    Kudos                             (heading_3 - no "Current Sprint" or
+                                        "Previous Sprint" section anymore;
+                                        sprint data is never published)
       Name / Contribution / Why it matters table - blank, filled in by hand
     Dependency/Availability  Learn more   (heading_3 - "Learn more" as above)
       (blank paragraph - filled in by hand)

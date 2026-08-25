@@ -2,10 +2,13 @@ const state = {
   summitLabel: "",
   squadsByKey: new Map(),
   collapsed: new Set(),
-  // Mirror the two checkboxes in the top bar - the web view renders exactly
-  // what would be published to Notion given their current state (see
-  // `renderAll`), rather than these only affecting the Notion export.
+  // Sprint data is always omitted (both here and in `publishToNotion`) -
+  // there's no checkbox for it anymore, see `renderSprintDataHiddenBlock`.
   showSprintData: false,
+  // Mirrors the "Only Star Projects" checkbox in the EPD Report toolbar -
+  // the web view renders exactly what would be published to Notion given
+  // its current state (see `renderAll`), rather than it only affecting the
+  // Notion export.
   onlyStarProjects: false,
   // Only affects the Notion export (see `publishToNotion`) - the web view
   // always shows every squad regardless of this checkbox.
@@ -46,13 +49,13 @@ const els = {
   notionDisconnectBtn: document.getElementById("notion-disconnect-btn"),
   notionConnectLink: document.getElementById("notion-connect-link"),
   notionBtn: document.getElementById("notion-btn"),
-  sprintDataCheckbox: document.getElementById("sprint-data-checkbox"),
   onlyStarProjectsCheckbox: document.getElementById("only-star-projects-checkbox"),
   demoRunCheckbox: document.getElementById("demo-run-checkbox"),
   squadsContainer: document.getElementById("squads-container"),
   loadingState: document.getElementById("loading-state"),
   tabButtons: document.querySelectorAll(".tab-btn"),
   tabPanels: document.querySelectorAll(".tab-panel"),
+  sprintReportContainer: document.getElementById("sprint-report-container"),
 };
 
 function escapeHtml(value) {
@@ -492,6 +495,72 @@ function renderSprintDataHiddenBlock() {
     </div>`;
 }
 
+// ---- Sprint Report tab ----
+// Reuses the same per-squad data already fetched for the EPD Report tab
+// (`state.squadsByKey`) - one table per team, current sprint only, with
+// each team member's assigned/completed/added-mid-cycle counts.
+
+function renderSprintReportTeam(squad) {
+  const sprint = squad.currentSprint;
+  const teamHeader = `<h2>${escapeHtml(squad.team.name)}</h2>`;
+
+  if (!sprint) {
+    return `
+      <section class="squad-section">
+        <div class="squad-header-static">${teamHeader}</div>
+        <p class="empty-note">No active cycle for this team.</p>
+      </section>`;
+  }
+
+  const { cycle, byAssignee } = sprint;
+  const rows = byAssignee
+    .map(
+      (row) => `
+        <tr>
+          <td>${escapeHtml(row.assignee)}</td>
+          <td class="num">${row.total}</td>
+          <td class="num">${row.completed.count}</td>
+          <td class="num">${row.addedDuringCycle.count}</td>
+        </tr>`
+    )
+    .join("");
+
+  const table = byAssignee.length
+    ? `
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Team member</th>
+            <th class="num">Assigned</th>
+            <th class="num">Completed</th>
+            <th class="num">Added mid-cycle</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>`
+    : '<p class="empty-note">No issues in this cycle.</p>';
+
+  return `
+    <section class="squad-section">
+      <div class="squad-header-static">
+        ${teamHeader}
+        <div class="cycle-meta">
+          <span class="cycle-name">${escapeHtml(cycleDisplayName(cycle))}</span>
+          <span>${formatDate(cycle.startsAt)} → ${formatDate(cycle.endsAt)}</span>
+        </div>
+      </div>
+      ${table}
+    </section>`;
+}
+
+function renderSprintReportTab() {
+  if (!els.sprintReportContainer) return;
+  const squads = Array.from(state.squadsByKey.values());
+  els.sprintReportContainer.innerHTML = squads.length
+    ? squads.map(renderSprintReportTeam).join("")
+    : '<p class="empty-note">Loading…</p>';
+}
+
 // ---- Squad section ----
 
 function renderSquadSection(squad, summitLabel, showSprintData, onlyStarProjects) {
@@ -541,6 +610,7 @@ function render(data) {
   state.summitLabel = data.summitLabel;
   state.squadsByKey = new Map(data.squads.map((squad) => [squad.team.key, squad]));
   renderAll();
+  renderSprintReportTab();
   els.loadingState.classList.add("hidden");
 }
 
@@ -618,6 +688,7 @@ async function refreshSquad(teamKey) {
     if (section) {
       section.outerHTML = renderSquadSection(squad, state.summitLabel, state.showSprintData, state.onlyStarProjects);
     }
+    renderSprintReportTab();
   } catch (err) {
     showError(`Couldn't update ${teamKey}: ${err.message}`);
     if (btn) {
@@ -718,14 +789,9 @@ async function publishToNotion() {
 
 els.notionBtn.addEventListener("click", publishToNotion);
 
-// Both checkboxes drive the web view's own rendering (see `renderAll`), not
-// just what gets sent to Notion - so toggling either immediately re-renders
-// every squad already loaded, no refetch needed.
-els.sprintDataCheckbox.addEventListener("change", () => {
-  state.showSprintData = els.sprintDataCheckbox.checked;
-  renderAll();
-});
-
+// Drives the web view's own rendering (see `renderAll`), not just what gets
+// sent to Notion - so toggling it immediately re-renders every squad
+// already loaded, no refetch needed.
 els.onlyStarProjectsCheckbox.addEventListener("change", () => {
   state.onlyStarProjects = els.onlyStarProjectsCheckbox.checked;
   renderAll();

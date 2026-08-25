@@ -22,12 +22,15 @@ Endpoints:
     POST /api/dashboard/publish-notion -> publish the (currently cached)
                                           dashboard to Notion as a new
                                           "EPD Report <date>" sub-page
-                                          (?skip_sprint_data=true to omit
-                                          Previous Sprint and reduce Current
-                                          Sprint to just a heading + callout;
-                                          ?only_star_projects=true to omit
-                                          the quarter-based "Other projects"
-                                          group; both default to false.
+                                          (skip_sprint_data always defaults
+                                          to true - there's no dashboard
+                                          control for it, sprint data is
+                                          never published; pass
+                                          ?skip_sprint_data=false directly
+                                          against this endpoint to include
+                                          it anyway. ?only_star_projects=true
+                                          to omit the quarter-based "Other
+                                          projects" group, default false.
                                           ?demo_run=true to only publish the
                                           "Progress" squad, default false)
     GET  /api/notion/status       -> whether Notion is connected (OAuth) and

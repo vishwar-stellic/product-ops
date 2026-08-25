@@ -1,4 +1,9 @@
-"""Assembles the current + previous sprint report for every team."""
+"""Assembles the current + previous sprint report for every team.
+
+Each current-sprint assignee row includes `completed` (issues already in a
+`completed`-type state) and `addedDuringCycle` (issues added to the cycle
+after it started) counts alongside `total` (assigned) - these back the
+Sprint Report tab's per-team table (`product_status/static/app.js`)."""
 
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -58,6 +63,15 @@ def build_current_sprint(client: LinearClient, team: Dict[str, Any]) -> Optional
         return None
 
     issues = fetch_cycle_issues(client, active_cycle["id"])
+    # Same "was this issue added after the cycle started" check used for the
+    # previous sprint's "Added mid-cycle" column - walks each issue's history
+    # for when it entered this cycle (see `issues.fetch_added_during_cycle`).
+    added_during = fetch_added_during_cycle(
+        client,
+        cycle_number=active_cycle["number"],
+        cycle_starts_at=active_cycle["startsAt"],
+        issues=issues,
+    )
 
     by_assignee: Dict[str, Dict[str, Any]] = defaultdict(
         lambda: {"assignee": None, "total": 0, "statusBreakdown": defaultdict(int), "issues": []}
@@ -74,7 +88,7 @@ def build_current_sprint(client: LinearClient, team: Dict[str, Any]) -> Optional
         status_types[status_name] = issue["state"]["type"]
         bucket["issues"].append(_issue_summary(issue))
 
-    assignees = _finalize_assignee_buckets(by_assignee)
+    assignees = _finalize_assignee_buckets(by_assignee, added_during)
     statuses = sorted(
         status_types.keys(), key=lambda name: (STATUS_TYPE_ORDER.get(status_types[name], 99), name)
     )
@@ -177,15 +191,23 @@ def build_previous_sprint(client: LinearClient, team: Dict[str, Any]) -> Optiona
     }
 
 
-def _finalize_assignee_buckets(by_assignee: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _finalize_assignee_buckets(
+    by_assignee: Dict[str, Dict[str, Any]],
+    added_during: Optional[Dict[str, bool]] = None,
+) -> List[Dict[str, Any]]:
+    added_during = added_during or {}
     result = []
     for name, bucket in by_assignee.items():
+        completed_issues = [i for i in bucket["issues"] if i["statusType"] == "completed"]
+        added_issues = [i for i in bucket["issues"] if added_during.get(i["identifier"])]
         result.append(
             {
                 "assignee": bucket["assignee"],
                 "total": bucket["total"],
                 "statusBreakdown": dict(bucket["statusBreakdown"]),
                 "issues": bucket["issues"],
+                "completed": {"count": len(completed_issues), "issues": completed_issues},
+                "addedDuringCycle": {"count": len(added_issues), "issues": added_issues},
             }
         )
     result.sort(key=lambda a: a["total"], reverse=True)
