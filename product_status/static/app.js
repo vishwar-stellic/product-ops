@@ -17,6 +17,10 @@ const state = {
   // the Sprint Report tab, keyed by team key. Missing entries default to
   // "current" - see `renderSprintReportTeam`.
   sprintReportSubTab: new Map(),
+  // Fallback target Notion page (URL) for the "Publishes to" bars, used
+  // whenever a tab has no override in localStorage - filled in from
+  // `/api/notion/status` (see `loadNotionStatus`/`notion_report.DEFAULT_PARENT_PAGE_URL`).
+  notionDefaultParentPageUrl: "",
 };
 
 // Canonical project lifecycle milestones - the milestones table only shows
@@ -60,6 +64,8 @@ const els = {
   tabButtons: document.querySelectorAll(".tab-btn"),
   tabPanels: document.querySelectorAll(".tab-panel"),
   sprintReportContainer: document.getElementById("sprint-report-container"),
+  sprintReportNotionBtn: document.getElementById("sprint-report-notion-btn"),
+  notionTargetBars: document.querySelectorAll(".notion-target-bar"),
 };
 
 function escapeHtml(value) {
@@ -742,6 +748,102 @@ async function refreshSquad(teamKey) {
   }
 }
 
+// ---- Notion target bars ----
+// Each tab (EPD Report, Sprint Report) has its own "Publishes to" bar
+// showing which Notion page its Publish button will create a sub-page
+// under. Defaults to `state.notionDefaultParentPageUrl` (the same page
+// backend-side, `notion_report.DEFAULT_PARENT_PAGE_URL`) unless the user
+// has overridden it via "Edit", in which case the override (per tab) is
+// remembered in localStorage - there's no server-side concept of a
+// per-tab target, so this is purely a client-side convenience.
+
+const NOTION_TARGET_STORAGE_PREFIX = "productOps.notionTarget.";
+
+function getNotionTarget(tabName) {
+  return localStorage.getItem(NOTION_TARGET_STORAGE_PREFIX + tabName) || state.notionDefaultParentPageUrl || "";
+}
+
+function setNotionTarget(tabName, url) {
+  localStorage.setItem(NOTION_TARGET_STORAGE_PREFIX + tabName, url);
+}
+
+function clearNotionTarget(tabName) {
+  localStorage.removeItem(NOTION_TARGET_STORAGE_PREFIX + tabName);
+}
+
+// Notion page URLs always end in "<slug>-<32-hex-char-id>" - strip the id
+// and turn the slug's dashes back into spaces/words for a readable label,
+// e.g. ".../Product-Ops-Reports-3be9dd09f47380..." -> "Product Ops Reports".
+function notionPageDisplayName(url) {
+  try {
+    const path = new URL(url).pathname;
+    const lastSegment = path.split("/").filter(Boolean).pop() || "";
+    const withoutId = lastSegment.replace(/-?[0-9a-f]{32}$/i, "");
+    const decoded = decodeURIComponent(withoutId).replace(/-/g, " ").trim();
+    return decoded || url;
+  } catch (err) {
+    return url;
+  }
+}
+
+function renderNotionTargetBar(bar) {
+  const url = getNotionTarget(bar.dataset.notionTab);
+  const link = bar.querySelector(".notion-target-link");
+  if (url) {
+    link.href = url;
+    link.textContent = notionPageDisplayName(url);
+  } else {
+    link.removeAttribute("href");
+    link.textContent = "(loading…)";
+  }
+}
+
+function renderAllNotionTargetBars() {
+  els.notionTargetBars.forEach(renderNotionTargetBar);
+}
+
+els.notionTargetBars.forEach((bar) => {
+  const tabName = bar.dataset.notionTab;
+  const editBtn = bar.querySelector(".notion-target-edit-btn");
+  const form = bar.querySelector(".notion-target-edit-form");
+  const input = bar.querySelector(".notion-target-input");
+  const saveBtn = bar.querySelector(".notion-target-save-btn");
+  const cancelBtn = bar.querySelector(".notion-target-cancel-btn");
+  const resetBtn = bar.querySelector(".notion-target-reset-btn");
+
+  editBtn.addEventListener("click", () => {
+    input.value = getNotionTarget(tabName);
+    form.classList.remove("hidden");
+    input.focus();
+    input.select();
+  });
+
+  cancelBtn.addEventListener("click", () => {
+    form.classList.add("hidden");
+  });
+
+  saveBtn.addEventListener("click", () => {
+    const value = input.value.trim();
+    if (!value) return;
+    setNotionTarget(tabName, value);
+    renderNotionTargetBar(bar);
+    form.classList.add("hidden");
+  });
+
+  resetBtn.addEventListener("click", () => {
+    clearNotionTarget(tabName);
+    renderNotionTargetBar(bar);
+    form.classList.add("hidden");
+  });
+
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") saveBtn.click();
+    if (event.key === "Escape") cancelBtn.click();
+  });
+});
+
+renderAllNotionTargetBars();
+
 // ---- Notion connection (OAuth) ----
 
 async function loadNotionStatus() {
@@ -749,12 +851,15 @@ async function loadNotionStatus() {
     const res = await fetch("/api/notion/status");
     const status = await res.json();
     const connected = Boolean(status.connected);
+    state.notionDefaultParentPageUrl = status.defaultParentPageUrl || state.notionDefaultParentPageUrl;
+    renderAllNotionTargetBars();
     // A static NOTION_API_KEY is a plain env var, not a connect/disconnect
     // flow - there's nothing to "Connect to Notion" or "Disconnect" from,
     // so both of those stay hidden in that case (see notion_oauth.status).
     const viaApiKey = status.method === "api_key";
     els.notionConnectLink.classList.toggle("hidden", connected);
-    els.notionBtn.classList.toggle("hidden", !connected);
+    document.querySelectorAll(".notion-publish-btn").forEach((btn) => btn.classList.toggle("hidden", !connected));
+    document.querySelectorAll(".notion-connect-hint").forEach((hint) => hint.classList.toggle("hidden", connected));
     els.notionDisconnectBtn.classList.toggle("hidden", !connected || viaApiKey);
     if (connected) {
       els.notionStatus.textContent = viaApiKey
@@ -768,7 +873,8 @@ async function loadNotionStatus() {
     // If the status check itself fails, default to showing "Publish" -
     // the publish call will surface a clear connection error if needed.
     els.notionConnectLink.classList.add("hidden");
-    els.notionBtn.classList.remove("hidden");
+    document.querySelectorAll(".notion-publish-btn").forEach((btn) => btn.classList.remove("hidden"));
+    document.querySelectorAll(".notion-connect-hint").forEach((hint) => hint.classList.add("hidden"));
   }
 }
 
@@ -807,8 +913,11 @@ async function publishToNotion() {
     const skipSprintData = !state.showSprintData;
     const onlyStarProjects = state.onlyStarProjects;
     const demoRun = state.demoRun;
+    const parentPageUrl = getNotionTarget("epd-report");
     const res = await fetch(
-      `/api/dashboard/publish-notion?skip_sprint_data=${skipSprintData}&only_star_projects=${onlyStarProjects}&demo_run=${demoRun}`,
+      `/api/dashboard/publish-notion?skip_sprint_data=${skipSprintData}&only_star_projects=${onlyStarProjects}&demo_run=${demoRun}&parent_page_url=${encodeURIComponent(
+        parentPageUrl
+      )}`,
       { method: "POST" }
     );
     if (!res.ok) {
@@ -832,6 +941,43 @@ async function publishToNotion() {
 }
 
 els.notionBtn.addEventListener("click", publishToNotion);
+
+async function publishSprintReport() {
+  clearError();
+  clearSuccess();
+  const btn = els.sprintReportNotionBtn;
+  if (!btn) return;
+  const originalLabel = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span><span class="btn-label">Publishing…</span>';
+  try {
+    const parentPageUrl = getNotionTarget("sprint-report");
+    const res = await fetch(`/api/dashboard/publish-sprint-report?parent_page_url=${encodeURIComponent(parentPageUrl)}`, {
+      method: "POST",
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail || `Request failed (${res.status})`);
+    }
+    const result = await res.json();
+    if (result.url) {
+      showSuccessHtml(
+        `Published to Notion: <a href="${escapeHtml(result.url)}" target="_blank" rel="noopener">${escapeHtml(
+          result.title || "Open page"
+        )}</a>`
+      );
+    }
+  } catch (err) {
+    showError(`Couldn't publish sprint report to Notion: ${err.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = originalLabel;
+  }
+}
+
+if (els.sprintReportNotionBtn) {
+  els.sprintReportNotionBtn.addEventListener("click", publishSprintReport);
+}
 
 // Drives the web view's own rendering (see `renderAll`), not just what gets
 // sent to Notion - so toggling it immediately re-renders every squad

@@ -32,9 +32,18 @@ Endpoints:
                                           to omit the quarter-based "Other
                                           projects" group, default false.
                                           ?demo_run=true to only publish the
-                                          "Progress" squad, default false)
+                                          "Progress" squad, default false.
+                                          ?parent_page_url=... to publish
+                                          under a different Notion page than
+                                          notion_report.DEFAULT_PARENT_PAGE_URL)
+    POST /api/dashboard/publish-sprint-report -> publish the (currently
+                                          cached) dashboard's sprint data to
+                                          Notion as a new "Sprint Report
+                                          <date>" sub-page. ?parent_page_url=...
+                                          same as above.
     GET  /api/notion/status       -> whether Notion is connected (OAuth) and
-                                      to which workspace
+                                      to which workspace, plus
+                                      defaultParentPageUrl
     POST /api/notion/disconnect   -> forget the stored Notion OAuth token
     GET  /notion/oauth/start      -> redirects to Notion's OAuth consent
                                       screen ("Connect to Notion" button)
@@ -63,8 +72,12 @@ from .dashboard import (
     squad_cache_key,
 )
 from .linear_client import LinearClient, LinearGraphQLError
-from .notion_client import NotionError
-from .notion_report import publish_dashboard_to_notion
+from .notion_client import NotionError, extract_page_id
+from .notion_report import (
+    DEFAULT_PARENT_PAGE_URL,
+    publish_dashboard_to_notion,
+    publish_sprint_report_to_notion,
+)
 from .projects import DEFAULT_SUMMIT_LABEL, build_summit_projects_report
 from .report import build_current_sprint, build_full_report, build_previous_sprint
 
@@ -228,6 +241,10 @@ def dashboard_publish_notion(
         default=False,
         description='Only publish the "Progress" squad - for trying out the export without writing every squad',
     ),
+    parent_page_url: Optional[str] = Query(
+        default=None,
+        description="Notion page (URL or bare ID) to publish under - defaults to DEFAULT_PARENT_PAGE_URL",
+    ),
 ):
     """Publish the currently cached dashboard to Notion as a new
     "EPD Report <date>" sub-page (see `notion_report.py`). Uses whatever
@@ -239,13 +256,48 @@ def dashboard_publish_notion(
         if demo_run:
             teams = [t for t in teams if t["key"].upper() == "PROG"]
         dashboard_data = {"summitLabel": DEFAULT_SUMMIT_LABEL, "squads": [_get_squad(t, force=False) for t in teams]}
+        parent_page_id = extract_page_id(parent_page_url) if parent_page_url else None
         return publish_dashboard_to_notion(
-            dashboard_data, skip_sprint_data=skip_sprint_data, only_star_projects=only_star_projects
+            dashboard_data,
+            parent_page_id=parent_page_id,
+            skip_sprint_data=skip_sprint_data,
+            only_star_projects=only_star_projects,
         )
     except NotionError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     except LinearGraphQLError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/dashboard/publish-sprint-report")
+def dashboard_publish_sprint_report(
+    parent_page_url: Optional[str] = Query(
+        default=None,
+        description="Notion page (URL or bare ID) to publish under - defaults to DEFAULT_PARENT_PAGE_URL",
+    ),
+):
+    """Publish the currently cached dashboard's sprint data to Notion as a
+    new "Sprint Report <date>" sub-page (see
+    `notion_report.py:publish_sprint_report_to_notion`) - one heading per
+    squad with Current Sprint / Previous Sprint tables underneath. Uses
+    whatever is already cached per squad rather than forcing a fresh Linear
+    pull - hit each squad's Update button first if you want the export to
+    reflect the very latest data."""
+    try:
+        teams = _get_dashboard_teams()
+        dashboard_data = {"summitLabel": DEFAULT_SUMMIT_LABEL, "squads": [_get_squad(t, force=False) for t in teams]}
+        parent_page_id = extract_page_id(parent_page_url) if parent_page_url else None
+        return publish_sprint_report_to_notion(dashboard_data, parent_page_id=parent_page_id)
+    except NotionError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except LinearGraphQLError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -256,8 +308,11 @@ def notion_status():
     (`method`: "api_key" if NOTION_API_KEY is set - takes priority - or
     "oauth" if a connection is stored, plus which workspace). Lets the
     dashboard show "Connect to Notion" vs "Publish to Notion" without
-    attempting a publish first."""
-    return notion_oauth.status()
+    attempting a publish first. Also reports `defaultParentPageUrl` (see
+    `notion_report.DEFAULT_PARENT_PAGE_URL`) so the dashboard's "Publishes
+    to" bars have a default to display/reset to before the user overrides
+    it (each tab's override is stored client-side, not here)."""
+    return {**notion_oauth.status(), "defaultParentPageUrl": DEFAULT_PARENT_PAGE_URL}
 
 
 @app.post("/api/notion/disconnect")

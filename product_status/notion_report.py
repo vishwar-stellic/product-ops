@@ -58,6 +58,27 @@ Structure (see README "Publish to Notion" section):
                                                to LEARN_MORE_URL_DEPENDENCY)
           (blank - for manual notes)
 
+`publish_sprint_report_to_notion` builds a separate, much simpler page for
+the dashboard's Sprint Report tab, sharing the same intro-callout + table of
+contents shell via `_publish_squads_page`:
+
+    Sprint Report <date>                     (page)
+      🤖 Report automatically generated from Linear...   (callout - see
+                                               SPRINT_REPORT_INTRO_TEXT)
+      <Team name>                            (bulleted link, one per squad)
+      ...
+      <Team name>                            (heading_2, one per squad)
+        Current Sprint                       (heading_3)
+          ...sprint table: Team member / Assigned / Completed / Added mid-cycle...
+        Previous Sprint                      (heading_3)
+          ...status summary + sprint table...
+
+Both `publish_dashboard_to_notion` and `publish_sprint_report_to_notion`
+default to `DEFAULT_PARENT_PAGE_URL` when no `parent_page_id` is given, but
+the dashboard UI lets each tab override its own target page independently
+(stored client-side - see `product_status/static/app.js`), so in practice
+they're often published under different parents.
+
 Note: Notion's public API has no way to set a page's layout to "Full width" -
 that's a per-page display setting only exposed in the Notion UI (the "..."
 menu on the page), so it has to be toggled on by hand after the page is
@@ -93,6 +114,12 @@ REPORT_INTRO_TEXT = (
     "Report automatically generated from Linear based on project dates, "
     "project status, project updates and milestone dates. Please review and "
     "add updates as needed."
+)
+
+SPRINT_REPORT_INTRO_TEXT = (
+    "Report automatically generated from Linear based on each team's "
+    "current and previous cycle issues. Please review and add updates as "
+    "needed."
 )
 
 # "Learn more" links appended to a few section headings, pointing at the
@@ -449,6 +476,31 @@ def _previous_sprint_status_summary(sprint: Dict[str, Any]) -> Optional[str]:
     return "  ·  ".join(f"{label}: {value}" for label, value in totals.items())
 
 
+def _current_sprint_content(sprint: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Mirrors the web dashboard's Sprint Report tab "Current sprint"
+    sub-tab (`product_status/static/app.js:renderSprintReportAssigneeTable`) -
+    unlike `_previous_sprint_content`, there's no "moved to next"/"removed"
+    breakdown here since the cycle is still in progress."""
+    if not sprint:
+        return [paragraph("No active cycle for this team.")]
+
+    cycle = sprint["cycle"]
+    meta = f"{_cycle_display_name(cycle)}  ({_fmt_date(cycle.get('startsAt'))} → {_fmt_date(cycle.get('endsAt'))})"
+    blocks = [paragraph(meta)]
+
+    by_assignee = sprint.get("byAssignee", [])
+    if by_assignee:
+        headers = ["Team member", "Assigned", "Completed", "Added mid-cycle"]
+        rows = [
+            [row["assignee"], row["total"], row["completed"]["count"], row["addedDuringCycle"]["count"]]
+            for row in by_assignee
+        ]
+        blocks.append(table(headers, rows))
+    else:
+        blocks.append(paragraph("No issues in this cycle."))
+    return blocks
+
+
 def _previous_sprint_content(sprint: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if not sprint:
         return [paragraph("No completed cycle found for this team.")]
@@ -572,6 +624,53 @@ def build_team_blocks(
     return blocks
 
 
+def _publish_squads_page(
+    title: str,
+    squads: List[Dict[str, Any]],
+    team_blocks_fn,
+    intro_text: str,
+    parent_page_id: Optional[str],
+    client: Optional[NotionClient],
+) -> Dict[str, Any]:
+    """Shared page-building routine for both `publish_dashboard_to_notion`
+    and `publish_sprint_report_to_notion`: creates `title` as a sub-page of
+    `parent_page_id` (defaults to the workspace's Product Ops Reports page)
+    with an intro callout, a table of contents linking to each squad, then
+    one `heading_2` per team with `team_blocks_fn(squad)`'s blocks
+    underneath. Returns the created page dict (`id`, `url`, ...)."""
+    client = client or NotionClient()
+    parent_page_id = parent_page_id or DEFAULT_PARENT_PAGE_ID
+
+    page = client.create_page(parent_page_id, title)
+
+    # Build one flat top-level block list: the intro callout, then TOC
+    # placeholders (so they render at the top of the page), then every
+    # squad's blocks. We track where each squad's `heading_2` and each TOC
+    # placeholder land in that list so we can look up their real block IDs
+    # once created, and link each TOC item to its matching heading.
+    intro_callout = callout("🤖", [rich_text(intro_text, color="gray")])
+    blocks: List[Dict[str, Any]] = [intro_callout]
+    toc_start = len(blocks)
+    blocks.extend(_toc_placeholder(squad["team"]["name"]) for squad in squads)
+    heading_positions: List[int] = []
+    for squad in squads:
+        heading_positions.append(len(blocks))
+        blocks.extend(team_blocks_fn(squad))
+
+    created = create_nested_blocks(client, page["id"], blocks)
+
+    page_url = page.get("url")
+    if page_url:
+        for i, squad in enumerate(squads):
+            heading_id = created[heading_positions[i]]["id"].replace("-", "")
+            link = f"{page_url}#{heading_id}"
+            client.update_block(
+                created[toc_start + i]["id"],
+                bulleted_item([rich_text(squad["team"]["name"], link=link)]),
+            )
+    return page
+
+
 def publish_dashboard_to_notion(
     dashboard_data: Dict[str, Any],
     parent_page_id: Optional[str] = None,
@@ -590,41 +689,49 @@ def publish_dashboard_to_notion(
     section also includes every other current-quarter project, collapsed
     under an "Other Projects" toggle heading, immediately followed by an
     "Other Asks" toggle heading - see `build_team_blocks`."""
-    client = client or NotionClient()
-    parent_page_id = parent_page_id or DEFAULT_PARENT_PAGE_ID
     squads = dashboard_data["squads"]
-
     title = f"EPD Report {datetime.now(_PACIFIC).strftime('%b %-d, %Y')}"
-    page = client.create_page(parent_page_id, title)
+    page = _publish_squads_page(
+        title,
+        squads,
+        lambda squad: build_team_blocks(
+            squad, skip_sprint_data=skip_sprint_data, only_star_projects=only_star_projects
+        ),
+        REPORT_INTRO_TEXT,
+        parent_page_id,
+        client,
+    )
 
-    # Build one flat top-level block list: the intro callout, then TOC
-    # placeholders (so they render at the top of the page), then every
-    # squad's blocks. We track where each squad's `heading_2` and each TOC
-    # placeholder land in that list so we can look up their real block IDs
-    # once created, and link each TOC item to its matching heading.
-    intro_callout = callout("🤖", [rich_text(REPORT_INTRO_TEXT, color="gray")])
-    blocks: List[Dict[str, Any]] = [intro_callout]
-    toc_start = len(blocks)
-    blocks.extend(_toc_placeholder(squad["team"]["name"]) for squad in squads)
-    heading_positions: List[int] = []
-    for squad in squads:
-        heading_positions.append(len(blocks))
-        blocks.extend(
-            build_team_blocks(
-                squad, skip_sprint_data=skip_sprint_data, only_star_projects=only_star_projects
-            )
-        )
+    return {"pageId": page["id"], "url": page.get("url"), "title": title}
 
-    created = create_nested_blocks(client, page["id"], blocks)
 
-    page_url = page.get("url")
-    if page_url:
-        for i, squad in enumerate(squads):
-            heading_id = created[heading_positions[i]]["id"].replace("-", "")
-            link = f"{page_url}#{heading_id}"
-            client.update_block(
-                created[toc_start + i]["id"],
-                bulleted_item([rich_text(squad["team"]["name"], link=link)]),
-            )
+def build_sprint_report_team_blocks(squad: Dict[str, Any]) -> List[Dict[str, Any]]:
+    blocks = [heading_2(squad["team"]["name"])]
+    blocks.append(heading_3("Current Sprint"))
+    blocks.extend(_current_sprint_content(squad.get("currentSprint")))
+    blocks.append(heading_3("Previous Sprint"))
+    blocks.extend(_previous_sprint_content(squad.get("previousSprint")))
+    return blocks
 
-    return {"pageId": page["id"], "url": page_url, "title": title}
+
+def publish_sprint_report_to_notion(
+    dashboard_data: Dict[str, Any],
+    parent_page_id: Optional[str] = None,
+    client: Optional[NotionClient] = None,
+) -> Dict[str, Any]:
+    """Create a "Sprint Report <date>" sub-page of `parent_page_id` (defaults
+    to the workspace's Product Ops Reports page): an intro callout, a table
+    of contents linking to each squad, then one `heading_2` per team with
+    "Current Sprint" / "Previous Sprint" `heading_3` sections underneath -
+    mirrors the web dashboard's Sprint Report tab."""
+    squads = dashboard_data["squads"]
+    title = f"Sprint Report {datetime.now(_PACIFIC).strftime('%b %-d, %Y')}"
+    page = _publish_squads_page(
+        title,
+        squads,
+        build_sprint_report_team_blocks,
+        SPRINT_REPORT_INTRO_TEXT,
+        parent_page_id,
+        client,
+    )
+    return {"pageId": page["id"], "url": page.get("url"), "title": title}

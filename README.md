@@ -135,8 +135,9 @@ the site into separate capabilities, each its own tab:
 - **Sprint Report** — one section per squad with **Current sprint** /
   **Previous sprint** sub-tabs (`product_status/static/app.js:renderSprintReportTeam`);
   each sub-tab shows one table with a row per team member and their
-  **Assigned**, **Completed**, and **Added mid-cycle** counts. Reuses the
-  same per-squad data already loaded for the EPD Report tab
+  **Assigned**, **Completed**, and **Added mid-cycle** counts, plus its own
+  "Publishes to"/**Publish to Notion** bar (see "Publish to Notion" below).
+  Reuses the same per-squad data already loaded for the EPD Report tab
   (`state.squadsByKey`), so it needs no separate fetch or cache - "Added
   mid-cycle" comes from the same per-issue history walk used for the
   Previous Sprint section's own "Added mid-cycle" column (see
@@ -279,14 +280,27 @@ treated as stale on the next load regardless of age (see
 
 ### Publish to Notion
 
+Both the **EPD Report** and **Sprint Report** tabs have their own
+"Publishes to" bar right at the top, showing which Notion page the tab's
+**Publish to Notion** button will create a sub-page under, with an **Edit**
+link to point it somewhere else and a **Reset to default** option
+(`.notion-target-bar` in `product_status/static/index.html`/`app.js`).
+Both default to the workspace's [Product Ops Reports](https://app.notion.com/p/stellic/Product-Ops-Reports-3be9dd09f473806c875bc8356f5c71a4)
+page (`notion_report.DEFAULT_PARENT_PAGE_URL`, surfaced to the frontend via
+`defaultParentPageUrl` on `GET /api/notion/status`) unless overridden -
+overrides are per-tab and stored in the browser's `localStorage`, not on
+the server, so pointing the Sprint Report export somewhere else (e.g. a
+scratch page while testing) doesn't affect the EPD Report export or
+persist across browsers/devices. Whatever's showing in a tab's bar is sent
+as `?parent_page_url=...` on that tab's publish request.
+
 The **Publish to Notion** button in the EPD Report tab (`POST
 /api/dashboard/publish-notion`) exports the currently cached dashboard as a
 new Notion page titled `EPD Report <date>` (`<date>` is today's date in
-Pacific time - `product_status/notion_report.py:_PACIFIC` - not UTC), created
-as a sub-page of the workspace's [Product Ops Reports](https://app.notion.com/p/stellic/Product-Ops-Reports-3be9dd09f473806c875bc8356f5c71a4)
-page. It uses whatever's already cached per squad rather than forcing a
-fresh Linear pull - hit a squad's own Update button first if you want the
-export to reflect the very latest data.
+Pacific time - `product_status/notion_report.py:_PACIFIC` - not UTC). It
+uses whatever's already cached per squad rather than forcing a fresh Linear
+pull - hit a squad's own Update button first if you want the export to
+reflect the very latest data.
 
 Sprint data is always omitted from the export (`skip_sprint_data=true` is
 always sent - there's no checkbox for it, see "Current sprint"/"Previous
@@ -374,6 +388,26 @@ width on a plain `table` block isn't exposed by the API (only `width_ratio`
 for side-by-side page *columns*, and a `width` in pixels for full Notion
 *database* views - neither applies to a basic table block). Resize those
 columns by hand in the Notion UI after publishing if you want them wider.
+
+**Sprint Report tab's Publish to Notion** (`POST
+/api/dashboard/publish-sprint-report`) is a separate, simpler export -
+same "Publishes to" bar/override behavior as above, but no
+`skip_sprint_data`/`only_star_projects`/`demo_run` options (those are
+EPD-Report-only). It creates a `Sprint Report <date>` page mirroring the
+web dashboard's Sprint Report tab (`product_status/notion_report.py:publish_sprint_report_to_notion`):
+
+```
+Sprint Report <date>                  (page)
+  🤖 Report automatically generated from Linear...   (callout)
+  <Team name>                         (bulleted link, one per squad - table of contents)
+  ...
+  <Team name>                         (heading_2, one per squad)
+    Current Sprint                    (heading_3)
+      Team member / Assigned / Completed / Added mid-cycle table
+    Previous Sprint                   (heading_3)
+      status summary + Assignee / Assigned / Completed / Moved to next /
+      Removed / Added mid-cycle table
+```
 
 This calls the Notion REST API directly (`product_status/notion_client.py`,
 `notion_oauth.py`) - it does not use Notion MCP tools, since this runs from

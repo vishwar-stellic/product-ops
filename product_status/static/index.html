@@ -30,8 +30,29 @@
     <div id="success-banner" class="success-banner hidden"></div>
 
     <section id="tab-epd-report" class="tab-panel">
+      <div class="notion-target-bar" data-notion-tab="epd-report">
+        <div class="notion-target-info">
+          <span class="notion-target-label">Publishes to:</span>
+          <a class="notion-target-link" href="#" target="_blank" rel="noopener"></a>
+          <button class="btn-link notion-target-edit-btn" type="button">Edit</button>
+          <div class="notion-target-edit-form hidden">
+            <input type="text" class="notion-target-input" placeholder="Paste a Notion page URL…" />
+            <button class="btn btn-primary btn-sm notion-target-save-btn" type="button">Save</button>
+            <button class="btn-link notion-target-cancel-btn" type="button">Cancel</button>
+            <button class="btn-link notion-target-reset-btn" type="button">Reset to default</button>
+          </div>
+        </div>
+        <div class="notion-target-actions">
+          <span id="notion-status" class="topbar-hint hidden"></span>
+          <button id="notion-disconnect-btn" class="btn-link hidden" type="button">Disconnect</button>
+          <a id="notion-connect-link" class="btn btn-primary hidden" href="/notion/oauth/start">Connect to Notion</a>
+          <button id="notion-btn" class="btn btn-primary notion-publish-btn hidden" type="button">
+            <span class="btn-label">Publish to Notion</span>
+          </button>
+        </div>
+      </div>
+
       <div class="epd-toolbar">
-        <span id="notion-status" class="topbar-hint hidden"></span>
         <label class="checkbox-label" for="only-star-projects-checkbox">
           <input type="checkbox" id="only-star-projects-checkbox" />
           Only Star Projects
@@ -40,11 +61,6 @@
           <input type="checkbox" id="demo-run-checkbox" />
           Demo run
         </label>
-        <button id="notion-disconnect-btn" class="btn-link hidden" type="button">Disconnect</button>
-        <a id="notion-connect-link" class="btn btn-primary hidden" href="/notion/oauth/start">Connect to Notion</a>
-        <button id="notion-btn" class="btn btn-primary hidden" type="button">
-          <span class="btn-label">Publish to Notion</span>
-        </button>
       </div>
 
       <div id="squads-container"></div>
@@ -56,6 +72,26 @@
     </section>
 
     <section id="tab-sprint-report" class="tab-panel hidden">
+      <div class="notion-target-bar" data-notion-tab="sprint-report">
+        <div class="notion-target-info">
+          <span class="notion-target-label">Publishes to:</span>
+          <a class="notion-target-link" href="#" target="_blank" rel="noopener"></a>
+          <button class="btn-link notion-target-edit-btn" type="button">Edit</button>
+          <div class="notion-target-edit-form hidden">
+            <input type="text" class="notion-target-input" placeholder="Paste a Notion page URL…" />
+            <button class="btn btn-primary btn-sm notion-target-save-btn" type="button">Save</button>
+            <button class="btn-link notion-target-cancel-btn" type="button">Cancel</button>
+            <button class="btn-link notion-target-reset-btn" type="button">Reset to default</button>
+          </div>
+        </div>
+        <div class="notion-target-actions">
+          <button id="sprint-report-notion-btn" class="btn btn-primary notion-publish-btn hidden" type="button">
+            <span class="btn-label">Publish to Notion</span>
+          </button>
+          <span class="notion-connect-hint hidden">Connect to Notion in the EPD Report tab to enable.</span>
+        </div>
+      </div>
+
       <div id="sprint-report-container">
         <p class="empty-note">Loading…</p>
       </div>
