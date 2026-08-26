@@ -54,6 +54,7 @@ Endpoints:
 
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote
@@ -183,6 +184,24 @@ def _get_squad(team: Dict[str, Any], force: bool) -> Dict[str, Any]:
     return {"fetchedAt": entry["fetchedAt"], **entry["data"]}
 
 
+def _get_squads(teams: List[Dict[str, Any]], force: bool) -> List[Dict[str, Any]]:
+    """Fetch every squad concurrently rather than one at a time.
+
+    Each squad is independent (own cache entry, own Linear calls), so
+    sequentially awaiting them in a single request adds up fast - a cold
+    cache (first hit after a 24h expiry, or a SQUAD_CACHE_VERSION bump that
+    invalidates every entry at once) means every squad falls through to a
+    live multi-query Linear pull, and enough of those back-to-back can blow
+    past the platform's function timeout, surfacing to the browser as a
+    generic "Failed to fetch". Running them in a thread pool instead bounds
+    the worst case to roughly the slowest single squad's fetch time.
+    """
+    if not teams:
+        return []
+    with ThreadPoolExecutor(max_workers=min(len(teams), 8)) as pool:
+        return list(pool.map(lambda t: _get_squad(t, force), teams))
+
+
 @app.get("/api/dashboard")
 def dashboard():
     """Sprints + summit projects for every squad. Each squad is served from
@@ -190,7 +209,7 @@ def dashboard():
     case just that squad is refetched from Linear and re-cached."""
     try:
         teams = _get_dashboard_teams()
-        return {"summitLabel": DEFAULT_SUMMIT_LABEL, "squads": [_get_squad(t, force=False) for t in teams]}
+        return {"summitLabel": DEFAULT_SUMMIT_LABEL, "squads": _get_squads(teams, force=False)}
     except LinearGraphQLError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     except RuntimeError as exc:
@@ -220,7 +239,7 @@ def dashboard_refresh_all():
     time), but kept available for scripts/automation."""
     try:
         teams = _get_dashboard_teams(force=True)
-        return {"summitLabel": DEFAULT_SUMMIT_LABEL, "squads": [_get_squad(t, force=True) for t in teams]}
+        return {"summitLabel": DEFAULT_SUMMIT_LABEL, "squads": _get_squads(teams, force=True)}
     except LinearGraphQLError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     except RuntimeError as exc:
@@ -255,7 +274,7 @@ def dashboard_publish_notion(
         teams = _get_dashboard_teams()
         if demo_run:
             teams = [t for t in teams if t["key"].upper() == "PROG"]
-        dashboard_data = {"summitLabel": DEFAULT_SUMMIT_LABEL, "squads": [_get_squad(t, force=False) for t in teams]}
+        dashboard_data = {"summitLabel": DEFAULT_SUMMIT_LABEL, "squads": _get_squads(teams, force=False)}
         parent_page_id = extract_page_id(parent_page_url) if parent_page_url else None
         return publish_dashboard_to_notion(
             dashboard_data,
@@ -289,7 +308,7 @@ def dashboard_publish_sprint_report(
     reflect the very latest data."""
     try:
         teams = _get_dashboard_teams()
-        dashboard_data = {"summitLabel": DEFAULT_SUMMIT_LABEL, "squads": [_get_squad(t, force=False) for t in teams]}
+        dashboard_data = {"summitLabel": DEFAULT_SUMMIT_LABEL, "squads": _get_squads(teams, force=False)}
         parent_page_id = extract_page_id(parent_page_url) if parent_page_url else None
         return publish_sprint_report_to_notion(dashboard_data, parent_page_id=parent_page_id)
     except NotionError as exc:
