@@ -132,10 +132,11 @@ the site into separate capabilities, each its own tab:
 
 - **EPD Report** — everything described below: squads, projects, quality,
   sprints, and Publish to Notion.
-- **Sprint Report** — one table per squad for the *current* sprint only:
-  one row per team member with their **Assigned**, **Completed**, and
-  **Added mid-cycle** counts (`product_status/static/app.js:renderSprintReportTab`).
-  Reuses the same per-squad data already loaded for the EPD Report tab
+- **Sprint Report** — one section per squad with **Current sprint** /
+  **Previous sprint** sub-tabs (`product_status/static/app.js:renderSprintReportTeam`);
+  each sub-tab shows one table with a row per team member and their
+  **Assigned**, **Completed**, and **Added mid-cycle** counts. Reuses the
+  same per-squad data already loaded for the EPD Report tab
   (`state.squadsByKey`), so it needs no separate fetch or cache - "Added
   mid-cycle" comes from the same per-issue history walk used for the
   Previous Sprint section's own "Added mid-cycle" column (see

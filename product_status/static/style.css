@@ -347,6 +347,38 @@ body {
   margin-bottom: 0;
 }
 
+.subtabbar {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+
+.subtab-btn {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-dim);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 4px;
+  margin-right: 16px;
+  cursor: pointer;
+}
+
+.subtab-btn:hover {
+  color: var(--text);
+}
+
+.subtab-btn.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+.sprint-subtab-panel .cycle-meta {
+  margin-top: 4px;
+}
+
 .squad-header-right {
   display: flex;
   align-items: center;

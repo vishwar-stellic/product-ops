@@ -13,6 +13,10 @@ const state = {
   // Only affects the Notion export (see `publishToNotion`) - the web view
   // always shows every squad regardless of this checkbox.
   demoRun: false,
+  // Which sprint sub-tab ("current"/"previous") is showing for each team in
+  // the Sprint Report tab, keyed by team key. Missing entries default to
+  // "current" - see `renderSprintReportTeam`.
+  sprintReportSubTab: new Map(),
 };
 
 // Canonical project lifecycle milestones - the milestones table only shows
@@ -497,59 +501,99 @@ function renderSprintDataHiddenBlock() {
 
 // ---- Sprint Report tab ----
 // Reuses the same per-squad data already fetched for the EPD Report tab
-// (`state.squadsByKey`) - one table per team, current sprint only, with
-// each team member's assigned/completed/added-mid-cycle counts.
+// (`state.squadsByKey`) - one section per team, with "Current sprint" /
+// "Previous sprint" sub-tabs so both are available without doubling the
+// page length. Each table shows every team member's assigned/completed/
+// added-mid-cycle counts.
 
-function renderSprintReportTeam(squad) {
-  const sprint = squad.currentSprint;
-  const teamHeader = `<h2>${escapeHtml(squad.team.name)}</h2>`;
-
-  if (!sprint) {
-    return `
-      <section class="squad-section">
-        <div class="squad-header-static">${teamHeader}</div>
-        <p class="empty-note">No active cycle for this team.</p>
-      </section>`;
+// `currentSprint.byAssignee` rows use `total`; `previousSprint.byAssignee`
+// rows use `totalAssigned` (see report.py) - normalize here so both render
+// through the same table markup.
+function renderSprintReportAssigneeTable(byAssignee, emptyMessage) {
+  if (!byAssignee.length) {
+    return `<p class="empty-note">${escapeHtml(emptyMessage)}</p>`;
   }
-
-  const { cycle, byAssignee } = sprint;
   const rows = byAssignee
     .map(
       (row) => `
         <tr>
           <td>${escapeHtml(row.assignee)}</td>
-          <td class="num">${row.total}</td>
+          <td class="num">${row.total ?? row.totalAssigned}</td>
           <td class="num">${row.completed.count}</td>
           <td class="num">${row.addedDuringCycle.count}</td>
         </tr>`
     )
     .join("");
 
-  const table = byAssignee.length
-    ? `
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>Team member</th>
-            <th class="num">Assigned</th>
-            <th class="num">Completed</th>
-            <th class="num">Added mid-cycle</th>
-          </tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>`
-    : '<p class="empty-note">No issues in this cycle.</p>';
+  return `
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Team member</th>
+          <th class="num">Assigned</th>
+          <th class="num">Completed</th>
+          <th class="num">Added mid-cycle</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+function renderSprintReportPanel(subTab, sprint, activeSubTab, emptyStateMessage, emptyTableMessage) {
+  const hidden = subTab !== activeSubTab ? " hidden" : "";
+  if (!sprint) {
+    return `<div class="sprint-subtab-panel${hidden}" data-subtab="${subTab}"><p class="empty-note">${escapeHtml(
+      emptyStateMessage
+    )}</p></div>`;
+  }
+  const { cycle, byAssignee } = sprint;
+  return `
+    <div class="sprint-subtab-panel${hidden}" data-subtab="${subTab}">
+      <div class="cycle-meta">
+        <span class="cycle-name">${escapeHtml(cycleDisplayName(cycle))}</span>
+        <span>${formatDate(cycle.startsAt)} → ${formatDate(cycle.endsAt)}</span>
+      </div>
+      ${renderSprintReportAssigneeTable(byAssignee, emptyTableMessage)}
+    </div>`;
+}
+
+function renderSprintReportTeam(squad) {
+  const teamKey = squad.team.key;
+  const activeSubTab = state.sprintReportSubTab.get(teamKey) || "current";
+
+  const subtabNav = `
+    <div class="subtabbar">
+      <button type="button" class="subtab-btn${
+        activeSubTab === "current" ? " active" : ""
+      }" data-team-key="${escapeHtml(teamKey)}" data-subtab="current">Current sprint</button>
+      <button type="button" class="subtab-btn${
+        activeSubTab === "previous" ? " active" : ""
+      }" data-team-key="${escapeHtml(teamKey)}" data-subtab="previous">Previous sprint</button>
+    </div>`;
+
+  const currentPanel = renderSprintReportPanel(
+    "current",
+    squad.currentSprint,
+    activeSubTab,
+    "No active cycle for this team.",
+    "No issues in this cycle."
+  );
+  const previousPanel = renderSprintReportPanel(
+    "previous",
+    squad.previousSprint,
+    activeSubTab,
+    "No completed cycle found for this team.",
+    "No issues were assigned."
+  );
 
   return `
-    <section class="squad-section">
+    <section class="squad-section" data-team-key="${escapeHtml(teamKey)}">
       <div class="squad-header-static">
-        ${teamHeader}
-        <div class="cycle-meta">
-          <span class="cycle-name">${escapeHtml(cycleDisplayName(cycle))}</span>
-          <span>${formatDate(cycle.startsAt)} → ${formatDate(cycle.endsAt)}</span>
-        </div>
+        <h2>${escapeHtml(squad.team.name)}</h2>
       </div>
-      ${table}
+      ${subtabNav}
+      ${currentPanel}
+      ${previousPanel}
     </section>`;
 }
 
@@ -817,6 +861,15 @@ els.squadsContainer.addEventListener("click", (event) => {
     toggleSquad(header.dataset.teamKey);
   }
 });
+
+if (els.sprintReportContainer) {
+  els.sprintReportContainer.addEventListener("click", (event) => {
+    const subtabBtn = event.target.closest(".subtab-btn");
+    if (!subtabBtn) return;
+    state.sprintReportSubTab.set(subtabBtn.dataset.teamKey, subtabBtn.dataset.subtab);
+    renderSprintReportTab();
+  });
+}
 
 // Keep each squad's "Updated X ago" text ticking without re-fetching data.
 setInterval(() => {
