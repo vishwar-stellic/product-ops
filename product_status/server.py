@@ -66,6 +66,7 @@ from fastapi.staticfiles import StaticFiles
 from . import cache, notion_oauth
 from .cycles import fetch_teams
 from .dashboard import (
+    PROJECTS_REPORT_CACHE_KEY,
     SQUAD_CACHE_VERSION,
     TEAMS_CACHE_KEY,
     build_squad_data,
@@ -79,7 +80,7 @@ from .notion_report import (
     publish_dashboard_to_notion,
     publish_sprint_report_to_notion,
 )
-from .projects import DEFAULT_SUMMIT_LABEL, build_summit_projects_report
+from .projects import DEFAULT_SUMMIT_LABEL, build_dashboard_projects_report, build_summit_projects_report
 from .report import build_current_sprint, build_full_report, build_previous_sprint
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -173,10 +174,27 @@ def _get_dashboard_teams(force: bool = False) -> List[Dict[str, Any]]:
     return entry["data"]
 
 
-def _get_squad(team: Dict[str, Any], force: bool) -> Dict[str, Any]:
+def _get_projects_report(force: bool) -> Dict[str, Any]:
+    """The workspace-wide projects report, shared across every squad.
+
+    Every squad needs the same data here (see `dashboard.PROJECTS_REPORT_CACHE_KEY`),
+    so it's cached and refreshed independently of any one squad rather than
+    refetched fresh inside each squad's own build - that used to mean up to
+    7x redundant ~5s Linear pulls whenever multiple squads rebuilt at once.
+    """
+    entry = cache.get_or_refresh(
+        PROJECTS_REPORT_CACHE_KEY,
+        lambda: build_dashboard_projects_report(client=LinearClient()),
+        force=force,
+        max_age_seconds=DASHBOARD_MAX_AGE_SECONDS,
+    )
+    return entry["data"]
+
+
+def _get_squad(team: Dict[str, Any], force: bool, projects_report: Dict[str, Any]) -> Dict[str, Any]:
     entry = cache.get_or_refresh(
         squad_cache_key(team["key"]),
-        lambda: build_squad_data(client=LinearClient(), team=team),
+        lambda: build_squad_data(client=LinearClient(), team=team, projects_report=projects_report),
         force=force,
         max_age_seconds=DASHBOARD_MAX_AGE_SECONDS,
         version=SQUAD_CACHE_VERSION,
@@ -195,11 +213,19 @@ def _get_squads(teams: List[Dict[str, Any]], force: bool) -> List[Dict[str, Any]
     past the platform's function timeout, surfacing to the browser as a
     generic "Failed to fetch". Running them in a thread pool instead bounds
     the worst case to roughly the slowest single squad's fetch time.
+
+    The shared projects report is fetched once up front (see
+    `_get_projects_report`) rather than once per squad. `max_workers` is
+    kept modest (rather than one thread per squad) because each squad's own
+    build fans out into a few concurrent Linear calls too (see
+    `build_squad_data`) - capping both levels keeps the total number of
+    simultaneous requests to Linear from spiking too high at once.
     """
     if not teams:
         return []
-    with ThreadPoolExecutor(max_workers=min(len(teams), 8)) as pool:
-        return list(pool.map(lambda t: _get_squad(t, force), teams))
+    projects_report = _get_projects_report(force=force)
+    with ThreadPoolExecutor(max_workers=min(len(teams), 4)) as pool:
+        return list(pool.map(lambda t: _get_squad(t, force, projects_report), teams))
 
 
 @app.get("/api/dashboard")
@@ -219,13 +245,17 @@ def dashboard():
 @app.post("/api/dashboard/refresh/{team_key}")
 def dashboard_refresh_squad(team_key: str):
     """Force a fresh pull from Linear for one squad only, regardless of
-    cache age. `team_key` is the Linear team key, e.g. "PROG"."""
+    cache age. `team_key` is the Linear team key, e.g. "PROG". Also forces
+    a fresh pull of the shared projects report (see `_get_projects_report`)
+    so this squad's project data is genuinely current too - as a side
+    effect this warms that shared cache for every other squad as well."""
     try:
         teams = _get_dashboard_teams()
         team = next((t for t in teams if t["key"].lower() == team_key.lower()), None)
         if team is None:
             raise HTTPException(status_code=404, detail=f'Unknown squad "{team_key}"')
-        return _get_squad(team, force=True)
+        projects_report = _get_projects_report(force=True)
+        return _get_squad(team, force=True, projects_report=projects_report)
     except LinearGraphQLError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     except RuntimeError as exc:
