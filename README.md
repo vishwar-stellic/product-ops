@@ -441,25 +441,42 @@ handful of default locations (`app.py`, `index.py`, `server.py`, `main.py`,
 this project's app lives one directory deeper than that. Local development
 is unaffected - keep using `uvicorn product_status.server:app`.
 
-Set `LINEAR_API_KEY` (and, if using Notion publishing,
-`NOTION_OAUTH_CLIENT_ID`/`NOTION_OAUTH_CLIENT_SECRET`/`NOTION_OAUTH_REDIRECT_URI`)
-as environment variables in the Vercel project settings — `.env` is
-gitignored and won't be deployed.
+Set `LINEAR_API_KEY`, `NOTION_API_KEY` (see "Publish to Notion" above), and
+`BLOB_READ_WRITE_TOKEN` (see below) as environment variables in the Vercel
+project settings — `.env` is gitignored and won't be deployed.
 
-**Caveat:** the dashboard's on-disk cache and the Notion OAuth token
-(`product_status/cache.py`, `notion_oauth.py`) write to `config.CACHE_DIR`,
-which defaults to `.cache/` next to the code - fine for a normal long-running
-process, but serverless platforms ship a read-only filesystem except for
-`/tmp`, which is itself wiped on cold starts and not shared across
-scaled-out instances. `config.py` detects Vercel (`VERCEL=1`, set
-automatically) and points `CACHE_DIR` at `/tmp` there instead, so the app
-won't crash - but that means the 24h dashboard cache and the "stay
-connected to Notion" OAuth token can both silently reset between requests.
-For anything beyond a quick demo, either run this on a normal always-on
-host (a small VM/container, since the app was designed around a persistent
-local disk) or swap `cache.py`/`notion_oauth.py` for a real persistent store
-(e.g. a small Postgres/Redis/Vercel Blob). Override the cache location on
-any host with `PRODUCT_OPS_CACHE_DIR`.
+**Dashboard cache (fixed via Vercel Blob):** `product_status/cache.py`
+writes to `config.CACHE_DIR`, which defaults to `.cache/` next to the code
+- fine for a normal long-running process, but serverless platforms ship a
+read-only filesystem except for `/tmp`, which is itself wiped on cold
+starts and not shared across scaled-out instances, so nothing written
+there actually persists between requests on Vercel. To fix this, add
+**Vercel Blob** to the project (Vercel dashboard → Storage → Create →
+Blob), which sets `BLOB_READ_WRITE_TOKEN` for you automatically; once
+that's set, `cache.py` transparently stores the same `{fetchedAt, data,
+version}` cache entries there instead of on disk (`product_status/blob_cache.py`)
+- Blob storage does persist across invocations/deployments, so the 24h
+cache actually holds and the dashboard/Sprint Report only re-queries Linear
+when it's genuinely stale or you hit Update. Locally (or on any host with a
+real persistent disk), leave `BLOB_READ_WRITE_TOKEN` unset and the on-disk
+cache is used as before - override its location with
+`PRODUCT_OPS_CACHE_DIR` if needed.
+
+`blob_cache.py` talks to Vercel Blob's HTTP API directly with `requests`
+(reverse-engineered from the open-source JS SDK - see that module's
+docstring) rather than the official `vercel` Python package, since that
+package requires Python ≥ 3.10 and this project targets 3.9. Every
+operation is best-effort: any failure (misconfigured token, network error,
+Blob outage) falls back to "just refetch from Linear," never a crash - see
+that module for details.
+
+**Notion OAuth token:** if you're using the OAuth fallback instead of
+`NOTION_API_KEY` (see "Publish to Notion" above), note that
+`notion_oauth.py`'s token file has the same `CACHE_DIR` persistence caveat
+described above and isn't covered by the Vercel Blob fix yet - it'll ask
+you to reconnect more often on Vercel than it would on a normal host.
+`NOTION_API_KEY` doesn't have this problem (it's just a static env var), so
+prefer that on Vercel.
 
 ## Project layout
 
@@ -474,7 +491,8 @@ product_status/
   projects.py         # project summaries (status, dates, milestones) for a given project label
   quality.py           # per-team SLA/bug counts (out of SLA, failed SLA, incoming high/urgent bugs)
   dashboard.py         # combines sprints + summit projects + quality, grouped by squad, for the web UI
-  cache.py             # on-disk JSON cache keyed by age (used by the dashboard, 24h default)
+  cache.py             # JSON cache keyed by age (used by the dashboard, 24h default) - on disk, or...
+  blob_cache.py         # ...Vercel Blob-backed, when BLOB_READ_WRITE_TOKEN is set (persists on serverless hosts)
   notion_client.py      # raw Notion REST API client (auth, retries, nested block creation)
   notion_oauth.py       # Notion OAuth ("public connection") flow - no workspace-owner permission needed
   notion_report.py      # builds the "EPD Report <date>" Notion page from dashboard data
