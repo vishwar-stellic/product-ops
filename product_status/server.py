@@ -50,20 +50,31 @@ Endpoints:
     GET  /notion/oauth/callback   -> OAuth redirect target; exchanges the
                                       code for a token and redirects to "/"
     GET  /                        -> the dashboard web UI (static/index.html)
+
+    -- Google sign-in (see auth.py; only enforced when GOOGLE_OAUTH_CLIENT_ID/
+       GOOGLE_OAUTH_CLIENT_SECRET are set - see the auth middleware below) --
+    GET  /auth/login              -> "Sign in with Google" page
+    GET  /auth/google/start       -> redirects to Google's consent screen
+    GET  /auth/google/callback    -> OAuth redirect target; verifies the
+                                      account's email domain and sets the
+                                      signed session cookie
+    GET  /auth/logout             -> clears the session cookie
+    GET  /api/me                  -> the signed-in user's email/name/picture
 """
 
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
+from html import escape
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import RedirectResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import cache, notion_oauth
+from . import auth, cache, notion_oauth
 from .cycles import fetch_teams
 from .dashboard import (
     PROJECTS_REPORT_CACHE_KEY,
@@ -86,6 +97,43 @@ from .report import build_current_sprint, build_full_report, build_previous_spri
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 app = FastAPI(title="Linear Product Status Service", version="0.1.0")
+
+# Paths reachable without a signed-in session: the login flow itself, plus
+# a couple of endpoints that should stay reachable regardless (uptime
+# checks, and the static assets the login page itself needs to render).
+_AUTH_PUBLIC_PATHS = {
+    "/health",
+    "/auth/login",
+    "/auth/google/start",
+    "/auth/google/callback",
+    "/auth/logout",
+    "/style.css",
+    "/app.js",
+    "/favicon.svg",
+}
+
+
+@app.middleware("http")
+async def require_login(request: Request, call_next):
+    """Gate every route behind a signed-in @<ALLOWED_EMAIL_DOMAIN> Google
+    account - except `_AUTH_PUBLIC_PATHS` above (see module docstring).
+
+    If Google sign-in isn't configured (`auth.is_configured()` is False -
+    e.g. `GOOGLE_OAUTH_CLIENT_ID`/`GOOGLE_OAUTH_CLIENT_SECRET` aren't set),
+    this is a no-op so local dev keeps working without requiring every
+    contributor to set up Google OAuth credentials first."""
+    if not auth.is_configured() or request.url.path in _AUTH_PUBLIC_PATHS:
+        return await call_next(request)
+
+    user = auth.verify_session_cookie(request.cookies.get(auth.SESSION_COOKIE_NAME))
+    if user is None:
+        if request.url.path.startswith("/api/") or request.method != "GET":
+            return JSONResponse({"detail": "Not authenticated - sign in at /auth/login"}, status_code=401)
+        return RedirectResponse(url="/auth/login")
+
+    request.state.user = user
+    return await call_next(request)
+
 
 # Linear data doesn't change fast enough to need a fresh fetch on every hit;
 # a short cache keeps the service responsive and avoids burning API quota
@@ -113,6 +161,120 @@ def _team_list(team: Optional[str]) -> Optional[List[str]]:
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+_LOGIN_PAGE_TEMPLATE = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sign in - Product Operations</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+<link rel="stylesheet" href="/style.css" />
+<style>
+  body {{ display: flex; align-items: center; justify-content: center; min-height: 100vh; }}
+  .login-card {{
+    text-align: center;
+    padding: 40px 48px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface);
+    max-width: 360px;
+  }}
+  .login-card .brand-mark {{ font-size: 28px; color: var(--accent); }}
+  .login-card h1 {{ font-size: 18px; margin: 8px 0 4px; }}
+  .login-card p {{ color: var(--text-faint); font-size: 13.5px; margin: 0 0 20px; }}
+  .login-card p.error {{ color: #e05555; margin-bottom: 16px; }}
+  .google-btn {{
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 10px 20px;
+    border-radius: 6px;
+    background: var(--accent);
+    color: #fff;
+    text-decoration: none;
+    font-weight: 500;
+    font-size: 14px;
+  }}
+  .google-btn:hover {{ opacity: 0.9; }}
+</style>
+</head>
+<body>
+  <div class="login-card">
+    <div class="brand-mark">◆</div>
+    <h1>Product Operations</h1>
+    <p>Sign in with your @{domain} Google account to continue.</p>
+    {error_html}
+    <a class="google-btn" href="/auth/google/start">Sign in with Google</a>
+  </div>
+</body>
+</html>"""
+
+
+@app.get("/auth/login", response_class=HTMLResponse)
+def auth_login(error: Optional[str] = Query(default=None)):
+    error_html = f'<p class="error">{escape(error)}</p>' if error else ""
+    return _LOGIN_PAGE_TEMPLATE.format(domain=escape(auth.allowed_domain()), error_html=error_html)
+
+
+@app.get("/auth/google/start")
+def auth_google_start():
+    if not auth.is_configured():
+        raise HTTPException(
+            status_code=500,
+            detail="Google sign-in isn't configured (GOOGLE_OAUTH_CLIENT_ID/GOOGLE_OAUTH_CLIENT_SECRET missing)",
+        )
+    state = auth.create_state()
+    return RedirectResponse(url=auth.authorization_url(state))
+
+
+@app.get("/auth/google/callback")
+def auth_google_callback(
+    request: Request,
+    code: Optional[str] = Query(default=None),
+    state: Optional[str] = Query(default=None),
+    error: Optional[str] = Query(default=None),
+):
+    if error:
+        return RedirectResponse(url=f"/auth/login?error={quote(error)}")
+    if not state or not auth.consume_state(state):
+        return RedirectResponse(url=f"/auth/login?error={quote('Login expired - please try again.')}")
+    if not code:
+        return RedirectResponse(url=f"/auth/login?error={quote('Google did not return a login code.')}")
+
+    try:
+        profile = auth.exchange_code(code)
+    except auth.AuthError as exc:
+        return RedirectResponse(url=f"/auth/login?error={quote(str(exc))}")
+
+    response = RedirectResponse(url="/")
+    response.set_cookie(
+        auth.SESSION_COOKIE_NAME,
+        auth.create_session_cookie(profile),
+        max_age=auth.SESSION_TTL_SECONDS,
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="lax",
+    )
+    return response
+
+
+@app.get("/auth/logout")
+def auth_logout():
+    response = RedirectResponse(url="/auth/login")
+    response.delete_cookie(auth.SESSION_COOKIE_NAME)
+    return response
+
+
+@app.get("/api/me")
+def api_me(request: Request):
+    user = getattr(request.state, "user", None)
+    if user is None:
+        # Auth isn't configured (see `require_login`) - no signed-in user to report.
+        return {"authenticated": False}
+    return {"authenticated": True, "email": user.get("email"), "name": user.get("name"), "picture": user.get("picture")}
 
 
 @app.get("/sprints")

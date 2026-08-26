@@ -66,6 +66,28 @@ body {
   letter-spacing: -0.01em;
 }
 
+.topbar-user {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.topbar-user-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+}
+
+.topbar-user-name {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.topbar-user-logout {
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
+}
+
 .tabbar {
   position: sticky;
   /* Sits directly below the topbar rather than overlapping it - `--topbar-h`

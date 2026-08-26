@@ -66,6 +66,9 @@ const els = {
   sprintReportContainer: document.getElementById("sprint-report-container"),
   sprintReportNotionBtn: document.getElementById("sprint-report-notion-btn"),
   notionTargetBars: document.querySelectorAll(".notion-target-bar"),
+  topbarUser: document.getElementById("topbar-user"),
+  topbarUserAvatar: document.getElementById("topbar-user-avatar"),
+  topbarUserName: document.getElementById("topbar-user-name"),
 };
 
 function escapeHtml(value) {
@@ -893,6 +896,30 @@ els.notionTargetBars.forEach((bar) => {
 
 renderAllNotionTargetBars();
 
+// ---- Signed-in user (Google sign-in, see product_status/auth.py) ----
+
+async function loadCurrentUser() {
+  try {
+    const res = await fetch("/api/me");
+    const info = await res.json();
+    // `authenticated: false` means Google sign-in isn't configured at all
+    // (see auth.is_configured()) - nothing to show in that case, the app
+    // is open to anyone either way.
+    if (!info.authenticated) {
+      els.topbarUser.classList.add("hidden");
+      return;
+    }
+    els.topbarUserName.textContent = info.name || info.email || "";
+    if (info.picture) {
+      els.topbarUserAvatar.src = info.picture;
+      els.topbarUserAvatar.classList.remove("hidden");
+    }
+    els.topbarUser.classList.remove("hidden");
+  } catch (err) {
+    els.topbarUser.classList.add("hidden");
+  }
+}
+
 // ---- Notion connection (OAuth) ----
 
 async function loadNotionStatus() {
@@ -1102,5 +1129,6 @@ els.tabButtons.forEach((btn) => {
 });
 
 handleNotionRedirectParams();
+loadCurrentUser();
 loadNotionStatus();
 loadDashboard();

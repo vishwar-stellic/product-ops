@@ -170,6 +170,34 @@ the site into separate capabilities, each its own tab:
   `#tab-project-milestones` in `index.html` and `switchTab()` in `app.js`
   for how tabs are wired up.
 
+#### Signing in
+
+The dashboard (page and every `/api/*` route) can be gated behind Google
+sign-in, restricted to one email domain — see `product_status/auth.py`'s
+module docstring for full setup. In short:
+
+1. Create an OAuth 2.0 Client ID ("Web application") at
+   https://console.cloud.google.com/apis/credentials. If it belongs to the
+   Stellic Google Workspace, setting the consent screen's "User type" to
+   *Internal* restricts sign-in to `@stellic.com` accounts at Google's own
+   login screen, on top of the server-side domain check below.
+2. Add an authorized redirect URI for every host this runs on (e.g.
+   `http://localhost:8008/auth/google/callback` locally, plus your deployed
+   URL's `/auth/google/callback`).
+3. Set `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, and
+   `SESSION_SECRET` (any long random string) in `.env` — see
+   `.env.example`. `ALLOWED_EMAIL_DOMAIN` defaults to `stellic.com`.
+
+Leaving `GOOGLE_OAUTH_CLIENT_ID`/`GOOGLE_OAUTH_CLIENT_SECRET` unset keeps
+the app open (no login required) — the default, so local dev works without
+setting up Google credentials first.
+
+The session itself is a signed, stateless cookie (7-day expiry) rather than
+a server-side session store, since nothing survives between requests on a
+serverless host (see "Deploying" below) — no session backend needed, and it
+works identically locally and on Vercel. Signed-in users see their name and
+a **Sign out** link in the top-right of the header.
+
 The **EPD Report** tab is organized as one section per squad — Progress,
 Plan, Care, Explore, Platform, Integration, and DevX
 (`product_status/dashboard.py:DASHBOARD_TEAMS`) — in that order, regardless
@@ -501,7 +529,13 @@ is unaffected - keep using `uvicorn product_status.server:app`.
 
 Set `LINEAR_API_KEY`, `NOTION_API_KEY` (see "Publish to Notion" above), and
 `BLOB_READ_WRITE_TOKEN` (see below) as environment variables in the Vercel
-project settings — `.env` is gitignored and won't be deployed.
+project settings — `.env` is gitignored and won't be deployed. If you're
+using Google sign-in ("Signing in" above), also set
+`GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, and
+`SESSION_SECRET` there, and make sure your deployed domain's
+`/auth/google/callback` is an authorized redirect URI on the OAuth Client
+ID - a redeploy is needed after adding/changing env vars for them to take
+effect.
 
 **Dashboard cache (fixed via Vercel Blob):** `product_status/cache.py`
 writes to `config.CACHE_DIR`, which defaults to `.cache/` next to the code
@@ -554,6 +588,7 @@ product_status/
   notion_client.py      # raw Notion REST API client (auth, retries, nested block creation)
   notion_oauth.py       # Notion OAuth ("public connection") flow - no workspace-owner permission needed
   notion_report.py      # builds the "EPD Report <date>" Notion page from dashboard data
+  auth.py               # Google sign-in restricted to one email domain + signed session cookie
   cli.py             # command-line entry point (rich tables or --json)
   server.py           # FastAPI service for on-demand HTTP queries + the dashboard
   static/              # dashboard web UI (plain HTML/CSS/JS, no build step)
