@@ -374,6 +374,7 @@ function previousSprintStatusSummary(sprint) {
   const totals = {
     Assigned: sprint.totalIssues || 0,
     Completed: byAssignee.reduce((sum, row) => sum + row.completed.count, 0),
+    Canceled: byAssignee.reduce((sum, row) => sum + row.canceled.count, 0),
     "Moved to next": byAssignee.reduce((sum, row) => sum + row.movedToNextSprint.count, 0),
     Removed: byAssignee.reduce((sum, row) => sum + row.removedFromCycle.count, 0),
     "Added mid-cycle": byAssignee.reduce((sum, row) => sum + row.addedDuringCycle.count, 0),
@@ -455,6 +456,7 @@ function renderPreviousSprintBlock(sprint) {
           <td>${escapeHtml(row.assignee)}</td>
           <td class="num">${row.totalAssigned}</td>
           <td class="num">${row.completed.count}</td>
+          <td class="num">${row.canceled.count}</td>
           <td class="num">${row.movedToNextSprint.count}</td>
           <td class="num">${row.removedFromCycle.count}</td>
           <td class="num">${row.addedDuringCycle.count}</td>
@@ -470,6 +472,7 @@ function renderPreviousSprintBlock(sprint) {
             <th>Assignee</th>
             <th class="num">Assigned</th>
             <th class="num">Completed</th>
+            <th class="num">Canceled</th>
             <th class="num">Moved to next</th>
             <th class="num">Removed</th>
             <th class="num">Added mid-cycle</th>
@@ -544,14 +547,13 @@ function renderSprintReportAssigneeTable(byAssignee, emptyMessage) {
     </table>`;
 }
 
-// Previous sprint: the cycle is closed, so every assigned ticket landed
-// somewhere other than "completed" too - either it moved into the next
-// cycle or got removed from the cycle entirely (see
-// report.py:build_previous_sprint). Surfacing those separately (rather
-// than folding them into "Assigned" with no further breakdown) is the
-// whole point of this table, so it intentionally mirrors
-// `renderPreviousSprintBlock`'s EPD Report table rather than reusing
-// `renderSprintReportAssigneeTable` above.
+// Previous sprint: the cycle is closed, so every assigned ticket landed in
+// exactly one of Completed/Canceled/Moved to next/Removed (see
+// report.py:build_previous_sprint's docstring) - surfacing those
+// separately (rather than folding them into "Assigned" with no further
+// breakdown) is the whole point of this table, so it intentionally
+// mirrors `renderPreviousSprintBlock`'s EPD Report table rather than
+// reusing `renderSprintReportAssigneeTable` above.
 function renderPreviousSprintReportAssigneeTable(byAssignee, emptyMessage) {
   if (!byAssignee.length) {
     return `<p class="empty-note">${escapeHtml(emptyMessage)}</p>`;
@@ -563,6 +565,7 @@ function renderPreviousSprintReportAssigneeTable(byAssignee, emptyMessage) {
           <td>${escapeHtml(row.assignee)}</td>
           <td class="num">${row.totalAssigned}</td>
           <td class="num">${row.completed.count}</td>
+          <td class="num">${row.canceled.count}</td>
           <td class="num">${row.movedToNextSprint.count}</td>
           <td class="num">${row.removedFromCycle.count}</td>
           <td class="num">${row.addedDuringCycle.count}</td>
@@ -577,6 +580,7 @@ function renderPreviousSprintReportAssigneeTable(byAssignee, emptyMessage) {
           <th>Team member</th>
           <th class="num">Assigned</th>
           <th class="num">Completed</th>
+          <th class="num">Canceled</th>
           <th class="num">Moved to next</th>
           <th class="num">Removed</th>
           <th class="num">Added mid-cycle</th>

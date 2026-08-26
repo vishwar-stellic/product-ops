@@ -469,6 +469,7 @@ def _previous_sprint_status_summary(sprint: Dict[str, Any]) -> Optional[str]:
     totals = {
         "Assigned": sprint.get("totalIssues", 0),
         "Completed": sum(row["completed"]["count"] for row in by_assignee),
+        "Canceled": sum(row["canceled"]["count"] for row in by_assignee),
         "Moved to next": sum(row["movedToNextSprint"]["count"] for row in by_assignee),
         "Removed": sum(row["removedFromCycle"]["count"] for row in by_assignee),
         "Added mid-cycle": sum(row["addedDuringCycle"]["count"] for row in by_assignee),
@@ -517,12 +518,13 @@ def _previous_sprint_content(sprint: Optional[Dict[str, Any]]) -> List[Dict[str,
         summary = _previous_sprint_status_summary(sprint)
         if summary:
             blocks.append(paragraph([rich_text(summary, color="gray")]))
-        headers = ["Assignee", "Assigned", "Completed", "Moved to next", "Removed", "Added mid-cycle"]
+        headers = ["Assignee", "Assigned", "Completed", "Canceled", "Moved to next", "Removed", "Added mid-cycle"]
         rows = [
             [
                 row["assignee"],
                 row["totalAssigned"],
                 row["completed"]["count"],
+                row["canceled"]["count"],
                 row["movedToNextSprint"]["count"],
                 row["removedFromCycle"]["count"],
                 row["addedDuringCycle"]["count"],

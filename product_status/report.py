@@ -3,7 +3,17 @@
 Each current-sprint assignee row includes `completed` (issues already in a
 `completed`-type state) and `addedDuringCycle` (issues added to the cycle
 after it started) counts alongside `total` (assigned) - these back the
-Sprint Report tab's per-team table (`product_status/static/app.js`)."""
+Sprint Report tab's per-team table (`product_status/static/app.js`).
+
+Each previous-sprint assignee row's `totalAssigned` is fully accounted for
+by `completed` + `canceled` + `movedToNextSprint` + `removedFromCycle`
+(see `build_previous_sprint`) - every assigned issue lands in exactly one
+of those four buckets. `canceled` (which also covers Linear's separate
+"duplicate" state type - both are terminal, non-completed outcomes) was
+added after noticing such issues (e.g. "Won't Do") would otherwise count
+toward `totalAssigned` but show up in none of the other buckets, since
+`uncompletedIssuesUponClose` only covers issues that were still open (not
+canceled/duplicate) when the cycle closed."""
 
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -132,6 +142,7 @@ def build_previous_sprint(client: LinearClient, team: Dict[str, Any]) -> Optiona
             "assignee": None,
             "totalAssigned": 0,
             "completed": [],
+            "canceled": [],
             "movedToNextSprint": [],
             "removedFromCycle": [],
             "addedDuringCycle": [],
@@ -147,8 +158,24 @@ def build_previous_sprint(client: LinearClient, team: Dict[str, Any]) -> Optiona
         state_type = issue["state"]["type"]
         summary = _issue_summary(issue)
 
+        # Order matters: an issue's *current* state wins over its
+        # once-uncompleted-at-close snapshot - e.g. an issue that was open
+        # when the cycle closed but has since been completed or canceled
+        # should be counted as that, not as "moved"/"removed". Canceled
+        # issues need their own bucket (rather than falling into
+        # "removed") because `uncompletedIssuesUponClose` only covers
+        # issues that were genuinely still open at close - a ticket
+        # canceled *during* the cycle never appears there, so without this
+        # branch it would be counted in `totalAssigned` but in none of the
+        # other buckets, making `completed + canceled + moved + removed`
+        # come up short of `totalAssigned`. Linear's `WorkflowStateType`
+        # also has a separate "duplicate" type alongside "canceled" (both
+        # are terminal, non-completed outcomes) - folded in here for the
+        # same reason.
         if state_type == "completed":
             bucket["completed"].append(summary)
+        elif state_type in ("canceled", "duplicate"):
+            bucket["canceled"].append(summary)
         elif issue["id"] in uncompleted_by_id:
             landed_cycle = uncompleted_by_id[issue["id"]].get("cycle")
             landed_cycle_id = landed_cycle["id"] if landed_cycle else None
@@ -167,6 +194,7 @@ def build_previous_sprint(client: LinearClient, team: Dict[str, Any]) -> Optiona
                 "assignee": bucket["assignee"],
                 "totalAssigned": bucket["totalAssigned"],
                 "completed": {"count": len(bucket["completed"]), "issues": bucket["completed"]},
+                "canceled": {"count": len(bucket["canceled"]), "issues": bucket["canceled"]},
                 "movedToNextSprint": {
                     "count": len(bucket["movedToNextSprint"]),
                     "issues": bucket["movedToNextSprint"],

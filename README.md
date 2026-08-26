@@ -40,8 +40,18 @@ every milestone with its target date and whether it's complete.
     cycle closed but may since have moved elsewhere) — this way tickets that
     have already rolled out of the closed cycle aren't lost from the count.
   - **Completed** = issues with `state.type == "completed"`.
+  - **Canceled** = issues with `state.type == "canceled"` or `"duplicate"` -
+    both are terminal, non-completed outcomes. These are checked before
+    falling back to `uncompletedIssuesUponClose` below, since a ticket
+    canceled *during* the cycle never appears in that connection (it only
+    covers issues that were still open when the cycle closed) - without
+    this bucket, such tickets would count toward "Total assigned" but show
+    up in none of the other columns, so `Completed + Canceled + Moved to
+    next + Removed` wouldn't add back up to "Total assigned".
   - **Moved to next sprint** = issues from `uncompletedIssuesUponClose` whose
     *current* `cycle.id` now equals the team's active cycle.
+  - **Removed from cycle** = everything else in `uncompletedIssuesUponClose`
+    (was still open at close, but didn't roll into the active cycle either).
   - **Added during the cycle** = for each issue, look at `issue.history` for
     a node where `toCycle.number` matches the sprint; if found, its
     `updatedAt` is when it was pulled in. If no such node exists, the issue
@@ -142,11 +152,14 @@ the site into separate capabilities, each its own tab:
     mid-cycle** counts. There's no "moved to next"/"removed" breakdown here
     since the cycle's still in progress (`renderSprintReportAssigneeTable`).
   - **Previous sprint** — the same breakdown as the EPD Report's Previous
-    Sprint table: **Assigned**, **Completed**, **Moved to next**,
-    **Removed**, and **Added mid-cycle** - i.e. every assigned ticket that
-    *didn't* get completed is accounted for as either moved into the next
-    cycle or removed from the cycle entirely, not just folded into
-    "Assigned" with no further breakdown (`renderPreviousSprintReportAssigneeTable`).
+    Sprint table: **Assigned**, **Completed**, **Canceled**, **Moved to
+    next**, **Removed**, and **Added mid-cycle** - every assigned ticket
+    that *didn't* get completed is accounted for as either canceled, moved
+    into the next cycle, or removed from the cycle entirely, not just
+    folded into "Assigned" with no further breakdown
+    (`renderPreviousSprintReportAssigneeTable`). "Canceled" also covers
+    Linear's separate "duplicate" state - see "How it determines each
+    bucket" above.
 
   "Added mid-cycle" comes from the same per-issue history walk used for the
   EPD Report's Previous Sprint section (see
@@ -415,8 +428,8 @@ Sprint Report <date>                  (page)
     Current Sprint                    (heading_3)
       Team member / Assigned / Completed / Added mid-cycle table
     Previous Sprint                   (heading_3)
-      status summary + Assignee / Assigned / Completed / Moved to next /
-      Removed / Added mid-cycle table
+      status summary + Assignee / Assigned / Completed / Canceled / Moved
+      to next / Removed / Added mid-cycle table
 ```
 
 This calls the Notion REST API directly (`product_status/notion_client.py`,
