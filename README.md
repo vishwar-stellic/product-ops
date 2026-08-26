@@ -133,16 +133,26 @@ the site into separate capabilities, each its own tab:
 - **EPD Report** — everything described below: squads, projects, quality,
   sprints, and Publish to Notion.
 - **Sprint Report** — one section per squad with **Current sprint** /
-  **Previous sprint** sub-tabs (`product_status/static/app.js:renderSprintReportTeam`);
-  each sub-tab shows one table with a row per team member and their
-  **Assigned**, **Completed**, and **Added mid-cycle** counts, plus its own
-  "Publishes to"/**Publish to Notion** bar (see "Publish to Notion" below).
-  Reuses the same per-squad data already loaded for the EPD Report tab
-  (`state.squadsByKey`), so it needs no separate fetch or cache - "Added
-  mid-cycle" comes from the same per-issue history walk used for the
-  Previous Sprint section's own "Added mid-cycle" column (see
+  **Previous sprint** sub-tabs (`product_status/static/app.js:renderSprintReportTeam`),
+  plus its own "Publishes to"/**Publish to Notion** bar (see "Publish to
+  Notion" below). Reuses the same per-squad data already loaded for the EPD
+  Report tab (`state.squadsByKey`), so it needs no separate fetch or cache.
+  Each sub-tab shows one table with a row per team member:
+  - **Current sprint** — **Assigned**, **Completed**, and **Added
+    mid-cycle** counts. There's no "moved to next"/"removed" breakdown here
+    since the cycle's still in progress (`renderSprintReportAssigneeTable`).
+  - **Previous sprint** — the same breakdown as the EPD Report's Previous
+    Sprint table: **Assigned**, **Completed**, **Moved to next**,
+    **Removed**, and **Added mid-cycle** - i.e. every assigned ticket that
+    *didn't* get completed is accounted for as either moved into the next
+    cycle or removed from the cycle entirely, not just folded into
+    "Assigned" with no further breakdown (`renderPreviousSprintReportAssigneeTable`).
+
+  "Added mid-cycle" comes from the same per-issue history walk used for the
+  EPD Report's Previous Sprint section (see
   `product_status/issues.py:fetch_added_during_cycle`), just applied to the
-  active cycle instead (`product_status/report.py:build_current_sprint`).
+  active cycle too for the Current sprint sub-tab
+  (`product_status/report.py:build_current_sprint`).
 - **Project Milestones** — placeholder for now (no content yet); see
   `#tab-project-milestones` in `index.html` and `switchTab()` in `app.js`
   for how tabs are wired up.

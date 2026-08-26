@@ -509,12 +509,11 @@ function renderSprintDataHiddenBlock() {
 // Reuses the same per-squad data already fetched for the EPD Report tab
 // (`state.squadsByKey`) - one section per team, with "Current sprint" /
 // "Previous sprint" sub-tabs so both are available without doubling the
-// page length. Each table shows every team member's assigned/completed/
-// added-mid-cycle counts.
+// page length.
 
-// `currentSprint.byAssignee` rows use `total`; `previousSprint.byAssignee`
-// rows use `totalAssigned` (see report.py) - normalize here so both render
-// through the same table markup.
+// Current sprint: the cycle's still in progress, so there's no "moved to
+// next"/"removed" breakdown yet (see report.py:build_current_sprint) - just
+// assigned/completed/added-mid-cycle.
 function renderSprintReportAssigneeTable(byAssignee, emptyMessage) {
   if (!byAssignee.length) {
     return `<p class="empty-note">${escapeHtml(emptyMessage)}</p>`;
@@ -524,7 +523,7 @@ function renderSprintReportAssigneeTable(byAssignee, emptyMessage) {
       (row) => `
         <tr>
           <td>${escapeHtml(row.assignee)}</td>
-          <td class="num">${row.total ?? row.totalAssigned}</td>
+          <td class="num">${row.total}</td>
           <td class="num">${row.completed.count}</td>
           <td class="num">${row.addedDuringCycle.count}</td>
         </tr>`
@@ -545,6 +544,48 @@ function renderSprintReportAssigneeTable(byAssignee, emptyMessage) {
     </table>`;
 }
 
+// Previous sprint: the cycle is closed, so every assigned ticket landed
+// somewhere other than "completed" too - either it moved into the next
+// cycle or got removed from the cycle entirely (see
+// report.py:build_previous_sprint). Surfacing those separately (rather
+// than folding them into "Assigned" with no further breakdown) is the
+// whole point of this table, so it intentionally mirrors
+// `renderPreviousSprintBlock`'s EPD Report table rather than reusing
+// `renderSprintReportAssigneeTable` above.
+function renderPreviousSprintReportAssigneeTable(byAssignee, emptyMessage) {
+  if (!byAssignee.length) {
+    return `<p class="empty-note">${escapeHtml(emptyMessage)}</p>`;
+  }
+  const rows = byAssignee
+    .map(
+      (row) => `
+        <tr>
+          <td>${escapeHtml(row.assignee)}</td>
+          <td class="num">${row.totalAssigned}</td>
+          <td class="num">${row.completed.count}</td>
+          <td class="num">${row.movedToNextSprint.count}</td>
+          <td class="num">${row.removedFromCycle.count}</td>
+          <td class="num">${row.addedDuringCycle.count}</td>
+        </tr>`
+    )
+    .join("");
+
+  return `
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Team member</th>
+          <th class="num">Assigned</th>
+          <th class="num">Completed</th>
+          <th class="num">Moved to next</th>
+          <th class="num">Removed</th>
+          <th class="num">Added mid-cycle</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
 function renderSprintReportPanel(subTab, sprint, activeSubTab, emptyStateMessage, emptyTableMessage) {
   const hidden = subTab !== activeSubTab ? " hidden" : "";
   if (!sprint) {
@@ -553,13 +594,17 @@ function renderSprintReportPanel(subTab, sprint, activeSubTab, emptyStateMessage
     )}</p></div>`;
   }
   const { cycle, byAssignee } = sprint;
+  const table =
+    subTab === "previous"
+      ? renderPreviousSprintReportAssigneeTable(byAssignee, emptyTableMessage)
+      : renderSprintReportAssigneeTable(byAssignee, emptyTableMessage);
   return `
     <div class="sprint-subtab-panel${hidden}" data-subtab="${subTab}">
       <div class="cycle-meta">
         <span class="cycle-name">${escapeHtml(cycleDisplayName(cycle))}</span>
         <span>${formatDate(cycle.startsAt)} → ${formatDate(cycle.endsAt)}</span>
       </div>
-      ${renderSprintReportAssigneeTable(byAssignee, emptyTableMessage)}
+      ${table}
     </div>`;
 }
 
