@@ -103,9 +103,17 @@
     </section>
 
     <section id="tab-project-milestones" class="tab-panel hidden">
-      <div class="placeholder-tab">
-        <h2>Project Milestones</h2>
-        <p>Coming soon.</p>
+      <div class="milestones-toolbar">
+        <div class="milestones-toolbar-info">
+          <h2 id="milestones-quarter-label" class="milestones-quarter-label">Project Milestones</h2>
+          <span id="milestones-updated-at" class="updated-at"></span>
+        </div>
+        <button id="milestones-update-btn" class="btn btn-primary btn-sm" type="button">
+          <span class="btn-label">Update</span>
+        </button>
+      </div>
+      <div id="milestones-report-container">
+        <p class="empty-note">Loading…</p>
       </div>
     </section>
   </main>

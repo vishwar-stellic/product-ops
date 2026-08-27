@@ -41,6 +41,13 @@ Endpoints:
                                           Notion as a new "Sprint Report
                                           <date>" sub-page. ?parent_page_url=...
                                           same as above.
+    GET  /api/milestones-report       -> every current-quarter project's
+                                          milestones on one timeline, plus
+                                          anyone flagged as overloaded (see
+                                          milestones_report.py) - cached
+                                          like /api/dashboard
+    POST /api/milestones-report/refresh -> force a fresh pull, bypassing
+                                          the 24h cache
     GET  /api/notion/status       -> whether Notion is connected (OAuth) and
                                       to which workspace, plus
                                       defaultParentPageUrl
@@ -85,6 +92,11 @@ from .dashboard import (
     squad_cache_key,
 )
 from .linear_client import LinearClient, LinearGraphQLError
+from .milestones_report import (
+    MILESTONES_REPORT_CACHE_KEY,
+    MILESTONES_REPORT_CACHE_VERSION,
+    build_milestones_report,
+)
 from .notion_client import NotionError, extract_page_id
 from .notion_report import (
     DEFAULT_PARENT_PAGE_URL,
@@ -509,6 +521,42 @@ def dashboard_publish_sprint_report(
         raise HTTPException(status_code=502, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+def _get_milestones_report(force: bool) -> Dict[str, Any]:
+    entry = cache.get_or_refresh(
+        MILESTONES_REPORT_CACHE_KEY,
+        lambda: build_milestones_report(client=LinearClient()),
+        force=force,
+        max_age_seconds=DASHBOARD_MAX_AGE_SECONDS,
+        version=MILESTONES_REPORT_CACHE_VERSION,
+    )
+    return {"fetchedAt": entry["fetchedAt"], **entry["data"]}
+
+
+@app.get("/api/milestones-report")
+def milestones_report():
+    """Every current-quarter project's milestones on one timeline, plus
+    anyone flagged as overloaded (see `milestones_report.py`). Cached the
+    same way as `/api/dashboard` - refetched at most once per 24h unless
+    forced via the POST endpoint below."""
+    try:
+        return _get_milestones_report(force=False)
+    except LinearGraphQLError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/milestones-report/refresh")
+def milestones_report_refresh():
+    """Force a fresh pull from Linear for the milestones report, regardless of cache age."""
+    try:
+        return _get_milestones_report(force=True)
+    except LinearGraphQLError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 

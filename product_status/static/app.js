@@ -69,6 +69,10 @@ const els = {
   topbarUser: document.getElementById("topbar-user"),
   topbarUserAvatar: document.getElementById("topbar-user-avatar"),
   topbarUserName: document.getElementById("topbar-user-name"),
+  milestonesReportContainer: document.getElementById("milestones-report-container"),
+  milestonesUpdateBtn: document.getElementById("milestones-update-btn"),
+  milestonesQuarterLabel: document.getElementById("milestones-quarter-label"),
+  milestonesUpdatedAt: document.getElementById("milestones-updated-at"),
 };
 
 function escapeHtml(value) {
@@ -1117,11 +1121,263 @@ if (epdToolbar) {
   });
 }
 
+// ---- Project Milestones tab ----
+// One shared timeline (one row per current-quarter project, milestones
+// plotted by target date) plus a callout for anyone who owns multiple
+// milestones - across *different* projects - landing close together (see
+// `milestones_report.py`'s module docstring for how ownership/overload are
+// derived). Loaded lazily (see `switchTab`) since it's a separate, heavier
+// Linear pull from the dashboard's own data and may go unvisited.
+
+const MILESTONE_STATUS_CLASS = {
+  unstarted: "ms-unstarted",
+  next: "ms-next",
+  overdue: "ms-overdue",
+  done: "ms-done",
+};
+
+const MILESTONE_STATUS_LABEL = {
+  unstarted: "Unstarted",
+  next: "Next",
+  overdue: "Overdue",
+  done: "Done",
+};
+
+// Mirrors `formatDate`'s reasoning: build TimelessDate strings from their
+// parts (local midnight) rather than passing them to `new Date()` directly,
+// which parses as UTC and can shift a day in timezones behind UTC.
+function parseTimelessDate(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || "");
+  if (!match) return null;
+  return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+}
+
+function daysBetween(a, b) {
+  return Math.round((b.getTime() - a.getTime()) / (24 * 60 * 60 * 1000));
+}
+
+// Position (0-100) of `dateStr` along the [quarterStart, quarterEnd) axis.
+function timelinePercent(dateStr, quarterStart, quarterEnd) {
+  const d = parseTimelessDate(dateStr);
+  const start = parseTimelessDate(quarterStart);
+  const end = parseTimelessDate(quarterEnd);
+  if (!d || !start || !end) return null;
+  const total = daysBetween(start, end);
+  if (total <= 0) return null;
+  const pct = (daysBetween(start, d) / total) * 100;
+  return Math.round(Math.min(100, Math.max(0, pct)) * 100) / 100;
+}
+
+function timelineMonthTicks(quarterStart, quarterEnd) {
+  const start = parseTimelessDate(quarterStart);
+  const end = parseTimelessDate(quarterEnd);
+  if (!start || !end) return [];
+  const ticks = [];
+  let cursor = new Date(start.getFullYear(), start.getMonth(), 1);
+  while (cursor < end) {
+    const isoFirst = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, "0")}-01`;
+    ticks.push({
+      pct: timelinePercent(isoFirst, quarterStart, quarterEnd),
+      label: cursor.toLocaleDateString(undefined, { month: "short" }),
+    });
+    cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+  }
+  return ticks;
+}
+
+function timelineTodayPercent(quarterStart, quarterEnd) {
+  const today = new Date();
+  const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(
+    today.getDate()
+  ).padStart(2, "0")}`;
+  if (todayStr < quarterStart || todayStr >= quarterEnd) return null;
+  return timelinePercent(todayStr, quarterStart, quarterEnd);
+}
+
+function milestoneOwnerText(milestone) {
+  const names = (milestone.owners || []).map((owner) => owner.name);
+  const rolePrefix = milestone.role ? `${milestone.role}: ` : "";
+  return names.length ? `${rolePrefix}${names.join(", ")}` : `${rolePrefix}Unassigned`.trim() || "Unassigned";
+}
+
+function renderTimelineMarker(milestone, quarterStart, quarterEnd) {
+  const pct = timelinePercent(milestone.targetDate, quarterStart, quarterEnd);
+  if (pct === null) return "";
+  const statusClass = MILESTONE_STATUS_CLASS[milestone.status] || "ms-unstarted";
+  const statusLabel = MILESTONE_STATUS_LABEL[milestone.status] || milestone.status || "";
+  const tooltip = `${milestone.name} · ${formatDate(milestone.targetDate)} · ${statusLabel} · ${milestoneOwnerText(
+    milestone
+  )}`;
+  const firstOwner = (milestone.owners || [])[0];
+  const avatar =
+    firstOwner && firstOwner.avatarUrl
+      ? `<img class="timeline-marker-avatar" src="${escapeHtml(firstOwner.avatarUrl)}" alt="" />`
+      : "";
+  return `
+    <div class="timeline-marker" style="left: ${pct}%" title="${escapeHtml(tooltip)}">
+      <span class="timeline-marker-dot ${statusClass}"></span>
+      ${avatar}
+      <span class="timeline-marker-label">${escapeHtml(milestone.name)}</span>
+    </div>`;
+}
+
+function renderTimelineRow(project, quarterStart, quarterEnd) {
+  const markers = project.milestones.map((m) => renderTimelineMarker(m, quarterStart, quarterEnd)).join("");
+  return `
+    <div class="timeline-row">
+      <div class="timeline-row-label">
+        <a href="${escapeHtml(project.url)}" target="_blank" rel="noopener">${escapeHtml(project.name)}</a>
+        <span class="status-badge ${statusBadgeClass(project.statusType)}">${escapeHtml(project.status || "—")}</span>
+      </div>
+      <div class="timeline-row-track">${markers}</div>
+    </div>`;
+}
+
+function renderTimelineGridLines(quarterStart, quarterEnd) {
+  const ticks = timelineMonthTicks(quarterStart, quarterEnd)
+    .map((t) => `<div class="timeline-month-tick" style="left: ${t.pct}%"><span>${escapeHtml(t.label)}</span></div>`)
+    .join("");
+  const todayPct = timelineTodayPercent(quarterStart, quarterEnd);
+  const today = todayPct === null ? "" : `<div class="timeline-today-line" style="left: ${todayPct}%" title="Today"></div>`;
+  return `<div class="timeline-grid-lines">${ticks}${today}</div>`;
+}
+
+function renderTimelineSection(data) {
+  if (!data.projects.length) {
+    return '<p class="empty-note">No current-quarter projects with milestones in this window.</p>';
+  }
+  const rows = data.projects.map((p) => renderTimelineRow(p, data.quarterStart, data.quarterEnd)).join("");
+  return `
+    <div class="timeline-card">
+      <div class="timeline-legend">
+        <span><span class="timeline-marker-dot ms-done"></span> Done</span>
+        <span><span class="timeline-marker-dot ms-next"></span> Next</span>
+        <span><span class="timeline-marker-dot ms-unstarted"></span> Unstarted</span>
+        <span><span class="timeline-marker-dot ms-overdue"></span> Overdue</span>
+        <span class="timeline-legend-today">Today</span>
+      </div>
+      <div class="timeline-body">
+        ${renderTimelineGridLines(data.quarterStart, data.quarterEnd)}
+        ${rows}
+      </div>
+    </div>`;
+}
+
+function renderOverloadCard(overload) {
+  const person = overload.person;
+  const avatar = person.avatarUrl
+    ? `<img class="overload-avatar" src="${escapeHtml(person.avatarUrl)}" alt="" />`
+    : `<span class="overload-avatar overload-avatar-fallback">${escapeHtml((person.name || "?").slice(0, 1))}</span>`;
+  const items = overload.milestones
+    .map(
+      (m) => `
+      <li>
+        <a href="${escapeHtml(m.projectUrl)}" target="_blank" rel="noopener">${escapeHtml(m.projectName)}</a>
+        — ${escapeHtml(m.milestoneName)}${m.role ? ` <span class="label-badge">${escapeHtml(m.role)}</span>` : ""}
+        <span class="overload-date">${formatDate(m.targetDate)}</span>
+      </li>`
+    )
+    .join("");
+  return `
+    <div class="overload-card">
+      <div class="overload-card-header">
+        ${avatar}
+        <div>
+          <div class="overload-name">${escapeHtml(person.name)}</div>
+          <div class="overload-window">${formatDate(overload.windowStart)} → ${formatDate(overload.windowEnd)}</div>
+        </div>
+      </div>
+      <ul class="overload-list">${items}</ul>
+    </div>`;
+}
+
+function renderOverloadSection(data) {
+  if (!data.overloads.length) {
+    return `
+      <div class="overload-section overload-section-empty">
+        <h3 class="block-title">Overloaded people</h3>
+        <p class="empty-note">No one owns multiple milestones (across different projects) within ${data.overloadWindowDays} days of each other this quarter.</p>
+      </div>`;
+  }
+  return `
+    <div class="overload-section">
+      <h3 class="block-title">Overloaded people <span class="label-badge">milestones within ${data.overloadWindowDays} days, across different projects</span></h3>
+      <div class="overload-grid">${data.overloads.map(renderOverloadCard).join("")}</div>
+    </div>`;
+}
+
+function renderMilestonesReport(data) {
+  if (!els.milestonesReportContainer) return;
+  els.milestonesReportContainer.innerHTML = `
+    ${renderOverloadSection(data)}
+    <div class="timeline-section">
+      <h3 class="block-title">Timeline</h3>
+      ${renderTimelineSection(data)}
+    </div>`;
+  if (els.milestonesQuarterLabel) {
+    els.milestonesQuarterLabel.textContent = `Project Milestones · ${data.quarterLabel}`;
+  }
+  if (els.milestonesUpdatedAt && data.fetchedAt) {
+    els.milestonesUpdatedAt.textContent = `Updated ${formatRelativeTime(data.fetchedAt)}`;
+    els.milestonesUpdatedAt.classList.toggle("stale", isStale(data.fetchedAt));
+    els.milestonesUpdatedAt.title = new Date(data.fetchedAt * 1000).toLocaleString();
+  }
+}
+
+let milestonesReportLoaded = false;
+
+async function loadMilestonesReport() {
+  if (!els.milestonesReportContainer) return;
+  try {
+    const res = await fetch("/api/milestones-report");
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail || `Request failed (${res.status})`);
+    }
+    renderMilestonesReport(await res.json());
+  } catch (err) {
+    els.milestonesReportContainer.innerHTML = `<p class="empty-note">Couldn't load the milestones report: ${escapeHtml(
+      err.message
+    )}</p>`;
+  }
+}
+
+async function refreshMilestonesReport() {
+  const btn = els.milestonesUpdateBtn;
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span><span class="btn-label">Updating…</span>';
+  }
+  try {
+    const res = await fetch("/api/milestones-report/refresh", { method: "POST" });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail || `Request failed (${res.status})`);
+    }
+    renderMilestonesReport(await res.json());
+  } catch (err) {
+    showError(`Couldn't update the milestones report: ${err.message}`);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<span class="btn-label">Update</span>';
+    }
+  }
+}
+
+if (els.milestonesUpdateBtn) {
+  els.milestonesUpdateBtn.addEventListener("click", refreshMilestonesReport);
+}
+
 // ---- Tabs ----
 
 function switchTab(tabName) {
   els.tabButtons.forEach((btn) => btn.classList.toggle("active", btn.dataset.tab === tabName));
   els.tabPanels.forEach((panel) => panel.classList.toggle("hidden", panel.id !== `tab-${tabName}`));
+  if (tabName === "project-milestones" && !milestonesReportLoaded) {
+    milestonesReportLoaded = true;
+    loadMilestonesReport();
+  }
 }
 
 els.tabButtons.forEach((btn) => {

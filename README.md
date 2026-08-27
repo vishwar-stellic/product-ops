@@ -166,9 +166,20 @@ the site into separate capabilities, each its own tab:
   `product_status/issues.py:fetch_added_during_cycle`), just applied to the
   active cycle too for the Current sprint sub-tab
   (`product_status/report.py:build_current_sprint`).
-- **Project Milestones** — placeholder for now (no content yet); see
-  `#tab-project-milestones` in `index.html` and `switchTab()` in `app.js`
-  for how tabs are wired up.
+- **Project Milestones** — every project with a start or target date in
+  the current calendar quarter, plotted on one shared timeline (one row
+  per project, milestones as dots positioned by target date), plus an
+  **Overloaded people** callout at the top: anyone who owns multiple
+  milestones — across *different* projects — landing within 7 days of
+  each other. Milestone ownership is derived from the Linear issues linked
+  to that milestone rather than a single fixed "project owner", since
+  different roles own different canonical milestones (Product Lead for
+  *Product: Define*, Designer for *Design: Shape*/*Design: Refine*, Eng
+  Lead for *Early Access*/*Public Launch*); a milestone with no linked
+  issues (and no applicable fallback) shows as "Unassigned" rather than
+  guessing. See `product_status/milestones_report.py`'s module docstring
+  for the full design. Lazy-loaded on first visit to the tab, cached like
+  the other tabs (24h, with its own **Update** button to force a refresh).
 
 #### Signing in
 
@@ -583,6 +594,7 @@ product_status/
   projects.py         # project summaries (status, dates, milestones) for a given project label
   quality.py           # per-team SLA/bug counts (out of SLA, failed SLA, incoming high/urgent bugs)
   dashboard.py         # combines sprints + summit projects + quality, grouped by squad, for the web UI
+  milestones_report.py  # cross-project milestone timeline + overloaded-person detection for the Project Milestones tab
   cache.py             # JSON cache keyed by age (used by the dashboard, 24h default) - on disk, or...
   blob_cache.py         # ...Vercel Blob-backed, when BLOB_READ_WRITE_TOKEN is set (persists on serverless hosts)
   notion_client.py      # raw Notion REST API client (auth, retries, nested block creation)

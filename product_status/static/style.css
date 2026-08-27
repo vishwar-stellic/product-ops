@@ -822,3 +822,282 @@ body {
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
+
+/* ---- Project Milestones tab ---- */
+
+.milestones-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.milestones-toolbar-info {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.milestones-quarter-label {
+  font-size: 20px;
+  font-weight: 700;
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+
+.overload-section {
+  margin-bottom: 28px;
+}
+
+.overload-section-empty .empty-note {
+  margin-top: 0;
+}
+
+.overload-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 14px;
+}
+
+.overload-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--yellow);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+
+.overload-card-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.overload-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  object-fit: cover;
+}
+
+.overload-avatar-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.overload-name {
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.overload-window {
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.overload-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12.5px;
+}
+
+.overload-list a {
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.overload-list a:hover {
+  text-decoration: underline;
+}
+
+.overload-date {
+  color: var(--text-faint);
+  float: right;
+}
+
+.timeline-section .block-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.timeline-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 16px 8px;
+  overflow-x: auto;
+}
+
+.timeline-legend {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  color: var(--text-faint);
+  font-size: 12px;
+  margin-bottom: 14px;
+  padding-left: 240px;
+}
+
+.timeline-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.timeline-legend-today {
+  padding-left: 10px;
+  border-left: 2px solid var(--accent);
+}
+
+.timeline-body {
+  position: relative;
+  min-width: 760px;
+}
+
+.timeline-grid-lines {
+  position: absolute;
+  left: 240px;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.timeline-month-tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: 1px dashed var(--border);
+}
+
+.timeline-month-tick span {
+  position: absolute;
+  top: -18px;
+  left: 4px;
+  font-size: 11px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.timeline-today-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent);
+  opacity: 0.6;
+}
+
+.timeline-row {
+  display: flex;
+  align-items: stretch;
+  position: relative;
+  z-index: 1;
+}
+
+.timeline-row-label {
+  flex: 0 0 240px;
+  padding: 10px 12px 10px 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.timeline-row-label a {
+  color: var(--text);
+  font-weight: 600;
+  font-size: 12.5px;
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeline-row-label a:hover {
+  text-decoration: underline;
+}
+
+.timeline-row-track {
+  flex: 1 1 auto;
+  position: relative;
+  min-height: 44px;
+  border-bottom: 1px solid var(--border);
+}
+
+.timeline-marker {
+  position: absolute;
+  top: 10px;
+  left: 0;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  cursor: default;
+}
+
+.timeline-marker-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  background: var(--surface-2);
+}
+
+.timeline-marker-dot.ms-done {
+  background: var(--green);
+  border-color: var(--green);
+}
+
+.timeline-marker-dot.ms-next {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.timeline-marker-dot.ms-unstarted {
+  background: var(--surface-2);
+  border-color: var(--gray);
+}
+
+.timeline-marker-dot.ms-overdue {
+  background: var(--red);
+  border-color: var(--red);
+}
+
+.timeline-marker-avatar {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  margin-top: 1px;
+  object-fit: cover;
+}
+
+.timeline-marker-label {
+  font-size: 10.5px;
+  color: var(--text-faint);
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+}
