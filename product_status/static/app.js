@@ -1226,11 +1226,24 @@ function renderTimelineMarker(milestone, quarterStart, quarterEnd) {
     </div>`;
 }
 
+// Milestones with no target date can't be plotted on the (date-based)
+// track at all, so they're called out here in the row's label instead of
+// just vanishing - see `milestones_report.py`'s module docstring.
+function renderUndatedBadge(project) {
+  const undated = project.undatedMilestones || [];
+  if (!undated.length) return "";
+  const tooltip = `Missing a target date: ${undated
+    .map((m) => `${m.name}${m.role ? ` (${m.role})` : ""}`)
+    .join(", ")}`;
+  return `<span class="ms-missing-badge" title="${escapeHtml(tooltip)}">⚠ ${undated.length} no date</span>`;
+}
+
 function renderTimelineRowLabel(project) {
   return `
     <div class="timeline-row-label">
       <a href="${escapeHtml(project.url)}" target="_blank" rel="noopener">${escapeHtml(project.name)}</a>
       <span class="status-badge ${statusBadgeClass(project.statusType)}">${escapeHtml(project.status || "—")}</span>
+      ${renderUndatedBadge(project)}
     </div>`;
 }
 
@@ -1348,34 +1361,10 @@ function renderOverloadSection(data) {
     </div>`;
 }
 
-function renderMissingDatesSection(data) {
-  const missing = data.missingDates || [];
-  if (!missing.length) return "";
-  const rows = missing
-    .map(
-      (m) => `
-      <tr>
-        <td><a href="${escapeHtml(m.projectUrl)}" target="_blank" rel="noopener">${escapeHtml(m.projectName)}</a></td>
-        <td>${escapeHtml(m.milestoneName)}${m.role ? ` <span class="label-badge">${escapeHtml(m.role)}</span>` : ""}</td>
-      </tr>`
-    )
-    .join("");
-  return `
-    <div class="missing-dates-section">
-      <h3 class="block-title">Milestones missing a date <span class="label-badge">${missing.length}</span></h3>
-      <p class="empty-note">These are one of the five tracked milestones but have no target date set, so they can't be placed on the timeline below.</p>
-      <table class="data-table">
-        <thead><tr><th>Project</th><th>Milestone</th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>`;
-}
-
 function renderMilestonesReport(data) {
   if (!els.milestonesReportContainer) return;
   els.milestonesReportContainer.innerHTML = `
     ${renderOverloadSection(data)}
-    ${renderMissingDatesSection(data)}
     <div class="timeline-section">
       <h3 class="block-title">Timeline</h3>
       ${renderTimelineSection(data)}

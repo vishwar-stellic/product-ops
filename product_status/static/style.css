@@ -930,14 +930,6 @@ body {
   float: right;
 }
 
-.missing-dates-section {
-  margin-bottom: 28px;
-}
-
-.missing-dates-section .empty-note {
-  margin: 0 0 10px;
-}
-
 .timeline-section .block-title {
   display: flex;
   align-items: center;
@@ -1076,6 +1068,15 @@ body {
 
 .timeline-row-label a:hover {
   text-decoration: underline;
+}
+
+.ms-missing-badge {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--yellow);
+  white-space: nowrap;
+  cursor: default;
 }
 
 .timeline-row-track {
