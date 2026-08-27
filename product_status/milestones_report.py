@@ -5,10 +5,13 @@ Every project with a start or target date in the current calendar quarter
 (same window as the dashboard's "Other projects" group - see
 `projects.quarter_bounds`) is shown on one shared timeline, one row per
 project, so it's easy to see at a glance which milestones land close
-together. On top of that, this flags anyone who owns multiple milestones
-(across *different* projects) landing within `OVERLOAD_WINDOW_DAYS` of each
-other - the "two designers double-booked in the same week" scenario this
-was built for.
+together. Only the five canonical lifecycle milestones
+(`milestones.KEY_MILESTONE_NAMES`) are shown - same set the EPD Report
+tab's project cards track - so the timeline stays scannable rather than
+cluttered with every ad hoc, project-specific milestone. On top of that,
+this flags anyone who owns multiple milestones (across *different*
+projects) landing within `OVERLOAD_WINDOW_DAYS` of each other - the "two
+designers double-booked in the same week" scenario this was built for.
 
 Milestone ownership (who to flag) is derived from the Linear issues linked
 to that milestone (`ProjectMilestone.issues`) rather than any single
@@ -31,7 +34,7 @@ from typing import Any, Dict, List, Optional
 
 from .dashboard import DASHBOARD_TEAMS
 from .linear_client import LinearClient
-from .milestones import normalize_milestone_name
+from .milestones import match_key_milestones, normalize_milestone_name
 from .projects import COMPLETED_MILESTONE_STATUSES, quarter_bounds, quarter_label
 
 MILESTONES_REPORT_CACHE_KEY = "dashboard-milestones-report"
@@ -39,7 +42,7 @@ MILESTONES_REPORT_CACHE_KEY = "dashboard-milestones-report"
 # Bump whenever this module's output shape changes - see
 # `dashboard.py:SQUAD_CACHE_VERSION` for why (same on-disk/Blob cache has no
 # schema of its own).
-MILESTONES_REPORT_CACHE_VERSION = 1
+MILESTONES_REPORT_CACHE_VERSION = 2
 
 # Which role is "on the hook" for each canonical milestone - see module
 # docstring. Fuzzy-matched the same way `milestones.py` matches milestone
@@ -195,6 +198,8 @@ def _project_summary(
         for m in project_raw.get("projectMilestones", {}).get("nodes", [])
         if m.get("targetDate") and quarter_start <= m["targetDate"] < quarter_end
     ]
+    # Only the five canonical lifecycle milestones - see module docstring.
+    milestones_raw = match_key_milestones(milestones_raw)
     milestones_raw.sort(key=lambda m: (m["targetDate"], m.get("sortOrder") or 0))
     milestones = [_milestone_summary(m, lead) for m in milestones_raw]
 
