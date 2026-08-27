@@ -1424,24 +1424,6 @@ if (els.milestonesUpdateBtn) {
   els.milestonesUpdateBtn.addEventListener("click", refreshMilestonesReport);
 }
 
-// The timeline's scrollbar is hidden (see `.timeline-scroll` in
-// style.css) so a plain vertical mouse wheel would otherwise look like it
-// does nothing over it - trackpad horizontal swipes already work natively
-// (they arrive as `deltaX`), so only redirect the scroll when vertical
-// wheel input actually dominates.
-if (els.milestonesReportContainer) {
-  els.milestonesReportContainer.addEventListener(
-    "wheel",
-    (event) => {
-      const scrollEl = event.target.closest(".timeline-scroll");
-      if (!scrollEl || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
-      scrollEl.scrollLeft += event.deltaY;
-      event.preventDefault();
-    },
-    { passive: false }
-  );
-}
-
 // ---- Tabs ----
 
 function switchTab(tabName) {

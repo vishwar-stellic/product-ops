@@ -171,7 +171,9 @@ the site into separate capabilities, each its own tab:
   sorted by start date, milestones as dots positioned by target date; the
   project name column stays docked on the left while the dated track
   scrolls independently — granular weekly gridlines, hidden scrollbar but
-  still scrollable via trackpad or mouse wheel), plus an **Overloaded
+  still scrollable via trackpad swipe or shift+scroll, so a plain vertical
+  scroll over the timeline still scrolls the page as expected), plus an
+  **Overloaded
   people** callout at the top: anyone who owns multiple milestones —
   across *different* projects — landing within 7 days of each other. A
   project with no dated milestones this quarter still gets a (empty) row
