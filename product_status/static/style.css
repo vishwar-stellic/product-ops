@@ -969,28 +969,16 @@ body {
   font-style: italic;
 }
 
-/* Two independently-scrolling regions side by side: `.timeline-labels`
-   (project names) stays fixed/"docked" while only `.timeline-scroll` (the
-   dated track area) scrolls horizontally - see app.js's wheel handler for
-   why plain vertical mouse-wheel input also works over it despite the
-   scrollbar itself being hidden below. */
-.timeline-layout {
-  display: flex;
-  align-items: flex-start;
-}
-
-.timeline-labels {
-  flex: 0 0 220px;
-  min-width: 0;
-}
-
-.timeline-labels-header {
-  height: 28px;
-}
-
+/* A single scrollable region (`.timeline-scroll`) holding one CSS grid
+   (`.timeline-grid`, 2 columns: labels + dated track). The label column is
+   `position: sticky; left: 0` rather than a second independent scroll
+   container, so its row heights and the track's row heights are the *same*
+   native grid rows - guaranteed to match (long project names/undated-
+   milestone lists can wrap and grow a row without a JS height-sync step)
+   instead of two parallel flex columns that could drift out of alignment.
+   Scrollbar is hidden but the area is still scrollable via trackpad swipe
+   or shift+scroll; plain vertical scroll passes through to the page. */
 .timeline-scroll {
-  flex: 1 1 auto;
-  min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none; /* Firefox */
@@ -1001,16 +989,73 @@ body {
   display: none; /* Chrome/Safari/newer Edge */
 }
 
-.timeline-tracks {
-  position: relative;
+.timeline-grid {
+  display: grid;
+  align-items: stretch;
 }
 
-.timeline-vlines {
-  position: absolute;
+.timeline-cell-label {
+  position: sticky;
   left: 0;
-  right: 0;
-  top: 28px;
-  bottom: 0;
+  z-index: 2;
+  background: var(--surface);
+  padding: 10px 12px 10px 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  min-height: 64px;
+  min-width: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.timeline-header-label {
+  min-height: 28px;
+}
+
+.timeline-row-label-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.timeline-row-label-main a {
+  color: var(--text);
+  font-weight: 600;
+  font-size: 12.5px;
+  text-decoration: none;
+  overflow-wrap: break-word;
+}
+
+.timeline-row-label-main a:hover {
+  text-decoration: underline;
+}
+
+.ms-missing-list {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--yellow);
+  line-height: 1.4;
+}
+
+.timeline-cell-track {
+  position: relative;
+  min-height: 64px;
+  border-bottom: 1px solid var(--border);
+}
+
+.timeline-header-track {
+  position: relative;
+  min-height: 28px;
+}
+
+/* Overlaps every `.timeline-cell-track` in the same grid column (CSS grid
+   allows overlapping items) - spans all project rows in one box so the
+   dashed week lines + "today" line only need rendering once, sitting
+   visually behind the per-row marker layer via z-index. */
+.timeline-vlines {
+  position: relative;
   z-index: 0;
   pointer-events: none;
 }
@@ -1031,11 +1076,6 @@ body {
   opacity: 0.6;
 }
 
-.timeline-header-track {
-  position: relative;
-  height: 28px;
-}
-
 .timeline-tick-label {
   position: absolute;
   top: 0;
@@ -1044,45 +1084,6 @@ body {
   font-size: 11px;
   color: var(--text-faint);
   white-space: nowrap;
-}
-
-.timeline-row-label {
-  height: 64px;
-  padding: 10px 12px 10px 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  border-bottom: 1px solid var(--border);
-}
-
-.timeline-row-label a {
-  color: var(--text);
-  font-weight: 600;
-  font-size: 12.5px;
-  text-decoration: none;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.timeline-row-label a:hover {
-  text-decoration: underline;
-}
-
-.ms-missing-badge {
-  flex-shrink: 0;
-  font-size: 10.5px;
-  font-weight: 600;
-  color: var(--yellow);
-  white-space: nowrap;
-  cursor: default;
-}
-
-.timeline-row-track {
-  position: relative;
-  height: 64px;
-  border-bottom: 1px solid var(--border);
 }
 
 .timeline-marker {

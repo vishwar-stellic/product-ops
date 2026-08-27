@@ -1227,51 +1227,55 @@ function renderTimelineMarker(milestone, quarterStart, quarterEnd) {
 }
 
 // Milestones with no target date can't be plotted on the (date-based)
-// track at all, so they're called out here in the row's label instead of
+// track at all, so they're listed out here in the row's label instead of
 // just vanishing - see `milestones_report.py`'s module docstring.
-function renderUndatedBadge(project) {
+function renderMissingList(project) {
   const undated = project.undatedMilestones || [];
   if (!undated.length) return "";
-  const tooltip = `Missing a target date: ${undated
-    .map((m) => `${m.name}${m.role ? ` (${m.role})` : ""}`)
-    .join(", ")}`;
-  return `<span class="ms-missing-badge" title="${escapeHtml(tooltip)}">⚠ ${undated.length} no date</span>`;
+  return `<div class="ms-missing-list">⚠ Missing dates: ${undated.map((m) => escapeHtml(m.name)).join(", ")}</div>`;
 }
 
-function renderTimelineRowLabel(project) {
+// Project name is never truncated (see `.timeline-row-label-main a` -
+// wraps instead of ellipsizing), and this cell's real height (name +
+// status badge + optional missing-dates list) drives its *grid* row's
+// height - see `.timeline-cell-label`/`.timeline-grid` in style.css - so
+// the corresponding track cell on the same row always matches, with no
+// separate height bookkeeping needed.
+function renderTimelineRowLabel(project, row) {
   return `
-    <div class="timeline-row-label">
-      <a href="${escapeHtml(project.url)}" target="_blank" rel="noopener">${escapeHtml(project.name)}</a>
-      <span class="status-badge ${statusBadgeClass(project.statusType)}">${escapeHtml(project.status || "—")}</span>
-      ${renderUndatedBadge(project)}
+    <div class="timeline-cell-label" style="grid-row: ${row}; grid-column: 1">
+      <div class="timeline-row-label-main">
+        <a href="${escapeHtml(project.url)}" target="_blank" rel="noopener">${escapeHtml(project.name)}</a>
+        <span class="status-badge ${statusBadgeClass(project.statusType)}">${escapeHtml(project.status || "—")}</span>
+      </div>
+      ${renderMissingList(project)}
     </div>`;
 }
 
-function renderTimelineRowTrack(project, quarterStart, quarterEnd) {
+function renderTimelineRowTrack(project, quarterStart, quarterEnd, row) {
   const markers = project.milestones.map((m) => renderTimelineMarker(m, quarterStart, quarterEnd)).join("");
-  return `<div class="timeline-row-track">${markers}</div>`;
+  return `<div class="timeline-cell-track" style="grid-row: ${row}; grid-column: 2">${markers}</div>`;
 }
 
-// Vertical gridlines + the "today" line - a separate absolutely-positioned
-// layer behind the track rows (see `.timeline-vlines` in style.css) so they
-// visually span every project row without being duplicated per-row.
-function renderTimelineVlines(quarterStart, quarterEnd) {
+// Vertical gridlines + the "today" line - one grid item spanning every
+// project row (see `.timeline-vlines` in style.css - CSS grid items are
+// allowed to overlap) so they only need rendering once rather than
+// per-row, sitting visually behind the marker layer via z-index.
+function renderTimelineVlines(quarterStart, quarterEnd, numRows) {
   const lines = timelineWeekTicks(quarterStart, quarterEnd)
     .map((t) => `<div class="timeline-vline" style="left: ${t.pct}%"></div>`)
     .join("");
   const todayPct = timelineTodayPercent(quarterStart, quarterEnd);
   const today = todayPct === null ? "" : `<div class="timeline-today-line" style="left: ${todayPct}%" title="Today"></div>`;
-  return `<div class="timeline-vlines">${lines}${today}</div>`;
+  return `<div class="timeline-vlines" style="grid-row: 2 / span ${numRows}; grid-column: 2">${lines}${today}</div>`;
 }
 
-// Date labels for the header row above the tracks - kept separate from
-// `renderTimelineVlines` since these live in normal flow (own row height)
-// while the gridlines themselves are an absolute overlay behind the rows.
+// Date labels for the header row above the tracks.
 function renderTimelineHeaderTrack(quarterStart, quarterEnd) {
   const labels = timelineWeekTicks(quarterStart, quarterEnd)
     .map((t) => `<div class="timeline-tick-label" style="left: ${t.pct}%">${escapeHtml(t.label)}</div>`)
     .join("");
-  return `<div class="timeline-header-track">${labels}</div>`;
+  return `<div class="timeline-header-track" style="grid-row: 1; grid-column: 2">${labels}</div>`;
 }
 
 // Pixels per day of the quarter the scrollable track area renders at -
@@ -1279,18 +1283,23 @@ function renderTimelineHeaderTrack(quarterStart, quarterEnd) {
 // cramming a whole ~92-day quarter into the visible viewport width.
 const TIMELINE_PX_PER_DAY = 16;
 const TIMELINE_MIN_TRACK_WIDTH = 760;
+const TIMELINE_LABEL_WIDTH = 240;
 
 function renderTimelineSection(data) {
   if (!data.projects.length) {
-    return '<p class="empty-note">No current-quarter projects with milestones in this window.</p>';
+    return '<p class="empty-note">No projects starting this quarter.</p>';
   }
   const start = parseTimelessDate(data.quarterStart);
   const end = parseTimelessDate(data.quarterEnd);
   const totalDays = start && end ? daysBetween(start, end) : 0;
   const trackWidth = Math.max(TIMELINE_MIN_TRACK_WIDTH, Math.round(totalDays * TIMELINE_PX_PER_DAY));
 
-  const labels = data.projects.map(renderTimelineRowLabel).join("");
-  const tracks = data.projects.map((p) => renderTimelineRowTrack(p, data.quarterStart, data.quarterEnd)).join("");
+  const rows = data.projects
+    .map(
+      (p, i) =>
+        `${renderTimelineRowLabel(p, i + 2)}${renderTimelineRowTrack(p, data.quarterStart, data.quarterEnd, i + 2)}`
+    )
+    .join("");
 
   return `
     <div class="timeline-card">
@@ -1302,17 +1311,12 @@ function renderTimelineSection(data) {
         <span class="timeline-legend-today">Today</span>
         <span class="timeline-legend-hint">Scroll to see more of the quarter →</span>
       </div>
-      <div class="timeline-layout">
-        <div class="timeline-labels">
-          <div class="timeline-labels-header"></div>
-          ${labels}
-        </div>
-        <div class="timeline-scroll">
-          <div class="timeline-tracks" style="width: ${trackWidth}px">
-            ${renderTimelineVlines(data.quarterStart, data.quarterEnd)}
-            ${renderTimelineHeaderTrack(data.quarterStart, data.quarterEnd)}
-            ${tracks}
-          </div>
+      <div class="timeline-scroll">
+        <div class="timeline-grid" style="grid-template-columns: ${TIMELINE_LABEL_WIDTH}px ${trackWidth}px">
+          <div class="timeline-cell-label timeline-header-label" style="grid-row: 1; grid-column: 1"></div>
+          ${renderTimelineHeaderTrack(data.quarterStart, data.quarterEnd)}
+          ${renderTimelineVlines(data.quarterStart, data.quarterEnd, data.projects.length)}
+          ${rows}
         </div>
       </div>
     </div>`;

@@ -168,27 +168,27 @@ the site into separate capabilities, each its own tab:
   (`product_status/report.py:build_current_sprint`).
 - **Project Milestones** — every project *starting* in the current
   calendar quarter, plotted on one shared timeline (one row per project,
-  sorted by start date, milestones as dots positioned by target date; the
-  project name column stays docked on the left while the dated track
-  scrolls independently — granular weekly gridlines, hidden scrollbar but
-  still scrollable via trackpad swipe or shift+scroll, so a plain vertical
-  scroll over the timeline still scrolls the page as expected), plus an
-  **Overloaded
-  people** callout at the top: anyone who owns multiple milestones —
-  across *different* projects — landing within 7 days of each other. A
-  project with no dated milestones this quarter still gets a (empty) row
-  rather than disappearing; a canonical milestone with no target date set
-  can't be plotted at all, so it's called out inline in that project's row
-  instead (a "⚠ N no date" badge next to the project name). Milestone
-  ownership is derived from the Linear issues linked to that milestone
-  rather than a single fixed "project owner", since different roles own
-  different canonical milestones (Product Lead for *Product: Define*,
-  Designer for *Design: Shape*/*Design: Refine*, Eng Lead for *Early
-  Access*/*Public Launch*); a milestone with no linked issues (and no
-  applicable fallback) shows as "Unassigned" rather than guessing. See
-  `product_status/milestones_report.py`'s module docstring for the full
-  design. Lazy-loaded on first visit to the tab, cached like the other
-  tabs (24h, with its own **Update** button to force a refresh).
+  sorted by start date, milestones as dots positioned by target date). The
+  project name column (full names, never truncated — they wrap instead)
+  stays docked on the left (`position: sticky`) while the dated track
+  scrolls independently to the right — granular weekly gridlines, hidden
+  scrollbar but still scrollable via trackpad swipe or shift+scroll, so a
+  plain vertical scroll over the timeline still scrolls the page as
+  expected. On top of the timeline sits an **Overloaded people** callout:
+  anyone who owns multiple milestones — across *different* projects —
+  landing within 7 days of each other. A project with no dated milestones
+  this quarter still gets an (empty) row rather than disappearing; a
+  canonical milestone with no target date set can't be plotted at all, so
+  it's listed out inline under that project's name instead ("⚠ Missing
+  dates: ..."). Milestone ownership is derived from the Linear issues
+  linked to that milestone rather than a single fixed "project owner",
+  since different roles own different canonical milestones (Product Lead
+  for *Product: Define*, Designer for *Design: Shape*/*Design: Refine*,
+  Eng Lead for *Early Access*/*Public Launch*); a milestone with no linked
+  issues (and no applicable fallback) shows as "Unassigned" rather than
+  guessing. See `product_status/milestones_report.py`'s module docstring
+  for the full design. Lazy-loaded on first visit to the tab, cached like
+  the other tabs (24h, with its own **Update** button to force a refresh).
 
 #### Signing in
 
