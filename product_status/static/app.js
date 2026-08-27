@@ -1168,19 +1168,24 @@ function timelinePercent(dateStr, quarterStart, quarterEnd) {
   return Math.round(Math.min(100, Math.max(0, pct)) * 100) / 100;
 }
 
-function timelineMonthTicks(quarterStart, quarterEnd) {
+// Weekly (not monthly) ticks - more granular so a specific date is easy to
+// pin down once the timeline is wide enough to scroll (see
+// `TIMELINE_PX_PER_DAY`/`renderTimelineSection`).
+function timelineWeekTicks(quarterStart, quarterEnd) {
   const start = parseTimelessDate(quarterStart);
   const end = parseTimelessDate(quarterEnd);
   if (!start || !end) return [];
   const ticks = [];
-  let cursor = new Date(start.getFullYear(), start.getMonth(), 1);
+  let cursor = new Date(start);
   while (cursor < end) {
-    const isoFirst = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, "0")}-01`;
+    const iso = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, "0")}-${String(
+      cursor.getDate()
+    ).padStart(2, "0")}`;
     ticks.push({
-      pct: timelinePercent(isoFirst, quarterStart, quarterEnd),
-      label: cursor.toLocaleDateString(undefined, { month: "short" }),
+      pct: timelinePercent(iso, quarterStart, quarterEnd),
+      label: cursor.toLocaleDateString(undefined, { month: "short", day: "numeric" }),
     });
-    cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+    cursor = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate() + 7);
   }
   return ticks;
 }
@@ -1221,32 +1226,59 @@ function renderTimelineMarker(milestone, quarterStart, quarterEnd) {
     </div>`;
 }
 
-function renderTimelineRow(project, quarterStart, quarterEnd) {
-  const markers = project.milestones.map((m) => renderTimelineMarker(m, quarterStart, quarterEnd)).join("");
+function renderTimelineRowLabel(project) {
   return `
-    <div class="timeline-row">
-      <div class="timeline-row-label">
-        <a href="${escapeHtml(project.url)}" target="_blank" rel="noopener">${escapeHtml(project.name)}</a>
-        <span class="status-badge ${statusBadgeClass(project.statusType)}">${escapeHtml(project.status || "—")}</span>
-      </div>
-      <div class="timeline-row-track">${markers}</div>
+    <div class="timeline-row-label">
+      <a href="${escapeHtml(project.url)}" target="_blank" rel="noopener">${escapeHtml(project.name)}</a>
+      <span class="status-badge ${statusBadgeClass(project.statusType)}">${escapeHtml(project.status || "—")}</span>
     </div>`;
 }
 
-function renderTimelineGridLines(quarterStart, quarterEnd) {
-  const ticks = timelineMonthTicks(quarterStart, quarterEnd)
-    .map((t) => `<div class="timeline-month-tick" style="left: ${t.pct}%"><span>${escapeHtml(t.label)}</span></div>`)
+function renderTimelineRowTrack(project, quarterStart, quarterEnd) {
+  const markers = project.milestones.map((m) => renderTimelineMarker(m, quarterStart, quarterEnd)).join("");
+  return `<div class="timeline-row-track">${markers}</div>`;
+}
+
+// Vertical gridlines + the "today" line - a separate absolutely-positioned
+// layer behind the track rows (see `.timeline-vlines` in style.css) so they
+// visually span every project row without being duplicated per-row.
+function renderTimelineVlines(quarterStart, quarterEnd) {
+  const lines = timelineWeekTicks(quarterStart, quarterEnd)
+    .map((t) => `<div class="timeline-vline" style="left: ${t.pct}%"></div>`)
     .join("");
   const todayPct = timelineTodayPercent(quarterStart, quarterEnd);
   const today = todayPct === null ? "" : `<div class="timeline-today-line" style="left: ${todayPct}%" title="Today"></div>`;
-  return `<div class="timeline-grid-lines">${ticks}${today}</div>`;
+  return `<div class="timeline-vlines">${lines}${today}</div>`;
 }
+
+// Date labels for the header row above the tracks - kept separate from
+// `renderTimelineVlines` since these live in normal flow (own row height)
+// while the gridlines themselves are an absolute overlay behind the rows.
+function renderTimelineHeaderTrack(quarterStart, quarterEnd) {
+  const labels = timelineWeekTicks(quarterStart, quarterEnd)
+    .map((t) => `<div class="timeline-tick-label" style="left: ${t.pct}%">${escapeHtml(t.label)}</div>`)
+    .join("");
+  return `<div class="timeline-header-track">${labels}</div>`;
+}
+
+// Pixels per day of the quarter the scrollable track area renders at -
+// wide enough that weekly ticks/nearby milestones stay legible rather than
+// cramming a whole ~92-day quarter into the visible viewport width.
+const TIMELINE_PX_PER_DAY = 16;
+const TIMELINE_MIN_TRACK_WIDTH = 760;
 
 function renderTimelineSection(data) {
   if (!data.projects.length) {
     return '<p class="empty-note">No current-quarter projects with milestones in this window.</p>';
   }
-  const rows = data.projects.map((p) => renderTimelineRow(p, data.quarterStart, data.quarterEnd)).join("");
+  const start = parseTimelessDate(data.quarterStart);
+  const end = parseTimelessDate(data.quarterEnd);
+  const totalDays = start && end ? daysBetween(start, end) : 0;
+  const trackWidth = Math.max(TIMELINE_MIN_TRACK_WIDTH, Math.round(totalDays * TIMELINE_PX_PER_DAY));
+
+  const labels = data.projects.map(renderTimelineRowLabel).join("");
+  const tracks = data.projects.map((p) => renderTimelineRowTrack(p, data.quarterStart, data.quarterEnd)).join("");
+
   return `
     <div class="timeline-card">
       <div class="timeline-legend">
@@ -1255,10 +1287,20 @@ function renderTimelineSection(data) {
         <span><span class="timeline-marker-dot ms-unstarted"></span> Unstarted</span>
         <span><span class="timeline-marker-dot ms-overdue"></span> Overdue</span>
         <span class="timeline-legend-today">Today</span>
+        <span class="timeline-legend-hint">Scroll to see more of the quarter →</span>
       </div>
-      <div class="timeline-body">
-        ${renderTimelineGridLines(data.quarterStart, data.quarterEnd)}
-        ${rows}
+      <div class="timeline-layout">
+        <div class="timeline-labels">
+          <div class="timeline-labels-header"></div>
+          ${labels}
+        </div>
+        <div class="timeline-scroll">
+          <div class="timeline-tracks" style="width: ${trackWidth}px">
+            ${renderTimelineVlines(data.quarterStart, data.quarterEnd)}
+            ${renderTimelineHeaderTrack(data.quarterStart, data.quarterEnd)}
+            ${tracks}
+          </div>
+        </div>
       </div>
     </div>`;
 }
@@ -1306,10 +1348,34 @@ function renderOverloadSection(data) {
     </div>`;
 }
 
+function renderMissingDatesSection(data) {
+  const missing = data.missingDates || [];
+  if (!missing.length) return "";
+  const rows = missing
+    .map(
+      (m) => `
+      <tr>
+        <td><a href="${escapeHtml(m.projectUrl)}" target="_blank" rel="noopener">${escapeHtml(m.projectName)}</a></td>
+        <td>${escapeHtml(m.milestoneName)}${m.role ? ` <span class="label-badge">${escapeHtml(m.role)}</span>` : ""}</td>
+      </tr>`
+    )
+    .join("");
+  return `
+    <div class="missing-dates-section">
+      <h3 class="block-title">Milestones missing a date <span class="label-badge">${missing.length}</span></h3>
+      <p class="empty-note">These are one of the five tracked milestones but have no target date set, so they can't be placed on the timeline below.</p>
+      <table class="data-table">
+        <thead><tr><th>Project</th><th>Milestone</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
 function renderMilestonesReport(data) {
   if (!els.milestonesReportContainer) return;
   els.milestonesReportContainer.innerHTML = `
     ${renderOverloadSection(data)}
+    ${renderMissingDatesSection(data)}
     <div class="timeline-section">
       <h3 class="block-title">Timeline</h3>
       ${renderTimelineSection(data)}
@@ -1367,6 +1433,24 @@ async function refreshMilestonesReport() {
 
 if (els.milestonesUpdateBtn) {
   els.milestonesUpdateBtn.addEventListener("click", refreshMilestonesReport);
+}
+
+// The timeline's scrollbar is hidden (see `.timeline-scroll` in
+// style.css) so a plain vertical mouse wheel would otherwise look like it
+// does nothing over it - trackpad horizontal swipes already work natively
+// (they arrive as `deltaX`), so only redirect the scroll when vertical
+// wheel input actually dominates.
+if (els.milestonesReportContainer) {
+  els.milestonesReportContainer.addEventListener(
+    "wheel",
+    (event) => {
+      const scrollEl = event.target.closest(".timeline-scroll");
+      if (!scrollEl || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+      scrollEl.scrollLeft += event.deltaY;
+      event.preventDefault();
+    },
+    { passive: false }
+  );
 }
 
 // ---- Tabs ----

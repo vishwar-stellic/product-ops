@@ -8,10 +8,14 @@ project, so it's easy to see at a glance which milestones land close
 together. Only the five canonical lifecycle milestones
 (`milestones.KEY_MILESTONE_NAMES`) are shown - same set the EPD Report
 tab's project cards track - so the timeline stays scannable rather than
-cluttered with every ad hoc, project-specific milestone. On top of that,
-this flags anyone who owns multiple milestones (across *different*
-projects) landing within `OVERLOAD_WINDOW_DAYS` of each other - the "two
-designers double-booked in the same week" scenario this was built for.
+cluttered with every ad hoc, project-specific milestone. A canonical
+milestone with no target date set can't be placed on the timeline at all,
+so those are instead surfaced separately in `missingDates` - a nudge to
+go set a date rather than the milestone just silently not appearing
+anywhere. On top of that, this flags anyone who owns multiple milestones
+(across *different* projects) landing within `OVERLOAD_WINDOW_DAYS` of
+each other - the "two designers double-booked in the same week" scenario
+this was built for.
 
 Milestone ownership (who to flag) is derived from the Linear issues linked
 to that milestone (`ProjectMilestone.issues`) rather than any single
@@ -50,7 +54,7 @@ MILESTONES_REPORT_CACHE_KEY = "dashboard-milestones-report"
 # Bump whenever this module's output shape changes - see
 # `dashboard.py:SQUAD_CACHE_VERSION` for why (same on-disk/Blob cache has no
 # schema of its own).
-MILESTONES_REPORT_CACHE_VERSION = 3
+MILESTONES_REPORT_CACHE_VERSION = 4
 
 # Which role is "on the hook" for each canonical milestone - see module
 # docstring. Fuzzy-matched the same way `milestones.py` matches milestone
@@ -234,6 +238,11 @@ def _project_summary(
     teams = [{"id": t["id"], "key": t["key"], "name": t["name"]} for t in project_raw.get("teams", {}).get("nodes", [])]
     lead = _user_summary(project_raw.get("lead"))
 
+    # Only the five canonical lifecycle milestones - see module docstring -
+    # regardless of date, so an undated one still gets caught below rather
+    # than silently vanishing.
+    canonical_raw = match_key_milestones(project_raw.get("projectMilestones", {}).get("nodes", []))
+
     # The project itself qualifies if *either* its start or target date
     # falls in the quarter (see `fetch_quarter_projects_with_owners`), but
     # a long-running project's individual milestones can be dated anywhere
@@ -241,15 +250,15 @@ def _project_summary(
     # milestones from months earlier, which is neither the focused "this
     # quarter" view asked for nor a meaningful signal for the overload
     # check below (a March milestone can't double-book anyone in August).
-    milestones_raw = [
-        m
-        for m in project_raw.get("projectMilestones", {}).get("nodes", [])
-        if m.get("targetDate") and quarter_start <= m["targetDate"] < quarter_end
-    ]
-    # Only the five canonical lifecycle milestones - see module docstring.
-    milestones_raw = match_key_milestones(milestones_raw)
-    milestones_raw.sort(key=lambda m: (m["targetDate"], m.get("sortOrder") or 0))
-    milestones = [_milestone_summary(m, lead) for m in milestones_raw]
+    dated_raw = [m for m in canonical_raw if m.get("targetDate") and quarter_start <= m["targetDate"] < quarter_end]
+    dated_raw.sort(key=lambda m: (m["targetDate"], m.get("sortOrder") or 0))
+    milestones = [_milestone_summary(m, lead) for m in dated_raw]
+
+    # Can't place these on the timeline at all with no date, and can't tell
+    # if they even belong in this quarter - surfaced separately instead of
+    # just dropping them, so it's obvious a canonical milestone exists but
+    # nobody's put a date on it yet (see `build_milestones_report`).
+    undated_milestones = [_milestone_summary(m, lead) for m in canonical_raw if not m.get("targetDate")]
 
     return {
         "id": project_raw["id"],
@@ -263,6 +272,7 @@ def _project_summary(
         "lead": lead,
         "teams": teams,
         "milestones": milestones,
+        "undatedMilestones": undated_milestones,
     }
 
 
@@ -342,13 +352,36 @@ def _detect_overloads(projects: List[Dict[str, Any]], window_days: int = OVERLOA
     return overloads
 
 
+def _missing_dates(projects: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    entries = [
+        {
+            "projectId": project["id"],
+            "projectName": project["name"],
+            "projectUrl": project["url"],
+            "milestoneId": milestone["id"],
+            "milestoneName": milestone["name"],
+            "role": milestone["role"],
+            "owners": milestone["owners"],
+        }
+        for project in projects
+        for milestone in project["undatedMilestones"]
+    ]
+    entries.sort(key=lambda e: (e["projectName"], e["milestoneName"]))
+    return entries
+
+
 def build_milestones_report(client: Optional[LinearClient] = None) -> Dict[str, Any]:
     client = client or LinearClient()
     quarter_start, quarter_end = quarter_bounds()
 
     raw_projects = fetch_quarter_projects_with_owners(client, quarter_start, quarter_end)
-    projects = [_project_summary(p, quarter_start, quarter_end) for p in raw_projects]
-    projects = [p for p in projects if p["milestones"] and _is_dashboard_team_project(p)]
+    all_projects = [_project_summary(p, quarter_start, quarter_end) for p in raw_projects]
+    all_projects = [p for p in all_projects if _is_dashboard_team_project(p)]
+
+    # A project with only undated canonical milestones still contributes to
+    # `missingDates` above even though it has nothing to plot - only
+    # projects with at least one dated milestone get a timeline row.
+    projects = [p for p in all_projects if p["milestones"]]
     projects.sort(key=lambda p: (p["milestones"][0]["targetDate"], p["name"]))
 
     return {
@@ -359,4 +392,5 @@ def build_milestones_report(client: Optional[LinearClient] = None) -> Dict[str, 
         "overloadWindowDays": OVERLOAD_WINDOW_DAYS,
         "projects": projects,
         "overloads": _detect_overloads(projects),
+        "missingDates": _missing_dates(all_projects),
     }

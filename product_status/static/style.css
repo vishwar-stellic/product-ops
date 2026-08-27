@@ -930,6 +930,14 @@ body {
   float: right;
 }
 
+.missing-dates-section {
+  margin-bottom: 28px;
+}
+
+.missing-dates-section .empty-note {
+  margin: 0 0 10px;
+}
+
 .timeline-section .block-title {
   display: flex;
   align-items: center;
@@ -940,8 +948,7 @@ body {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 16px 16px 8px;
-  overflow-x: auto;
+  padding: 16px;
 }
 
 .timeline-legend {
@@ -952,7 +959,6 @@ body {
   color: var(--text-faint);
   font-size: 12px;
   margin-bottom: 14px;
-  padding-left: 240px;
 }
 
 .timeline-legend span {
@@ -966,35 +972,62 @@ body {
   border-left: 2px solid var(--accent);
 }
 
-.timeline-body {
-  position: relative;
-  min-width: 760px;
+.timeline-legend-hint {
+  margin-left: auto;
+  font-style: italic;
 }
 
-.timeline-grid-lines {
+/* Two independently-scrolling regions side by side: `.timeline-labels`
+   (project names) stays fixed/"docked" while only `.timeline-scroll` (the
+   dated track area) scrolls horizontally - see app.js's wheel handler for
+   why plain vertical mouse-wheel input also works over it despite the
+   scrollbar itself being hidden below. */
+.timeline-layout {
+  display: flex;
+  align-items: flex-start;
+}
+
+.timeline-labels {
+  flex: 0 0 220px;
+  min-width: 0;
+}
+
+.timeline-labels-header {
+  height: 28px;
+}
+
+.timeline-scroll {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* legacy Edge */
+}
+
+.timeline-scroll::-webkit-scrollbar {
+  display: none; /* Chrome/Safari/newer Edge */
+}
+
+.timeline-tracks {
+  position: relative;
+}
+
+.timeline-vlines {
   position: absolute;
-  left: 240px;
+  left: 0;
   right: 0;
-  top: 0;
+  top: 28px;
   bottom: 0;
   z-index: 0;
   pointer-events: none;
 }
 
-.timeline-month-tick {
+.timeline-vline {
   position: absolute;
   top: 0;
   bottom: 0;
   border-left: 1px dashed var(--border);
-}
-
-.timeline-month-tick span {
-  position: absolute;
-  top: -18px;
-  left: 4px;
-  font-size: 11px;
-  color: var(--text-faint);
-  white-space: nowrap;
 }
 
 .timeline-today-line {
@@ -1006,15 +1039,23 @@ body {
   opacity: 0.6;
 }
 
-.timeline-row {
-  display: flex;
-  align-items: stretch;
+.timeline-header-track {
   position: relative;
-  z-index: 1;
+  height: 28px;
+}
+
+.timeline-tick-label {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform: translateX(-50%);
+  font-size: 11px;
+  color: var(--text-faint);
+  white-space: nowrap;
 }
 
 .timeline-row-label {
-  flex: 0 0 240px;
+  height: 64px;
   padding: 10px 12px 10px 0;
   display: flex;
   align-items: center;
@@ -1038,15 +1079,14 @@ body {
 }
 
 .timeline-row-track {
-  flex: 1 1 auto;
   position: relative;
-  min-height: 44px;
+  height: 64px;
   border-bottom: 1px solid var(--border);
 }
 
 .timeline-marker {
   position: absolute;
-  top: 10px;
+  top: 8px;
   left: 0;
   transform: translateX(-50%);
   display: flex;
@@ -1062,6 +1102,7 @@ body {
   border-radius: 50%;
   border: 2px solid var(--border);
   background: var(--surface-2);
+  flex-shrink: 0;
 }
 
 .timeline-marker-dot.ms-done {
@@ -1090,6 +1131,7 @@ body {
   border-radius: 50%;
   margin-top: 1px;
   object-fit: cover;
+  flex-shrink: 0;
 }
 
 .timeline-marker-label {
