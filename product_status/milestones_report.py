@@ -23,9 +23,17 @@ given milestone is whoever's actually doing that work, which is a better
 signal than one fixed "project lead" for every milestone type. Falls back
 to the project's `lead` for "Product: Define" specifically if that
 milestone has no linked issues yet (a project's lead is the closest proxy
-for "product lead" Linear actually exposes). A milestone with no issues and
-no applicable fallback is simply reported with no owners ("Unassigned" in
-the UI) rather than guessing.
+for "product lead" Linear actually exposes).
+
+Candidate owners (from issue assignees, or the `lead` fallback) are then
+cross-checked against `PERSON_ROLES` - a hand-maintained map of who
+actually does which job function - and dropped if they don't hold the
+role that milestone type calls for (e.g. an engineer who happened to get
+assigned a ticket under "Design: Shape" isn't "the designer"). A milestone
+with no issues, or none of the milestone's issue-assignees actually
+matching the expected role, is reported with no owners ("Unassigned" in
+the UI) rather than guessing. See `PERSON_ROLES` to correct/extend who's
+who.
 """
 
 from collections import defaultdict
@@ -42,7 +50,7 @@ MILESTONES_REPORT_CACHE_KEY = "dashboard-milestones-report"
 # Bump whenever this module's output shape changes - see
 # `dashboard.py:SQUAD_CACHE_VERSION` for why (same on-disk/Blob cache has no
 # schema of its own).
-MILESTONES_REPORT_CACHE_VERSION = 2
+MILESTONES_REPORT_CACHE_VERSION = 3
 
 # Which role is "on the hook" for each canonical milestone - see module
 # docstring. Fuzzy-matched the same way `milestones.py` matches milestone
@@ -55,6 +63,37 @@ MILESTONE_ROLES = {
     "Public Launch": "Eng Lead",
 }
 _ROLE_BY_NORM = {normalize_milestone_name(name): role for name, role in MILESTONE_ROLES.items()}
+
+# Hand-maintained job-function map (first name -> role), since Linear has
+# no such field. Used to cross-check issue-assignee-derived owners against
+# the role their milestone type calls for (see module docstring) - told to
+# the agent directly rather than guessed from ticket assignments. Matched
+# against the *first word* of a Linear user's display name, case-
+# insensitive; extend/correct this as the roster changes.
+PERSON_ROLES = {
+    "namhee": "Designer",
+    "naqi": "Designer",
+    "adeline": "Designer",
+    "caleb": "Product Lead",
+    "arjun": "Product Lead",
+    "gordon": "Product Lead",
+    "jon": "Product Lead",
+    "rukhsar": "Product Lead",
+}
+
+# Everyone not named above - "Others are Engineers" - matches the role
+# label used for the milestones an engineer owns (Early Access/Public
+# Launch), so a plain `==` against a milestone's `role` works uniformly.
+DEFAULT_PERSON_ROLE = "Eng Lead"
+
+
+def person_role(name: Optional[str]) -> str:
+    """This person's job function, per `PERSON_ROLES` (defaulting to
+    `DEFAULT_PERSON_ROLE`) - used to sanity-check who a milestone gets
+    attributed to, not just who happened to be assigned a linked ticket."""
+    first_name = (name or "").strip().split(" ", 1)[0].lower()
+    return PERSON_ROLES.get(first_name, DEFAULT_PERSON_ROLE)
+
 
 # Issues in these states don't count toward "who owns this milestone" -
 # their assignee isn't doing (or didn't do) the work anymore.
@@ -155,10 +194,19 @@ def _milestone_owners(
         if state.get("type") in _INACTIVE_ISSUE_STATE_TYPES:
             continue
         assignee = _user_summary(issue.get("assignee"))
-        if assignee:
+        # Only count an assignee as "the owner" if their actual job
+        # function (see PERSON_ROLES) matches what this milestone type
+        # calls for - an engineer picking up a ticket filed under "Design:
+        # Shape" doesn't make them the designer.
+        if assignee and (role is None or person_role(assignee["name"]) == role):
             owners_by_id[assignee["id"]] = assignee
 
-    if not owners_by_id and role == "Product Lead" and project_lead:
+    if (
+        not owners_by_id
+        and role == "Product Lead"
+        and project_lead
+        and person_role(project_lead["name"]) == role
+    ):
         owners_by_id[project_lead["id"]] = project_lead
 
     return list(owners_by_id.values())
