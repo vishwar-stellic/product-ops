@@ -48,6 +48,14 @@ Endpoints:
                                           like /api/dashboard
     POST /api/milestones-report/refresh -> force a fresh pull, bypassing
                                           the 24h cache
+    GET  /api/support-report          -> the Support SLA "5 metrics" per
+                                          squad, live from Intercom (see
+                                          support_report.py) - cached like
+                                          /api/dashboard
+    POST /api/support-report/refresh  -> force a fresh pull from Intercom,
+                                          bypassing the 24h cache (this one
+                                          is slow - a couple minutes, see
+                                          support_report.py's docstring)
     GET  /api/notion/status       -> whether Notion is connected (OAuth) and
                                       to which workspace, plus
                                       defaultParentPageUrl
@@ -105,6 +113,7 @@ from .notion_report import (
 )
 from .projects import DEFAULT_SUMMIT_LABEL, build_dashboard_projects_report, build_summit_projects_report
 from .report import build_current_sprint, build_full_report, build_previous_sprint
+from .support_report import SUPPORT_REPORT_CACHE_KEY, SUPPORT_REPORT_CACHE_VERSION, build_support_report
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -557,6 +566,38 @@ def milestones_report_refresh():
         return _get_milestones_report(force=True)
     except LinearGraphQLError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+def _get_support_report(force: bool) -> Dict[str, Any]:
+    entry = cache.get_or_refresh(
+        SUPPORT_REPORT_CACHE_KEY,
+        lambda: build_support_report(),
+        force=force,
+        max_age_seconds=DASHBOARD_MAX_AGE_SECONDS,
+        version=SUPPORT_REPORT_CACHE_VERSION,
+    )
+    return {"fetchedAt": entry["fetchedAt"], **entry["data"]}
+
+
+@app.get("/api/support-report")
+def support_report():
+    """The Support SLA "5 metrics" per squad, live from Intercom (see
+    support_report.py). Cached the same way as /api/dashboard - refetched
+    at most once per 24h unless forced via the POST endpoint below."""
+    try:
+        return _get_support_report(force=False)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/support-report/refresh")
+def support_report_refresh():
+    """Force a fresh pull from Intercom for the support report, regardless
+    of cache age. Slow (a couple of minutes) - see support_report.py."""
+    try:
+        return _get_support_report(force=True)
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 

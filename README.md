@@ -189,6 +189,22 @@ the site into separate capabilities, each its own tab:
   guessing. See `product_status/milestones_report.py`'s module docstring
   for the full design. Lazy-loaded on first visit to the tab, cached like
   the other tabs (24h, with its own **Update** button to force a refresh).
+  Currently hidden from the tab bar (code kept intact) - remove the
+  `hidden` class in `index.html` to bring it back.
+- **Support Report** — the "5 metrics" from Stellic's `support-sla-dashboard`
+  Claude Skill (Total open Key User tickets, New/Closed this week, Out of
+  first-response SLA, Out of resolution SLA), computed live from Intercom
+  rather than that skill's Notion-maintained register - one column per
+  squad, matching the skill's own hub table. Requires `INTERCOM_ACCESS_TOKEN`
+  (see `.env.example`); see `product_status/support_report.py`'s module
+  docstring for exactly how each metric is derived (business-hours-aware
+  first-response clock, high-priority-only resolution SLA, and why some
+  tickets need an extra API call to confirm they were never actually
+  replied to). No per-PDL breakdown here (that needs the skill's manually
+  uploaded Vitally CSV, which this service doesn't have) and "Dev-ex" always
+  shows "—" (no customer-facing Intercom area). This is the slowest tab to
+  refresh - a full pull takes roughly a minute - so the **Update** button
+  warns about that; lazy-loaded and cached (24h) like the other tabs.
 
 #### Signing in
 
@@ -555,7 +571,12 @@ using Google sign-in ("Signing in" above), also set
 `SESSION_SECRET` there, and make sure your deployed domain's
 `/auth/google/callback` is an authorized redirect URI on the OAuth Client
 ID - a redeploy is needed after adding/changing env vars for them to take
-effect.
+effect. For the **Support Report** tab, also set `INTERCOM_ACCESS_TOKEN`
+(see `.env.example`). Note `vercel.json` sets `maxDuration: 300` on
+`main.py` - a full Support Report refresh takes roughly a minute (several
+whole-workspace Intercom pulls, run concurrently - see
+`support_report.py`'s module docstring), well past Vercel's old 60s
+default.
 
 **Dashboard cache (fixed via Vercel Blob):** `product_status/cache.py`
 writes to `config.CACHE_DIR`, which defaults to `.cache/` next to the code
@@ -604,6 +625,8 @@ product_status/
   quality.py           # per-team SLA/bug counts (out of SLA, failed SLA, incoming high/urgent bugs)
   dashboard.py         # combines sprints + summit projects + quality, grouped by squad, for the web UI
   milestones_report.py  # cross-project milestone timeline + overloaded-person detection for the Project Milestones tab
+  intercom_client.py     # raw Intercom REST API client (auth, retries, search pagination)
+  support_report.py      # live Intercom SLA "5 metrics" per squad for the Support Report tab
   cache.py             # JSON cache keyed by age (used by the dashboard, 24h default) - on disk, or...
   blob_cache.py         # ...Vercel Blob-backed, when BLOB_READ_WRITE_TOKEN is set (persists on serverless hosts)
   notion_client.py      # raw Notion REST API client (auth, retries, nested block creation)

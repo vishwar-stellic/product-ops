@@ -73,6 +73,9 @@ const els = {
   milestonesUpdateBtn: document.getElementById("milestones-update-btn"),
   milestonesQuarterLabel: document.getElementById("milestones-quarter-label"),
   milestonesUpdatedAt: document.getElementById("milestones-updated-at"),
+  supportReportContainer: document.getElementById("support-report-container"),
+  supportReportUpdateBtn: document.getElementById("support-report-update-btn"),
+  supportReportUpdatedAt: document.getElementById("support-report-updated-at"),
 };
 
 function escapeHtml(value) {
@@ -1428,6 +1431,102 @@ if (els.milestonesUpdateBtn) {
   els.milestonesUpdateBtn.addEventListener("click", refreshMilestonesReport);
 }
 
+// ---- Support Report ----
+
+// Mirrors `support_report.py`'s 5 metrics, in the order they're displayed
+// (rows of the matrix, one column per squad) - see that module's docstring
+// for the exact definitions this ports from the `support-sla-dashboard`
+// skill.
+const SUPPORT_REPORT_ROWS = [
+  { key: "totalOpenKU", label: "Total open Key User tickets" },
+  { key: "newKUThisWeek", label: "New Key User tickets this week" },
+  { key: "closedKUThisWeek", label: "Key User tickets closed this week" },
+  { key: "outOfFirstResponseSLA", label: "Out of first response SLA" },
+  { key: "outOfResolutionSLA", label: "Out of resolution SLA" },
+];
+
+function renderSupportReport(data) {
+  if (!els.supportReportContainer) return;
+  const areas = data.areas || [];
+
+  const headerCells = areas.map((area) => `<th>${escapeHtml(area.label)}</th>`).join("");
+  const bodyRows = SUPPORT_REPORT_ROWS.map((row) => {
+    const cells = areas
+      .map((area) => {
+        const value = area.metrics ? area.metrics[row.key] : null;
+        return `<td class="num">${value === null || value === undefined ? "—" : value}</td>`;
+      })
+      .join("");
+    return `<tr><td>${escapeHtml(row.label)}</td>${cells}</tr>`;
+  }).join("");
+
+  els.supportReportContainer.innerHTML = `
+    <div class="squad-block">
+      <p class="quality-definitions" style="list-style: none; padding-left: 0;">
+        Key User tickets only. "Open" means Intercom state open or snoozed. First response SLA is
+        ${data.frTargetHours} business hours (weekends don't count); resolution SLA is ${data.resTargetDays}
+        calendar days for Urgent/High priority tickets. "This week" is a trailing ${data.windowDays}-day window.
+        Dev-ex has no customer-facing Intercom area, so it always shows "—".
+      </p>
+      <table class="data-table">
+        <thead><tr><th></th>${headerCells}</tr></thead>
+        <tbody>${bodyRows}</tbody>
+      </table>
+    </div>`;
+
+  if (els.supportReportUpdatedAt && data.fetchedAt) {
+    const asOfSuffix = data.asOf ? ` (as of ${new Date(data.asOf).toLocaleString()})` : "";
+    els.supportReportUpdatedAt.textContent = `Updated ${formatRelativeTime(data.fetchedAt)}${asOfSuffix}`;
+    els.supportReportUpdatedAt.classList.toggle("stale", isStale(data.fetchedAt));
+    els.supportReportUpdatedAt.title = new Date(data.fetchedAt * 1000).toLocaleString();
+  }
+}
+
+let supportReportLoaded = false;
+
+async function loadSupportReport() {
+  if (!els.supportReportContainer) return;
+  try {
+    const res = await fetch("/api/support-report");
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail || `Request failed (${res.status})`);
+    }
+    renderSupportReport(await res.json());
+  } catch (err) {
+    els.supportReportContainer.innerHTML = `<p class="empty-note">Couldn't load the support report: ${escapeHtml(
+      err.message
+    )}</p>`;
+  }
+}
+
+async function refreshSupportReport() {
+  const btn = els.supportReportUpdateBtn;
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span><span class="btn-label">Updating… (~1-2 min)</span>';
+  }
+  try {
+    const res = await fetch("/api/support-report/refresh", { method: "POST" });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail || `Request failed (${res.status})`);
+    }
+    renderSupportReport(await res.json());
+  } catch (err) {
+    showError(`Couldn't update the support report: ${err.message}`);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<span class="btn-label">Update</span>';
+    }
+  }
+}
+
+if (els.supportReportUpdateBtn) {
+  els.supportReportUpdateBtn.addEventListener("click", refreshSupportReport);
+}
+
 // ---- Tabs ----
 
 function switchTab(tabName) {
@@ -1436,6 +1535,10 @@ function switchTab(tabName) {
   if (tabName === "project-milestones" && !milestonesReportLoaded) {
     milestonesReportLoaded = true;
     loadMilestonesReport();
+  }
+  if (tabName === "support-report" && !supportReportLoaded) {
+    supportReportLoaded = true;
+    loadSupportReport();
   }
 }
 
