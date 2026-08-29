@@ -573,6 +573,13 @@ body {
   text-align: center;
 }
 
+.support-report-table th.support-total-col,
+.support-report-table td.support-total-col {
+  font-weight: 700;
+  color: var(--text);
+  border-left: 1px solid var(--border);
+}
+
 .support-report-table tr.clickable-row {
   cursor: pointer;
 }

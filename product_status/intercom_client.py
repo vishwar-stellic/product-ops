@@ -83,3 +83,17 @@ class IntercomClient:
         the reply history (`search_conversations` results don't include
         parts, just summary `statistics`)."""
         return self._request("GET", f"/conversations/{conversation_id}")
+
+    def list_companies(self, per_page: int = 60) -> Iterator[Dict[str, Any]]:
+        """Yields every company in the workspace - unlike conversations,
+        `/companies` pages by plain page number (`pages.next` is a full URL,
+        `pages.total_pages` bounds the loop) rather than a cursor."""
+        page = 1
+        while True:
+            data = self._request("GET", f"/companies?per_page={per_page}&page={page}")
+            for company in data.get("data", []):
+                yield company
+            pages = data.get("pages") or {}
+            if not pages.get("next") or page >= pages.get("total_pages", page):
+                return
+            page += 1

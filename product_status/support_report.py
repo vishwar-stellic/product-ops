@@ -38,9 +38,9 @@ ticket) - `_verify_replies` runs those concurrently.
 Intercom's "Product Area" custom attribute (conversation- or ticket-level,
 matched by prefix - e.g. "Progress: Foo" still counts as "Progress", same
 as the skill's `match()`) is mapped to this dashboard's squad keys via
-`AREA_TO_SQUAD`. `DEVX` has no customer-facing Intercom area (it's an
-internal team) and always reports `None` metrics - shown as "—" on the
-tab rather than a misleading zero.
+`AREAS`, in display order (no "Dev-ex" - it has no customer-facing
+Intercom area, so it was dropped from the table entirely rather than
+showing an always-"—" column).
 
 ## Ticket-level detail (drill-down)
 Each squad's metrics also carry the underlying ticket list
@@ -49,11 +49,16 @@ Each squad's metrics also carry the underlying ticket list
 "out of first response" / "out of resolution" rows are just a client-side
 filter over `openKUTickets` (`firstResponseSLA != "Met"` /
 `outOfResolutionSLA`), since every open KU ticket already carries both
-flags. "Customer Name" is the ticket's requester (`source.author.name`),
-not the partner/institution - simpler and more reliably present than the
-skill's full partner-resolution chain (company -> external_id code ->
-email domain), and more useful at the individual-ticket grain this table
-operates at.
+flags. Two different "who" fields are included per ticket:
+- `userName` - the individual requester (`source.author.name`).
+- `partnerName` - the institution, resolved the same way as the skill's
+  `resolve_partner`: the conversation's `company.name` if present, else the
+  partner code embedded in a contact's `external_id` (commonly
+  `<user>@<code>`, e.g. `cjp260@newcastle`) looked up against a
+  `company_id -> name` map built once per refresh from `list_companies`,
+  else the requester's email domain against a small manual map for a few
+  known non-obvious domains (`_DOMAIN_TO_PARTNER`). Unmatched stays
+  "(unknown)" rather than guessing.
 """
 
 import html
@@ -70,7 +75,7 @@ SUPPORT_REPORT_CACHE_KEY = "dashboard-support-report"
 # Bump whenever this module's output shape or underlying metric logic
 # changes - see `milestones_report.py:MILESTONES_REPORT_CACHE_VERSION` for
 # why (same cache has no schema of its own).
-SUPPORT_REPORT_CACHE_VERSION = 2
+SUPPORT_REPORT_CACHE_VERSION = 3
 
 INTERCOM_INBOX_PREFIX = "g60t55rg"
 
@@ -81,18 +86,32 @@ WEEK_WINDOW_DAYS = 7
 RESOLVED_TICKET_STATE = "Resolved"
 
 # Intercom "Product Area" prefix -> this dashboard's squad key/label, in
-# display order. Matches `dashboard.DASHBOARD_TEAMS` plus "Dev-ex" (which
-# never has Intercom data - see module docstring).
+# display order (per request: Progress, then Plan/Platform/Integration/
+# Care/Explore - no Dev-ex, see module docstring).
 AREAS: List[Dict[str, str]] = [
     {"squad": "PROG", "label": "Progress", "intercomArea": "Progress"},
     {"squad": "PLAN", "label": "Plan", "intercomArea": "Plan"},
+    {"squad": "PLAT", "label": "Platform", "intercomArea": "Platform"},
+    {"squad": "INT", "label": "Integration", "intercomArea": "Data & Integration"},
     {"squad": "CARE", "label": "Care", "intercomArea": "Care"},
     {"squad": "EXP", "label": "Explore", "intercomArea": "Explore"},
-    {"squad": "INT", "label": "Integration", "intercomArea": "Data & Integration"},
-    {"squad": "DEVX", "label": "Dev-ex", "intercomArea": None},
-    {"squad": "PLAT", "label": "Platform", "intercomArea": "Platform"},
 ]
 _AREA_BY_INTERCOM_NAME = {a["intercomArea"]: a["squad"] for a in AREAS if a["intercomArea"]}
+
+# Fallback for when a requester's email domain doesn't obviously map to
+# their institution's name (Partner resolution's last resort - see
+# `_partner_name` and the module docstring). Carried over from the
+# support-sla-dashboard skill's manual map.
+_DOMAIN_TO_PARTNER = {
+    "uchicago.edu": "University of Chicago",
+    "uc": "University of Chicago",
+    "jh.edu": "Johns Hopkins",
+    "uon.edu.au": "The University of Newcastle",
+    "osu.edu": "The Ohio State University",
+    "case.edu": "Case Western Reserve",
+    "csc.edu": "Chadron State College",
+    "academyart.edu": "Academy of Art University",
+}
 
 
 def _match_prefix(value: str, prefix: str) -> bool:
@@ -237,9 +256,42 @@ def _ticket_description(conversation: Dict[str, Any]) -> str:
     return f"Conversation {conversation.get('id')}"
 
 
-def _customer_name(conversation: Dict[str, Any]) -> str:
+def _user_name(conversation: Dict[str, Any]) -> str:
     author = (conversation.get("source") or {}).get("author") or {}
     return author.get("name") or author.get("email") or "(unknown)"
+
+
+def _build_company_map(client: IntercomClient) -> Dict[str, str]:
+    """`company_id` (a short human-set code, e.g. "fsu", "udel") -> company
+    name, for every company in the workspace - see `_partner_name`."""
+    mapping: Dict[str, str] = {}
+    for company in client.list_companies():
+        company_id = company.get("company_id")
+        name = company.get("name")
+        if company_id and name:
+            mapping[company_id.lower()] = name
+    return mapping
+
+
+def _partner_name(conversation: Dict[str, Any], company_map: Dict[str, str]) -> str:
+    company = conversation.get("company") or {}
+    if company.get("name"):
+        return company["name"]
+
+    for contact in ((conversation.get("contacts") or {}).get("contacts")) or []:
+        external_id = contact.get("external_id") or ""
+        if "@" in external_id:
+            code = external_id.rsplit("@", 1)[1].strip().lower()
+            if code in company_map:
+                return company_map[code]
+
+    email = ((conversation.get("source") or {}).get("author") or {}).get("email") or ""
+    if "@" in email:
+        domain = email.rsplit("@", 1)[1].strip().lower()
+        if domain in _DOMAIN_TO_PARTNER:
+            return _DOMAIN_TO_PARTNER[domain]
+
+    return "(unknown)"
 
 
 def _epoch_to_iso(value: Optional[float]) -> Optional[str]:
@@ -251,6 +303,7 @@ def _ticket_record(
     squad: str,
     squad_label: str,
     reply_overrides: Dict[str, Optional[float]],
+    company_map: Dict[str, str],
     now: float,
 ) -> Dict[str, Any]:
     created = conversation.get("created_at")
@@ -265,7 +318,8 @@ def _ticket_record(
         "squadLabel": squad_label,
         "createdAt": _epoch_to_iso(created),
         "updatedAt": _epoch_to_iso(conversation.get("updated_at")),
-        "customerName": _customer_name(conversation),
+        "userName": _user_name(conversation),
+        "partnerName": _partner_name(conversation, company_map),
         "priority": priority,
         "description": _ticket_description(conversation),
         "firstResponseSLA": _first_response_label(conversation, reply_overrides, now),
@@ -280,6 +334,7 @@ def _area_metrics(
     created_raw: List[Dict[str, Any]],
     closed_raw: List[Dict[str, Any]],
     reply_overrides: Dict[str, Optional[float]],
+    company_map: Dict[str, str],
     now: float,
     window_start: float,
 ) -> Dict[str, Any]:
@@ -307,7 +362,7 @@ def _area_metrics(
     )
 
     def _records(conversations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        return [_ticket_record(c, squad, label, reply_overrides, now) for c in conversations]
+        return [_ticket_record(c, squad, label, reply_overrides, company_map, now) for c in conversations]
 
     return {
         "totalOpenKU": len(ku_open),
@@ -340,7 +395,7 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
     # concurrently rather than one after another (a full sequential pull
     # took ~185s in practice; see `vercel.json`'s maxDuration for the
     # resulting worst-case budget on the force-refresh endpoint).
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    with ThreadPoolExecutor(max_workers=5) as pool:
         open_future = pool.submit(
             lambda: list(client.search_conversations({"field": "state", "operator": "=", "value": "open"}))
         )
@@ -359,10 +414,12 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
                 )
             )
         )
+        company_map_future = pool.submit(lambda: _build_company_map(client))
         open_raw = open_future.result()
         snoozed_raw = snoozed_future.result()
         created_raw = created_future.result()
         closed_raw = closed_future.result()
+        company_map = company_map_future.result()
 
     # "Open" = open + snoozed, always (see module docstring); a ticket
     # marked Resolved at the ticket-state level is done even if Intercom
@@ -380,23 +437,24 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
     ]
     reply_overrides = _verify_replies(client, needs_verification)
 
-    areas = {
-        area["squad"]: (
-            None
-            if area["intercomArea"] is None
-            else _area_metrics(
+    areas = [
+        {
+            "squad": area["squad"],
+            "label": area["label"],
+            "metrics": _area_metrics(
                 area["squad"],
                 area["label"],
                 open_register,
                 created_raw,
                 closed_raw,
                 reply_overrides,
+                company_map,
                 now,
                 window_start,
-            )
-        )
+            ),
+        }
         for area in AREAS
-    }
+    ]
 
     return {
         "generatedAt": datetime.now(timezone.utc).isoformat(),
@@ -404,5 +462,5 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
         "windowDays": WEEK_WINDOW_DAYS,
         "frTargetHours": FR_TARGET_HOURS,
         "resTargetDays": RES_TARGET_DAYS,
-        "areas": [{"squad": a["squad"], "label": a["label"], "metrics": areas[a["squad"]]} for a in AREAS],
+        "areas": areas,
     }

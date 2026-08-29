@@ -194,21 +194,25 @@ the site into separate capabilities, each its own tab:
 - **Support Report** — the "5 metrics" from Stellic's `support-sla-dashboard`
   Claude Skill (Total open Key User tickets, New/Closed this week, Out of
   first-response SLA, Out of resolution SLA), computed live from Intercom
-  rather than that skill's Notion-maintained register - one column per
-  squad (centered), matching the skill's own hub table. Requires
-  `INTERCOM_ACCESS_TOKEN` (see `.env.example`); see
-  `product_status/support_report.py`'s module docstring for exactly how
-  each metric is derived (business-hours-aware first-response clock,
-  high-priority-only resolution SLA, and why some tickets need an extra API
-  call to confirm they were never actually replied to). No per-PDL
-  breakdown here (that needs the skill's manually uploaded Vitally CSV,
-  which this service doesn't have) and "Dev-ex" always shows "—" (no
-  customer-facing Intercom area). Click any metric row to drill into the
-  underlying tickets (across every squad) in a table below - Date Created,
-  First Response SLA, Last Update, Customer Name, Priority, and a
-  Ticket Description linking to Intercom - each column independently
-  filterable; the "out of SLA" rows are just a client-side filter over the
-  same open-ticket list, so no extra fetch is needed to drill into them
+  rather than that skill's Notion-maintained register - a **Total** column
+  first, then one (centered) column per squad in the order Progress, Plan,
+  Platform, Integration, Care, Explore - no per-PDL breakdown (that needs
+  the skill's manually uploaded Vitally CSV, which this service doesn't
+  have) and no Dev-ex column (it has no customer-facing Intercom area, so
+  it'd always read "—"). Requires `INTERCOM_ACCESS_TOKEN` (see
+  `.env.example`); see `product_status/support_report.py`'s module
+  docstring for exactly how each metric is derived (business-hours-aware
+  first-response clock, high-priority-only resolution SLA, and why some
+  tickets need an extra API call to confirm they were never actually
+  replied to). Click any metric row to drill into the underlying tickets
+  (across every squad) in a table below - Date Created, First Response
+  SLA, Last Update, **User Name** (the individual requester) plus a
+  separately-resolved **Partner Name** (the institution - company name,
+  else a contact's `external_id` code looked up against Intercom's company
+  list, else an email-domain fallback map), Priority, and a Ticket
+  Description linking to Intercom - each column independently filterable;
+  the "out of SLA" rows are just a client-side filter over the same
+  open-ticket list, so no extra fetch is needed to drill into them
   (`product_status/static/app.js:renderSupportReportDrilldown`). This is
   the slowest tab to refresh - a full pull takes roughly a minute - so the
   **Update** button warns about that; lazy-loaded and cached (24h) like the

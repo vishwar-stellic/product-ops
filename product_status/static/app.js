@@ -1461,7 +1461,8 @@ const supportReportFilters = {
   createdAt: "",
   firstResponseSLA: "",
   updatedAt: "",
-  customerName: "",
+  userName: "",
+  partnerName: "",
   priority: "",
   description: "",
 };
@@ -1507,7 +1508,8 @@ function supportReportFilteredTickets(tickets) {
     if (f.squad && t.squadLabel !== f.squad) return false;
     if (f.firstResponseSLA && t.firstResponseSLA !== f.firstResponseSLA) return false;
     if (f.priority && t.priority !== f.priority) return false;
-    if (f.customerName && !(t.customerName || "").toLowerCase().includes(f.customerName.toLowerCase())) return false;
+    if (f.userName && !(t.userName || "").toLowerCase().includes(f.userName.toLowerCase())) return false;
+    if (f.partnerName && !(t.partnerName || "").toLowerCase().includes(f.partnerName.toLowerCase())) return false;
     if (f.description && !(t.description || "").toLowerCase().includes(f.description.toLowerCase())) return false;
     if (f.createdAt && !formatDateTime(t.createdAt).toLowerCase().includes(f.createdAt.toLowerCase())) return false;
     if (f.updatedAt && !formatDateTime(t.updatedAt).toLowerCase().includes(f.updatedAt.toLowerCase())) return false;
@@ -1521,9 +1523,11 @@ function slaStatusClass(status) {
   return "status-planned"; // Pending
 }
 
+const SUPPORT_REPORT_TICKET_COLUMNS = 8;
+
 function renderSupportReportTicketRows(tickets) {
   if (!tickets.length) {
-    return '<tr><td colspan="7"><p class="empty-note">No tickets match these filters.</p></td></tr>';
+    return `<tr><td colspan="${SUPPORT_REPORT_TICKET_COLUMNS}"><p class="empty-note">No tickets match these filters.</p></td></tr>`;
   }
   return tickets
     .map(
@@ -1535,7 +1539,8 @@ function renderSupportReportTicketRows(tickets) {
         t.firstResponseSLA
       )}</span></td>
         <td>${formatDateTime(t.updatedAt)}</td>
-        <td>${escapeHtml(t.customerName)}</td>
+        <td>${escapeHtml(t.userName)}</td>
+        <td>${escapeHtml(t.partnerName)}</td>
         <td>${escapeHtml(t.priority)}</td>
         <td><a href="${escapeHtml(t.url)}" target="_blank" rel="noopener">${escapeHtml(t.description)}</a></td>
       </tr>`
@@ -1593,7 +1598,8 @@ function renderSupportReportDrilldown() {
             <th>Date Created</th>
             <th>First Response SLA</th>
             <th>Last Update</th>
-            <th>Customer Name</th>
+            <th>User Name</th>
+            <th>Partner Name</th>
             <th>Priority</th>
             <th>Ticket Description</th>
           </tr>
@@ -1609,8 +1615,11 @@ function renderSupportReportDrilldown() {
             <th><input type="text" data-filter="updatedAt" placeholder="Filter…" value="${escapeHtml(
               supportReportFilters.updatedAt
             )}"></th>
-            <th><input type="text" data-filter="customerName" placeholder="Filter…" value="${escapeHtml(
-              supportReportFilters.customerName
+            <th><input type="text" data-filter="userName" placeholder="Filter…" value="${escapeHtml(
+              supportReportFilters.userName
+            )}"></th>
+            <th><input type="text" data-filter="partnerName" placeholder="Filter…" value="${escapeHtml(
+              supportReportFilters.partnerName
             )}"></th>
             <th><select data-filter="priority">${selectOptions(
               priorityOptions,
@@ -1631,14 +1640,15 @@ function renderSupportReport(data) {
   supportReportData = data;
   const areas = data.areas || [];
 
-  const headerCells = areas.map((area) => `<th class="support-squad-col">${escapeHtml(area.label)}</th>`).join("");
+  const headerCells =
+    `<th class="support-squad-col support-total-col">Total</th>` +
+    areas.map((area) => `<th class="support-squad-col">${escapeHtml(area.label)}</th>`).join("");
   const bodyRows = SUPPORT_REPORT_ROWS.map((row) => {
-    const cells = areas
-      .map((area) => {
-        const value = area.metrics ? area.metrics[row.key] : null;
-        return `<td class="num support-squad-col">${value === null || value === undefined ? "—" : value}</td>`;
-      })
-      .join("");
+    const values = areas.map((area) => (area.metrics ? area.metrics[row.key] : null));
+    const total = values.reduce((sum, v) => sum + (typeof v === "number" ? v : 0), 0);
+    const cells =
+      `<td class="num support-squad-col support-total-col">${total}</td>` +
+      values.map((value) => `<td class="num support-squad-col">${value === null || value === undefined ? "—" : value}</td>`).join("");
     const activeClass = row.key === supportReportActiveMetric ? " active-row" : "";
     return `<tr class="clickable-row${activeClass}" data-metric="${row.key}"><td>${escapeHtml(
       row.label
@@ -1651,8 +1661,7 @@ function renderSupportReport(data) {
         Key User tickets only. "Open" means Intercom state open or snoozed. First response SLA is
         ${data.frTargetHours} business hours (weekends don't count); resolution SLA is ${data.resTargetDays}
         calendar days for Urgent/High priority tickets. "This week" is a trailing ${data.windowDays}-day window.
-        Dev-ex has no customer-facing Intercom area, so it always shows "—". Click a row to see the underlying
-        tickets.
+        Click a row to see the underlying tickets.
       </p>
       <table class="data-table support-report-table">
         <thead><tr><th></th>${headerCells}</tr></thead>
