@@ -22,10 +22,10 @@ isn't available to this service; it shows area-level totals only).
 
 "This week" (metrics 2 and 3) is a **calendar week-to-date** counter, not a
 rolling trailing-N-days window: it's everything since the most recent
-Sunday 00:00 *Pacific time* (`_current_week_start` - Pacific to match how
+Monday 00:00 *Pacific time* (`_current_week_start` - Pacific to match how
 the team refers to dates day-to-day elsewhere, e.g.
 `notion_report.py:_PACIFIC`), so it grows through the week and snaps back
-down to (near) zero at each Sunday reset - a genuine week-to-date number
+down to (near) zero at each Monday reset - a genuine week-to-date number
 rather than an always-full "last 7 days" figure. This matters once this
 report runs on a schedule (a daily cron, say): each day's snapshot reflects
 that day's actual progress through the week, not a smeared-out trailing
@@ -107,7 +107,7 @@ from . import cache
 from .intercom_client import IntercomClient
 
 # Matches `notion_report.py:_PACIFIC` - "this week" resets on Pacific-time
-# Sundays, not UTC ones, to match how the team actually thinks about weeks.
+# Mondays, not UTC ones, to match how the team actually thinks about weeks.
 _PACIFIC = ZoneInfo("America/Los_Angeles")
 
 SUPPORT_REPORT_CACHE_KEY = "dashboard-support-report"
@@ -115,7 +115,7 @@ SUPPORT_REPORT_CACHE_KEY = "dashboard-support-report"
 # Bump whenever this module's output shape or underlying metric logic
 # changes - see `milestones_report.py:MILESTONES_REPORT_CACHE_VERSION` for
 # why (same cache has no schema of its own).
-SUPPORT_REPORT_CACHE_VERSION = 5
+SUPPORT_REPORT_CACHE_VERSION = 6
 
 # Separate raw key (not versioned/aged like the main report - see
 # `cache.read_raw`) for the trend chart's accumulating history log.
@@ -213,17 +213,16 @@ def _ticket_state(conversation: Dict[str, Any]) -> str:
 
 
 def _current_week_start(now: float) -> float:
-    """Epoch timestamp for 00:00 Pacific time on the most recent Sunday - the
+    """Epoch timestamp for 00:00 Pacific time on the most recent Monday - the
     "this week" boundary for `newKUThisWeek`/`closedKUThisWeek` (see module
     docstring). A calendar week-to-date window, not a rolling trailing-7-days
-    one: it resets to (near) zero every Sunday rather than always covering a
+    one: it resets to (near) zero every Monday rather than always covering a
     full 7 days."""
     now_pacific = datetime.fromtimestamp(now, _PACIFIC)
-    # datetime.weekday(): Monday=0 ... Sunday=6. Days elapsed since the most
-    # recent Sunday:
-    days_since_sunday = (now_pacific.weekday() + 1) % 7
-    sunday_date = (now_pacific - timedelta(days=days_since_sunday)).date()
-    week_start = datetime(sunday_date.year, sunday_date.month, sunday_date.day, tzinfo=_PACIFIC)
+    # datetime.weekday(): Monday=0 ... Sunday=6, i.e. already "days elapsed
+    # since the most recent Monday".
+    monday_date = (now_pacific - timedelta(days=now_pacific.weekday())).date()
+    week_start = datetime(monday_date.year, monday_date.month, monday_date.day, tzinfo=_PACIFIC)
     return week_start.timestamp()
 
 
@@ -629,9 +628,9 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
     report = {
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "asOf": datetime.fromtimestamp(now, timezone.utc).isoformat(),
-        # "This week" resets every Sunday (Pacific) rather than being a
+        # "This week" resets every Monday (Pacific) rather than being a
         # rolling N-day window - see `_current_week_start` and the module
-        # docstring. `weekStartAt` tells the frontend exactly which Sunday
+        # docstring. `weekStartAt` tells the frontend exactly which Monday
         # this particular report's "this week" figures are counting from.
         "weekStartAt": datetime.fromtimestamp(week_start, timezone.utc).isoformat(),
         "frTargetHours": FR_TARGET_HOURS,
