@@ -71,14 +71,15 @@ flags. Two different "who" fields are included per ticket:
   from the conversation's linked `contacts` entry via a batched
   `/contacts/search` (`id IN [...]`) call - see
   `_build_contact_name_map` - rather than trusting `source.author`.
-- `partnerName` - the institution, resolved the same way as the skill's
+- `partnerName` - the institution, resolved by `partner_identity.py`
+  (shared with `partner_insights.py`) the same way as the skill's
   `resolve_partner`: the conversation's `company.name` if present, else the
   partner code embedded in a contact's `external_id` (commonly
   `<user>@<code>`, e.g. `cjp260@newcastle`) looked up against a
   `company_id -> name` map built once per refresh from `list_companies`,
   else the requester's email domain against a small manual map for a few
-  known non-obvious domains (`_DOMAIN_TO_PARTNER`). Unmatched stays
-  "(unknown)" rather than guessing.
+  known non-obvious domains (`partner_identity.DOMAIN_TO_PARTNER`).
+  Unmatched stays "(unknown)" rather than guessing.
 
 ## Trend history
 Every time this module actually runs (a cache-miss GET or a forced
@@ -105,6 +106,7 @@ from zoneinfo import ZoneInfo
 
 from . import cache
 from .intercom_client import IntercomClient
+from .partner_identity import build_company_map, partner_name
 
 # Matches `notion_report.py:_PACIFIC` - "this week" resets on Pacific-time
 # Mondays, not UTC ones, to match how the team actually thinks about weeks.
@@ -154,21 +156,6 @@ AREAS: List[Dict[str, str]] = [
     {"squad": "EXP", "label": "Explore", "intercomArea": "Explore"},
 ]
 _AREA_BY_INTERCOM_NAME = {a["intercomArea"]: a["squad"] for a in AREAS if a["intercomArea"]}
-
-# Fallback for when a requester's email domain doesn't obviously map to
-# their institution's name (Partner resolution's last resort - see
-# `_partner_name` and the module docstring). Carried over from the
-# support-sla-dashboard skill's manual map.
-_DOMAIN_TO_PARTNER = {
-    "uchicago.edu": "University of Chicago",
-    "uc": "University of Chicago",
-    "jh.edu": "Johns Hopkins",
-    "uon.edu.au": "The University of Newcastle",
-    "osu.edu": "The Ohio State University",
-    "case.edu": "Case Western Reserve",
-    "csc.edu": "Chadron State College",
-    "academyart.edu": "Academy of Art University",
-}
 
 
 def _match_prefix(value: str, prefix: str) -> bool:
@@ -380,39 +367,6 @@ def _user_name(conversation: Dict[str, Any], contact_name_map: Dict[str, str]) -
     return (contact_name_map.get(contact_id) if contact_id else None) or "(unknown)"
 
 
-def _build_company_map(client: IntercomClient) -> Dict[str, str]:
-    """`company_id` (a short human-set code, e.g. "fsu", "udel") -> company
-    name, for every company in the workspace - see `_partner_name`."""
-    mapping: Dict[str, str] = {}
-    for company in client.list_companies():
-        company_id = company.get("company_id")
-        name = company.get("name")
-        if company_id and name:
-            mapping[company_id.lower()] = name
-    return mapping
-
-
-def _partner_name(conversation: Dict[str, Any], company_map: Dict[str, str]) -> str:
-    company = conversation.get("company") or {}
-    if company.get("name"):
-        return company["name"]
-
-    for contact in ((conversation.get("contacts") or {}).get("contacts")) or []:
-        external_id = contact.get("external_id") or ""
-        if "@" in external_id:
-            code = external_id.rsplit("@", 1)[1].strip().lower()
-            if code in company_map:
-                return company_map[code]
-
-    email = ((conversation.get("source") or {}).get("author") or {}).get("email") or ""
-    if "@" in email:
-        domain = email.rsplit("@", 1)[1].strip().lower()
-        if domain in _DOMAIN_TO_PARTNER:
-            return _DOMAIN_TO_PARTNER[domain]
-
-    return "(unknown)"
-
-
 def _epoch_to_iso(value: Optional[float]) -> Optional[str]:
     return datetime.fromtimestamp(value, timezone.utc).isoformat() if value else None
 
@@ -439,7 +393,7 @@ def _ticket_record(
         "createdAt": _epoch_to_iso(created),
         "updatedAt": _epoch_to_iso(conversation.get("updated_at")),
         "userName": _user_name(conversation, contact_name_map),
-        "partnerName": _partner_name(conversation, company_map),
+        "partnerName": partner_name(conversation, company_map),
         "priority": priority,
         "description": _ticket_description(conversation),
         "firstResponseSLA": _first_response_label(conversation, reply_overrides, now),
@@ -574,7 +528,7 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
                 )
             )
         )
-        company_map_future = pool.submit(lambda: _build_company_map(client))
+        company_map_future = pool.submit(lambda: build_company_map(client))
         open_raw = open_future.result()
         snoozed_raw = snoozed_future.result()
         created_raw = created_future.result()

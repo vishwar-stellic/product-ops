@@ -105,6 +105,21 @@ def allowed_domain() -> str:
     return os.environ.get("ALLOWED_EMAIL_DOMAIN", DEFAULT_ALLOWED_DOMAIN).lower().lstrip("@")
 
 
+def partner_insights_allowed_emails() -> set:
+    """Comma-separated allowlist for the "Partner Insights" tab
+    (`PARTNER_INSIGHTS_ALLOWED_EMAILS`) - a second, narrower gate on top of
+    the domain-wide Google sign-in above, since that tab surfaces
+    per-partner scoring most of the team doesn't need to see."""
+    raw = os.environ.get("PARTNER_INSIGHTS_ALLOWED_EMAILS", "")
+    return {email.strip().lower() for email in raw.split(",") if email.strip()}
+
+
+def is_partner_insights_allowed(email: Optional[str]) -> bool:
+    if not email:
+        return False
+    return email.strip().lower() in partner_insights_allowed_emails()
+
+
 def redirect_uri() -> str:
     return os.environ.get("GOOGLE_OAUTH_REDIRECT_URI", DEFAULT_REDIRECT_URI)
 

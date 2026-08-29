@@ -61,6 +61,16 @@ Endpoints:
                                           one point recorded per actual
                                           refresh (not per page load), see
                                           support_report.py's docstring
+    GET  /api/partner-insights        -> per-partner Product + Support
+                                          scores (see partner_insights.py) -
+                                          cached like /api/dashboard.
+                                          Allowlist-gated (403 unless the
+                                          signed-in email is in
+                                          PARTNER_INSIGHTS_ALLOWED_EMAILS)
+    POST /api/partner-insights/refresh -> force a fresh pull (Linear +
+                                          Intercom, plus a Claude scoring
+                                          batch), bypassing the 24h cache -
+                                          slow, same allowlist gate
     GET  /api/notion/status       -> whether Notion is connected (OAuth) and
                                       to which workspace, plus
                                       defaultParentPageUrl
@@ -115,6 +125,11 @@ from .notion_report import (
     DEFAULT_PARENT_PAGE_URL,
     publish_dashboard_to_notion,
     publish_sprint_report_to_notion,
+)
+from .partner_insights import (
+    PARTNER_INSIGHTS_CACHE_KEY,
+    PARTNER_INSIGHTS_CACHE_VERSION,
+    build_partner_insights_report,
 )
 from .projects import DEFAULT_SUMMIT_LABEL, build_dashboard_projects_report, build_summit_projects_report
 from .report import build_current_sprint, build_full_report, build_previous_sprint
@@ -303,9 +318,18 @@ def auth_logout():
 def api_me(request: Request):
     user = getattr(request.state, "user", None)
     if user is None:
-        # Auth isn't configured (see `require_login`) - no signed-in user to report.
-        return {"authenticated": False}
-    return {"authenticated": True, "email": user.get("email"), "name": user.get("name"), "picture": user.get("picture")}
+        # Auth isn't configured (see `require_login`) - no signed-in user to
+        # report. Partner Insights' own gate is likewise a no-op when auth
+        # isn't configured (see `_require_partner_insights_access`), so it's
+        # open here too rather than perpetually hidden in that setup.
+        return {"authenticated": False, "partnerInsightsAccess": not auth.is_configured()}
+    return {
+        "authenticated": True,
+        "email": user.get("email"),
+        "name": user.get("name"),
+        "picture": user.get("picture"),
+        "partnerInsightsAccess": auth.is_partner_insights_allowed(user.get("email")),
+    }
 
 
 @app.get("/sprints")
@@ -617,6 +641,60 @@ def support_report_history():
     """Accumulated trend-chart history for the support report's top table -
     see support_report.py's docstring ("Trend history")."""
     return get_support_report_history()
+
+
+def _require_partner_insights_access(request: Request) -> None:
+    """The real security boundary for Partner Insights (the frontend
+    hiding the tab is just UX) - a 403 unless the signed-in email is on
+    `PARTNER_INSIGHTS_ALLOWED_EMAILS`. A no-op when Google sign-in itself
+    isn't configured, matching `require_login`'s "open for local dev"
+    behavior."""
+    if not auth.is_configured():
+        return
+    user = getattr(request.state, "user", None)
+    email = user.get("email") if user else None
+    if not auth.is_partner_insights_allowed(email):
+        raise HTTPException(status_code=403, detail="You don't have access to Partner Insights.")
+
+
+def _get_partner_insights(force: bool) -> Dict[str, Any]:
+    entry = cache.get_or_refresh(
+        PARTNER_INSIGHTS_CACHE_KEY,
+        lambda: build_partner_insights_report(force=force),
+        force=force,
+        max_age_seconds=DASHBOARD_MAX_AGE_SECONDS,
+        version=PARTNER_INSIGHTS_CACHE_VERSION,
+    )
+    return {"fetchedAt": entry["fetchedAt"], **entry["data"]}
+
+
+@app.get("/api/partner-insights")
+def partner_insights(request: Request):
+    """Per-partner Product + Support scores (see partner_insights.py).
+    Allowlist-gated - see `_require_partner_insights_access`. Cached the
+    same way as /api/dashboard - refetched at most once per 24h unless
+    forced via the POST endpoint below."""
+    _require_partner_insights_access(request)
+    try:
+        return _get_partner_insights(force=False)
+    except LinearGraphQLError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/partner-insights/refresh")
+def partner_insights_refresh(request: Request):
+    """Force a fresh pull (Linear + Intercom, plus a Claude scoring batch
+    for the last day's closed conversations), regardless of cache age -
+    slow, see partner_insights.py. Same allowlist gate as the GET above."""
+    _require_partner_insights_access(request)
+    try:
+        return _get_partner_insights(force=True)
+    except LinearGraphQLError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.get("/api/notion/status")

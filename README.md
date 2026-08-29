@@ -239,6 +239,63 @@ the site into separate capabilities, each its own tab:
   docstring section), so the chart fills in gradually over time rather than
   needing a backfill; it shows a placeholder until at least two points
   exist.
+- **Partner Insights** — one row per partner institution with a **Product
+  score** and a **Support score**, out of 100 each. Unlike every other tab,
+  this one is hidden from the tab bar entirely unless the signed-in user's
+  email is on `PARTNER_INSIGHTS_ALLOWED_EMAILS` (see "Partner Insights
+  access" below) — most of the team doesn't need per-partner scoring
+  visible.
+  - **Partners** come from `product_status/partner_identity.py`'s
+    `build_partner_registry`: every Intercom company cross-referenced
+    against Linear's `Customer`/`CustomerNeed` objects ("Customer
+    Requests"), matched primarily by a Linear customer's `externalIds`
+    containing the same short `company_id` code Intercom uses (e.g. `fsu`),
+    falling back to a normalized name match. Either side missing a match is
+    still shown (Product-only or Support-only) rather than dropped, flagged
+    with a small ⚠ next to the name.
+  - **Product score** (Linear only, recomputed on every refresh, no LLM) —
+    driven by bug-SLA responsiveness across that partner's linked
+    `CustomerNeed` issues: `100 × (1 − (currently-out-of-SLA + failed-this-
+    month) / SLA-eligible bugs)`, defaulting to 100 when a partner has no
+    SLA-eligible (Urgent/High) bugs at all. Feature-request/bug volume is
+    shown as plain counts in the drilldown rather than folded into the
+    score. A partner with no linked Linear customer shows "not linked"
+    instead of a score. See `product_status/partner_insights.py`'s module
+    docstring.
+  - **Support score** (Intercom conversations, graded by Claude) —
+    incremental, not live: roughly once a day, every conversation closed in
+    the last ~24h is resolved to a partner and scored by Claude
+    (`ANTHROPIC_API_KEY`) on professionalism, helpfulness, and how "canned"/
+    generic the reply was — each conversation is scored exactly once and
+    permanently appended to a small log (`cache.write_raw`, same pattern as
+    the Support Report's trend history), never rescored. The displayed
+    score averages a partner's log entries over a trailing 30-day window. A
+    partner with no scored conversations yet in that window shows "no data
+    yet" — there's no backfill, so this fills in gradually starting from
+    whenever `ANTHROPIC_API_KEY` was first configured, not from the tab's
+    full history. Leaving `ANTHROPIC_API_KEY` unset keeps the rest of the
+    tab (Product score, registry) fully working, with every Support score
+    left as "no data yet".
+  - Click a partner row for the full breakdown — the Product metrics table,
+    plus the Support metrics and a list of individually-scored conversations
+    with Claude's one-sentence rationale and a link back to Intercom.
+  - Cached the same way as the other tabs (24h, own **Update** button to
+    force a refresh) — a forced refresh also bypasses the ~20h minimum gap
+    between Claude scoring batches, so it's slow (Linear pull + Intercom
+    pull + a Claude call per newly-closed conversation).
+
+#### Partner Insights access
+
+The Partner Insights tab needs Google sign-in (see below) *and* an explicit
+allowlist — set `PARTNER_INSIGHTS_ALLOWED_EMAILS` in `.env` to a
+comma-separated list of emails (e.g. `alice@stellic.com,bob@stellic.com`).
+Anyone not on that list never sees the tab button, and the underlying
+`/api/partner-insights*` routes 403 them directly (the tab button being
+hidden is just UX — the real boundary is server-side, see
+`product_status/server.py:_require_partner_insights_access`). If Google
+sign-in itself isn't configured, this check is skipped too, so the tab is
+open to everyone locally by default — same "open for local dev" behavior as
+the rest of the app.
 
 #### Signing in
 
@@ -661,6 +718,8 @@ product_status/
   milestones_report.py  # cross-project milestone timeline + overloaded-person detection for the Project Milestones tab
   intercom_client.py     # raw Intercom REST API client (auth, retries, search pagination)
   support_report.py      # live Intercom SLA "5 metrics" per squad for the Support Report tab
+  partner_identity.py    # shared Intercom<->Linear partner resolution (support_report.py + partner_insights.py)
+  partner_insights.py    # per-partner Product (Linear) + Support (Claude-scored Intercom) scores for the Partner Insights tab
   cache.py             # JSON cache keyed by age (used by the dashboard, 24h default) - on disk, or...
   blob_cache.py         # ...Vercel Blob-backed, when BLOB_READ_WRITE_TOKEN is set (persists on serverless hosts)
   notion_client.py      # raw Notion REST API client (auth, retries, nested block creation)

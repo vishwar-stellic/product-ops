@@ -76,6 +76,10 @@ const els = {
   supportReportContainer: document.getElementById("support-report-container"),
   supportReportUpdateBtn: document.getElementById("support-report-update-btn"),
   supportReportUpdatedAt: document.getElementById("support-report-updated-at"),
+  partnerInsightsTabBtn: document.getElementById("partner-insights-tab-btn"),
+  partnerInsightsContainer: document.getElementById("partner-insights-container"),
+  partnerInsightsUpdateBtn: document.getElementById("partner-insights-update-btn"),
+  partnerInsightsUpdatedAt: document.getElementById("partner-insights-updated-at"),
 };
 
 function escapeHtml(value) {
@@ -905,10 +909,20 @@ renderAllNotionTargetBars();
 
 // ---- Signed-in user (Google sign-in, see product_status/auth.py) ----
 
+// Whether the signed-in user may see the Partner Insights tab, from
+// `/api/me`'s `partnerInsightsAccess` - read by `switchTab` too, so it's a
+// module-level flag rather than re-derived from the DOM each time. Stays
+// false (fail closed) until `/api/me` actually confirms access.
+let partnerInsightsAccess = false;
+
 async function loadCurrentUser() {
   try {
     const res = await fetch("/api/me");
     const info = await res.json();
+    partnerInsightsAccess = Boolean(info.partnerInsightsAccess);
+    if (els.partnerInsightsTabBtn) {
+      els.partnerInsightsTabBtn.classList.toggle("hidden", !partnerInsightsAccess);
+    }
     // `authenticated: false` means Google sign-in isn't configured at all
     // (see auth.is_configured()) - nothing to show in that case, the app
     // is open to anyone either way.
@@ -2041,6 +2055,221 @@ if (els.supportReportUpdateBtn) {
   els.supportReportUpdateBtn.addEventListener("click", refreshSupportReport);
 }
 
+// ---- Partner Insights ----
+// Allowlist-gated tab (see `loadCurrentUser`/`partnerInsightsAccess`) - the
+// backend is the real gate (403s the API routes for anyone not on
+// PARTNER_INSIGHTS_ALLOWED_EMAILS), this just keeps the tab out of sight
+// for everyone else. Mirrors the Support Report tab's structure closely
+// (see `renderSupportReport`/`renderSupportReportDrilldown` above).
+
+let partnerInsightsData = null;
+let partnerInsightsActivePartnerId = null;
+
+function scoreBand(score) {
+  if (score === null || score === undefined) return "";
+  if (score >= 85) return "score-ok";
+  if (score < 60) return "score-over";
+  return "score-warn";
+}
+
+function renderScoreCell(score, emptyLabel) {
+  if (score === null || score === undefined) {
+    return `<span class="empty-note-inline">${escapeHtml(emptyLabel)}</span>`;
+  }
+  return `<span class="partner-score-badge ${scoreBand(score)}">${score}</span>`;
+}
+
+function partnerInsightsRows() {
+  return (partnerInsightsData && partnerInsightsData.partners) || [];
+}
+
+function renderPartnerInsightsDrilldown() {
+  if (!partnerInsightsActivePartnerId) return "";
+  const partner = partnerInsightsRows().find((p) => p.partnerId === partnerInsightsActivePartnerId);
+  if (!partner) return "";
+
+  const product = partner.product;
+  const support = partner.support;
+
+  const productBlock = !product
+    ? `<p class="empty-note">Not linked to a Linear customer yet - no Product score available.</p>`
+    : `
+      <table class="data-table">
+        <tbody>
+          <tr><td>Feature requests (total / new this month)</td><td class="num">${product.totalFeatureRequests} / ${product.newFeatureRequestsThisMonth}</td></tr>
+          <tr><td>Bugs (total / new this month)</td><td class="num">${product.totalBugs} / ${product.newBugsThisMonth}</td></tr>
+          <tr><td>Currently out of SLA</td><td class="num">${product.bugsCurrentlyOutOfSla}</td></tr>
+          <tr><td>Failed SLA this month</td><td class="num">${product.bugsFailedSlaThisMonth}</td></tr>
+          <tr><td>SLA-eligible bugs (Urgent/High)</td><td class="num">${product.slaEligibleBugs}</td></tr>
+        </tbody>
+      </table>`;
+
+  const conversationRows = !support
+    ? ""
+    : support.conversations
+        .map(
+          (c) => `
+      <tr>
+        <td>${formatDateTime(c.closedAt)}</td>
+        <td class="num">${c.professionalism}</td>
+        <td class="num">${c.helpfulness}</td>
+        <td class="num">${c.cannedResponsePenalty}</td>
+        <td>${escapeHtml(c.rationale || "")}</td>
+        <td><a href="${escapeHtml(c.url)}" target="_blank" rel="noopener">Open</a></td>
+      </tr>`
+        )
+        .join("");
+
+  const supportBlock = !support
+    ? `<p class="empty-note">No conversations scored in the last ${
+        (partnerInsightsData && partnerInsightsData.supportScoreWindowDays) || 30
+      } days yet${
+        partnerInsightsData && partnerInsightsData.claudeConfigured === false
+          ? " (ANTHROPIC_API_KEY isn't configured yet - see README)"
+          : " - this fills in day by day as new conversations close"
+      }.</p>`
+    : `
+      <table class="data-table">
+        <tbody>
+          <tr><td>Conversations scored (${support.windowDays}d)</td><td class="num">${support.conversationsScored}</td></tr>
+          <tr><td>Professionalism</td><td class="num">${support.professionalism}</td></tr>
+          <tr><td>Helpfulness</td><td class="num">${support.helpfulness}</td></tr>
+          <tr><td>Canned-response penalty</td><td class="num">${support.cannedResponsePenalty}</td></tr>
+        </tbody>
+      </table>
+      <table class="data-table" style="margin-top: 12px;">
+        <thead>
+          <tr>
+            <th>Closed</th><th class="num">Professionalism</th><th class="num">Helpfulness</th>
+            <th class="num">Canned</th><th>Rationale</th><th></th>
+          </tr>
+        </thead>
+        <tbody>${conversationRows}</tbody>
+      </table>`;
+
+  return `
+    <div class="squad-block partner-insights-drilldown">
+      <h3 class="block-title">${escapeHtml(partner.name)}${
+    !partner.matched
+      ? ' <span class="label-badge">unmatched between Linear/Intercom</span>'
+      : ""
+  }</h3>
+      <div class="partner-insights-drilldown-grid">
+        <div>
+          <h4 class="block-subtitle">Product</h4>
+          ${productBlock}
+        </div>
+        <div>
+          <h4 class="block-subtitle">Support</h4>
+          ${supportBlock}
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderPartnerInsights(data) {
+  if (!els.partnerInsightsContainer) return;
+  partnerInsightsData = data;
+  const partners = data.partners || [];
+
+  const rows = partners
+    .map((p) => {
+      const productScore = p.product ? p.product.productScore : null;
+      const supportScore = p.support ? p.support.supportScore : null;
+      const activeClass = p.partnerId === partnerInsightsActivePartnerId ? " active-row" : "";
+      return `
+      <tr class="clickable-row${activeClass}" data-partner-id="${escapeHtml(p.partnerId)}">
+        <td>${escapeHtml(p.name)}${!p.matched ? ' <span class="unmatched-flag" title="Couldn\'t be matched between Linear and Intercom">⚠</span>' : ""}</td>
+        <td class="num">${renderScoreCell(productScore, "not linked")}</td>
+        <td class="num">${renderScoreCell(supportScore, "no data yet")}</td>
+      </tr>`;
+    })
+    .join("");
+
+  els.partnerInsightsContainer.innerHTML = `
+    <div class="squad-block">
+      <p class="quality-definitions" style="list-style: none; padding-left: 0;">
+        Product score reflects bug-SLA responsiveness for that partner's Linear customer requests (100 = no
+        SLA misses). Support score is Claude's read of professionalism/helpfulness/genuineness across that
+        partner's Intercom conversations closed in the last ${data.supportScoreWindowDays || 30} days -
+        scored incrementally once/day, so it starts empty and fills in over time.${
+          data.claudeConfigured === false
+            ? " Support scoring isn't configured yet (ANTHROPIC_API_KEY missing) - see README."
+            : ""
+        }
+        Click a partner for the full breakdown.
+      </p>
+      <table class="data-table partner-insights-table">
+        <thead>
+          <tr><th>Partner</th><th class="num">Product Score</th><th class="num">Support Score</th></tr>
+        </thead>
+        <tbody>${rows || `<tr><td colspan="3"><p class="empty-note">No partners found.</p></td></tr>`}</tbody>
+      </table>
+    </div>
+    ${renderPartnerInsightsDrilldown()}`;
+
+  if (els.partnerInsightsUpdatedAt && data.fetchedAt) {
+    els.partnerInsightsUpdatedAt.textContent = `Updated ${formatRelativeTime(data.fetchedAt)}`;
+    els.partnerInsightsUpdatedAt.classList.toggle("stale", isStale(data.fetchedAt));
+    els.partnerInsightsUpdatedAt.title = new Date(data.fetchedAt * 1000).toLocaleString();
+  }
+}
+
+if (els.partnerInsightsContainer) {
+  els.partnerInsightsContainer.addEventListener("click", (event) => {
+    const row = event.target.closest("tr.clickable-row");
+    if (!row || !partnerInsightsData) return;
+    const partnerId = row.dataset.partnerId;
+    partnerInsightsActivePartnerId = partnerInsightsActivePartnerId === partnerId ? null : partnerId;
+    renderPartnerInsights(partnerInsightsData);
+  });
+}
+
+let partnerInsightsLoaded = false;
+
+async function loadPartnerInsights() {
+  if (!els.partnerInsightsContainer) return;
+  try {
+    const res = await fetch("/api/partner-insights");
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail || `Request failed (${res.status})`);
+    }
+    renderPartnerInsights(await res.json());
+  } catch (err) {
+    els.partnerInsightsContainer.innerHTML = `<p class="empty-note">Couldn't load partner insights: ${escapeHtml(
+      err.message
+    )}</p>`;
+  }
+}
+
+async function refreshPartnerInsights() {
+  const btn = els.partnerInsightsUpdateBtn;
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span><span class="btn-label">Updating… (Linear + Intercom + Claude, can be slow)</span>';
+  }
+  try {
+    const res = await fetch("/api/partner-insights/refresh", { method: "POST" });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail || `Request failed (${res.status})`);
+    }
+    renderPartnerInsights(await res.json());
+  } catch (err) {
+    showError(`Couldn't update partner insights: ${err.message}`);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<span class="btn-label">Update</span>';
+    }
+  }
+}
+
+if (els.partnerInsightsUpdateBtn) {
+  els.partnerInsightsUpdateBtn.addEventListener("click", refreshPartnerInsights);
+}
+
 // ---- Tabs ----
 
 function switchTab(tabName) {
@@ -2053,6 +2282,10 @@ function switchTab(tabName) {
   if (tabName === "support-report" && !supportReportLoaded) {
     supportReportLoaded = true;
     loadSupportReport();
+  }
+  if (tabName === "partner-insights" && !partnerInsightsLoaded && partnerInsightsAccess) {
+    partnerInsightsLoaded = true;
+    loadPartnerInsights();
   }
 }
 
