@@ -1656,7 +1656,7 @@ function formatTrendDate(isoString) {
 // pixels - avoids the classic responsive-SVG trap where a fixed viewBox
 // scaled to fill a flexible-width container via `preserveAspectRatio="none"`
 // stretches circles into ellipses and warps text.
-function renderSupportReportTrendSVG(points, width) {
+function renderSupportReportTrendSVG(points, width, column) {
   const height = 220;
   const paddingLeft = 44;
   const paddingRight = 12;
@@ -1670,7 +1670,7 @@ function renderSupportReportTrendSVG(points, width) {
     key: row.key,
     label: row.label,
     color: SUPPORT_REPORT_TREND_COLORS[idx % SUPPORT_REPORT_TREND_COLORS.length],
-    values: points.map((p) => ((p.metrics && p.metrics[row.key] && p.metrics[row.key].TOTAL) || 0)),
+    values: points.map((p) => ((p.metrics && p.metrics[row.key] && p.metrics[row.key][column]) || 0)),
   }));
 
   const maxValue = Math.max(1, ...series.flatMap((s) => s.values));
@@ -1730,12 +1730,24 @@ function mountSupportReportTrendChart() {
   if (!wrap || points.length < 2) return;
   const draw = () => {
     const width = Math.max(300, Math.round(wrap.clientWidth));
-    wrap.innerHTML = renderSupportReportTrendSVG(points, width);
+    wrap.innerHTML = renderSupportReportTrendSVG(points, width, supportReportTrendColumn);
   };
   draw();
   if (supportTrendResizeObserver) supportTrendResizeObserver.disconnect();
   supportTrendResizeObserver = new ResizeObserver(draw);
   supportTrendResizeObserver.observe(wrap);
+}
+
+// Which table column (a squad key, or "TOTAL") the trend chart's 5 series
+// currently plot - picked via the radio buttons in `renderSupportReportTrendChart`.
+let supportReportTrendColumn = "TOTAL";
+
+// "Total" plus every squad currently in the main table, in the same order -
+// derived from the loaded report rather than hardcoded so it never drifts
+// out of sync with `AREAS` in support_report.py.
+function supportReportTrendColumnOptions() {
+  const areas = (supportReportData && supportReportData.areas) || [];
+  return [{ key: "TOTAL", label: "Total" }, ...areas.map((a) => ({ key: a.squad, label: a.label }))];
 }
 
 function renderSupportReportTrendChart() {
@@ -1757,12 +1769,26 @@ function renderSupportReportTrendChart() {
         SUPPORT_REPORT_TREND_COLORS[idx % SUPPORT_REPORT_TREND_COLORS.length]
       }"></span>${escapeHtml(row.label)}</span>`
   ).join("");
+  const columnPicker = supportReportTrendColumnOptions()
+    .map(
+      (opt) => `
+      <label class="trend-column-option">
+        <input type="radio" name="trend-column" value="${escapeHtml(opt.key)}"${
+        opt.key === supportReportTrendColumn ? " checked" : ""
+      }>
+        ${escapeHtml(opt.label)}
+      </label>`
+    )
+    .join("");
   return `
     <div class="squad-block support-trend-chart">
       <h3 class="block-title">Trend <span class="label-badge">${points.length} refresh${
     points.length === 1 ? "" : "es"
   } logged</span></h3>
-      <div class="trend-legend">${legend}</div>
+      <div class="trend-controls">
+        <div class="trend-legend">${legend}</div>
+        <div class="trend-column-picker">${columnPicker}</div>
+      </div>
       <div class="trend-svg-wrap"></div>
     </div>`;
 }
@@ -1830,6 +1856,11 @@ if (els.supportReportContainer) {
   });
 
   els.supportReportContainer.addEventListener("change", (event) => {
+    if (event.target.name === "trend-column") {
+      supportReportTrendColumn = event.target.value;
+      mountSupportReportTrendChart();
+      return;
+    }
     const filterKey = event.target.dataset.filter;
     if (!filterKey || event.target.tagName !== "SELECT") return;
     supportReportFilters[filterKey] = event.target.value;

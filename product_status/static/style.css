@@ -640,11 +640,52 @@ body {
 
 /* Support Report trend chart */
 
+.support-trend-chart .trend-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 4px 0 12px;
+}
+
 .support-trend-chart .trend-legend {
   display: flex;
   flex-wrap: wrap;
   gap: 14px;
-  margin: 4px 0 12px;
+  margin: 0;
+}
+
+.trend-column-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 3px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.trend-column-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 4px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.trend-column-option:has(input:checked) {
+  background: var(--accent-dim);
+  color: var(--text);
+}
+
+.trend-column-option input[type="radio"] {
+  accent-color: var(--accent);
+  margin: 0;
 }
 
 .trend-legend-item {

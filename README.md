@@ -224,13 +224,16 @@ the site into separate capabilities, each its own tab:
   `fetch` failure here (not an HTTP error) auto-retries with backoff rather
   than surfacing an error immediately
   (`product_status/static/app.js:loadSupportReport`). Above the table sits
-  a **Trend** chart - one line per metric row (its Total across all
-  squads), one point per *actual* refresh (not per page view). Every real
-  refresh appends a snapshot to a small history log stored alongside the
-  main cache (`GET /api/support-report/history`; see
-  `support_report.py`'s "Trend history" docstring section), so the chart
-  fills in gradually over time rather than needing a backfill; it shows a
-  placeholder until at least two points exist.
+  a **Trend** chart - one line per metric row, one point per *actual*
+  refresh (not per page view), with a radio picker (Total, or any one
+  squad) for which column each of those 5 lines plots - defaults to Total
+  across all squads. Every real refresh appends a snapshot (every column's
+  value, not just whichever one happens to be selected at the time) to a
+  small history log stored alongside the main cache (`GET
+  /api/support-report/history`; see `support_report.py`'s "Trend history"
+  docstring section), so the chart fills in gradually over time rather than
+  needing a backfill; it shows a placeholder until at least two points
+  exist.
 
 #### Signing in
 
