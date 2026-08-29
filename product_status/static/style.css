@@ -723,6 +723,12 @@ body {
   font-size: 10px;
 }
 
+/* The two extrapolated padding dates before the first / after the last real
+   data point - dimmer than real axis labels since they aren't actual data. */
+.trend-axis-label-faint {
+  opacity: 0.45;
+}
+
 .card {
   background: var(--surface);
   border: 1px solid var(--border);

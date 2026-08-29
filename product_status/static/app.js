@@ -1656,7 +1656,7 @@ function formatTrendDate(isoString) {
 // pixels - avoids the classic responsive-SVG trap where a fixed viewBox
 // scaled to fill a flexible-width container via `preserveAspectRatio="none"`
 // stretches circles into ellipses and warps text.
-function renderSupportReportTrendSVG(points, width, column) {
+function renderSupportReportTrendSVG(points, width, column, columnLabel) {
   const height = 220;
   const paddingLeft = 44;
   const paddingRight = 12;
@@ -1666,6 +1666,21 @@ function renderSupportReportTrendSVG(points, width, column) {
   const plotHeight = height - paddingTop - paddingBottom;
   const n = points.length;
 
+  // Reserve one virtual x-axis slot before the earliest point and one after
+  // the latest (extrapolated from the neighboring real gap) so the first and
+  // last dots - and the line's actual endpoints - sit clear of the plot's
+  // edges instead of pinned right on top of them, making the full line easy
+  // to see. Real data lives at slot indices 1..n; slot 0 and slot n+1 are
+  // the virtual padding ticks, giving n+2 total slots / n+1 gaps.
+  const times = points.map((p) => new Date(p.at).getTime());
+  const leftStep = n >= 2 ? times[1] - times[0] : 86400000;
+  const rightStep = n >= 2 ? times[n - 1] - times[n - 2] : 86400000;
+  const virtualLeftAt = new Date(times[0] - leftStep).toISOString();
+  const virtualRightAt = new Date(times[n - 1] + rightStep).toISOString();
+  const totalGaps = n + 1;
+  const slotX = (slot) => paddingLeft + (slot / totalGaps) * plotWidth;
+  const xFor = (dataIndex) => slotX(dataIndex + 1);
+
   const series = SUPPORT_REPORT_ROWS.map((row, idx) => ({
     key: row.key,
     label: row.label,
@@ -1674,7 +1689,6 @@ function renderSupportReportTrendSVG(points, width, column) {
   }));
 
   const maxValue = Math.max(1, ...series.flatMap((s) => s.values));
-  const xFor = (i) => paddingLeft + (n === 1 ? plotWidth / 2 : (i / (n - 1)) * plotWidth);
   const yFor = (v) => paddingTop + plotHeight - (v / maxValue) * plotHeight;
 
   const gridLines = [0, 0.25, 0.5, 0.75, 1]
@@ -1691,16 +1705,21 @@ function renderSupportReportTrendSVG(points, width, column) {
 
   const maxLabels = Math.min(n, Math.max(2, Math.floor(plotWidth / 90)));
   const labelStep = Math.max(1, Math.round((n - 1) / Math.max(1, maxLabels - 1)));
-  const xLabels = points
-    .map((p, i) => ({ i, at: p.at }))
-    .filter(({ i }) => i % labelStep === 0 || i === n - 1)
+  const realLabels = points
+    .map((p, i) => ({ slot: i + 1, at: p.at }))
+    .filter((_, i) => i % labelStep === 0 || i === n - 1)
     .map(
-      ({ i, at }) =>
-        `<text x="${xFor(i).toFixed(1)}" y="${height - 6}" class="trend-axis-label" text-anchor="middle">${escapeHtml(
+      ({ slot, at }) =>
+        `<text x="${slotX(slot).toFixed(1)}" y="${height - 6}" class="trend-axis-label" text-anchor="middle">${escapeHtml(
           formatTrendDate(at)
         )}</text>`
     )
     .join("");
+  const virtualLabel = (slot, at) =>
+    `<text x="${slotX(slot).toFixed(1)}" y="${
+      height - 6
+    }" class="trend-axis-label trend-axis-label-faint" text-anchor="middle">${escapeHtml(formatTrendDate(at))}</text>`;
+  const xLabels = virtualLabel(0, virtualLeftAt) + realLabels + virtualLabel(n + 1, virtualRightAt);
 
   const seriesSvg = series
     .map((s) => {
@@ -1709,8 +1728,8 @@ function renderSupportReportTrendSVG(points, width, column) {
         .map(
           (v, i) =>
             `<circle cx="${xFor(i).toFixed(1)}" cy="${yFor(v).toFixed(1)}" r="3" fill="${s.color}"><title>${escapeHtml(
-              s.label
-            )}: ${v} (${escapeHtml(formatTrendDate(points[i].at))})</title></circle>`
+              columnLabel
+            )} — ${escapeHtml(s.label)}: ${v}</title></circle>`
         )
         .join("");
       return `<path d="${path}" fill="none" stroke="${s.color}" stroke-width="2" />${dots}`;
@@ -1730,7 +1749,12 @@ function mountSupportReportTrendChart() {
   if (!wrap || points.length < 2) return;
   const draw = () => {
     const width = Math.max(300, Math.round(wrap.clientWidth));
-    wrap.innerHTML = renderSupportReportTrendSVG(points, width, supportReportTrendColumn);
+    wrap.innerHTML = renderSupportReportTrendSVG(
+      points,
+      width,
+      supportReportTrendColumn,
+      supportReportTrendColumnLabel(supportReportTrendColumn)
+    );
   };
   draw();
   if (supportTrendResizeObserver) supportTrendResizeObserver.disconnect();
@@ -1748,6 +1772,14 @@ let supportReportTrendColumn = "TOTAL";
 function supportReportTrendColumnOptions() {
   const areas = (supportReportData && supportReportData.areas) || [];
   return [{ key: "TOTAL", label: "Total" }, ...areas.map((a) => ({ key: a.squad, label: a.label }))];
+}
+
+// Display label for a trend column key (e.g. "TOTAL" -> "Total", "PROG" ->
+// "Progress") - used to name the selected radio button in each dot's hover
+// tooltip (see `renderSupportReportTrendSVG`).
+function supportReportTrendColumnLabel(key) {
+  const opt = supportReportTrendColumnOptions().find((o) => o.key === key);
+  return opt ? opt.label : key;
 }
 
 function renderSupportReportTrendChart() {
