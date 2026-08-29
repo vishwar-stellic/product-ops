@@ -705,12 +705,33 @@ body {
 
 .trend-svg-wrap {
   width: 100%;
+  position: relative;
 }
 
 .trend-svg {
   display: block;
   width: 100%;
   height: 220px;
+}
+
+.trend-dot-hit {
+  cursor: pointer;
+}
+
+.trend-tooltip {
+  position: absolute;
+  display: none;
+  transform: translate(-50%, calc(-100% - 10px));
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12px;
+  white-space: nowrap;
+  padding: 5px 9px;
+  border-radius: var(--radius-sm);
+  pointer-events: none;
+  z-index: 30;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
 .trend-gridline {

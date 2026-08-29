@@ -1725,18 +1725,61 @@ function renderSupportReportTrendSVG(points, width, column, columnLabel) {
     .map((s) => {
       const path = s.values.map((v, i) => `${i === 0 ? "M" : "L"}${xFor(i).toFixed(1)},${yFor(v).toFixed(1)}`).join(" ");
       const dots = s.values
-        .map(
-          (v, i) =>
-            `<circle cx="${xFor(i).toFixed(1)}" cy="${yFor(v).toFixed(1)}" r="3" fill="${s.color}"><title>${escapeHtml(
-              columnLabel
-            )} — ${escapeHtml(s.label)}: ${v}</title></circle>`
-        )
+        .map((v, i) => {
+          const cx = xFor(i).toFixed(1);
+          const cy = yFor(v).toFixed(1);
+          const tooltip = `${escapeHtml(columnLabel)} — ${escapeHtml(s.label)}: ${v}`;
+          // Two circles per point: a small visible dot, plus a larger
+          // invisible one layered on top purely to give the mouse a bigger,
+          // more reliable hit target (see `attachTrendTooltipHandlers` -
+          // native SVG <title> tooltips are inconsistent across browsers,
+          // notably Safari, so hover is handled with real mouse events
+          // instead).
+          return (
+            `<circle cx="${cx}" cy="${cy}" r="3" fill="${s.color}" style="pointer-events:none"></circle>` +
+            `<circle class="trend-dot-hit" cx="${cx}" cy="${cy}" r="8" fill="transparent" data-tooltip="${tooltip}"></circle>`
+          );
+        })
         .join("");
-      return `<path d="${path}" fill="none" stroke="${s.color}" stroke-width="2" />${dots}`;
+      return `<path d="${path}" fill="none" stroke="${s.color}" stroke-width="2" style="pointer-events:none" />${dots}`;
     })
     .join("");
 
   return `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" class="trend-svg">${gridLines}${seriesSvg}${xLabels}</svg>`;
+}
+
+let trendTooltipEl = null;
+
+// Wires up hover handling for a freshly-drawn trend chart's hit-target
+// circles (see `renderSupportReportTrendSVG`). Uses real mouse events +
+// a plain positioned div rather than native SVG <title> tooltips, which
+// render inconsistently (or not at all, e.g. in Safari) and have an
+// awkward built-in delay.
+function attachTrendTooltipHandlers(wrap) {
+  if (!trendTooltipEl) {
+    trendTooltipEl = document.createElement("div");
+    trendTooltipEl.className = "trend-tooltip";
+  }
+  wrap.appendChild(trendTooltipEl);
+  const tooltip = trendTooltipEl;
+  const hide = () => {
+    tooltip.style.display = "none";
+  };
+  const position = (evt) => {
+    const rect = wrap.getBoundingClientRect();
+    tooltip.style.left = `${evt.clientX - rect.left}px`;
+    tooltip.style.top = `${evt.clientY - rect.top}px`;
+  };
+  hide();
+  wrap.querySelectorAll(".trend-dot-hit").forEach((dot) => {
+    dot.addEventListener("mouseenter", (evt) => {
+      tooltip.textContent = dot.getAttribute("data-tooltip") || "";
+      tooltip.style.display = "block";
+      position(evt);
+    });
+    dot.addEventListener("mousemove", position);
+    dot.addEventListener("mouseleave", hide);
+  });
 }
 
 let supportTrendResizeObserver = null;
@@ -1755,6 +1798,7 @@ function mountSupportReportTrendChart() {
       supportReportTrendColumn,
       supportReportTrendColumnLabel(supportReportTrendColumn)
     );
+    attachTrendTooltipHandlers(wrap);
   };
   draw();
   if (supportTrendResizeObserver) supportTrendResizeObserver.disconnect();
