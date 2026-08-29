@@ -1,7 +1,8 @@
 """Partner Insights dashboard tab - a per-partner (institution) rollup of
-two independent scores:
+three independent scores:
 
-## Product score (Linear only, no LLM, cheap - recomputed on every refresh)
+## Product score - split into Bug score and Feature score (Linear only, no
+## LLM, cheap - recomputed on every refresh)
 For each partner, every Linear issue linked to it via a `CustomerNeed` (see
 `partner_identity.py`'s module docstring) is fetched once
 (`_fetch_customer_linked_issues`, filtered to `needs: {some: {}}` so the
@@ -9,20 +10,26 @@ result set is just customer-linked issues, not the whole workspace) and
 grouped client-side by customer id - one bulk query rather than one query
 per partner. Each issue is bucketed bug (carries the `Bug` label, same
 `quality.BUG_LABEL` as the EPD dashboard's own SLA metrics) vs. feature
-request (everything else), and bug SLA status is derived from the
-directly-queryable `slaBreachesAt` timestamp rather than Linear's
-`slaStatus` *filter* (that one's filter-only - it can't be selected as a
-field, see `quality.py`'s docstring for why the filter version exists) -
-comparing it against `completedAt`/`canceledAt`/now reproduces the same
-Breached/Failed/Completed semantics.
+request/other (everything else - genuine feature requests plus any other
+non-Bug-labeled ask).
 
-`productScore` is 0-100, driven entirely by bug-SLA responsiveness
-(`1 - (breached + failed this month) / SLA-eligible bugs`, defaulting to
-100 when a partner has no SLA-eligible bugs at all) since "responsiveness
-to bugs" was the explicit ask - feature-request/bug *volume* is reported
-alongside as plain counts rather than folded into the score, so the
-score's meaning stays legible. Weights/definitions live as named constants
-below so they're easy to retune later.
+`bugScore` (0-100) is driven by bug-SLA responsiveness (`1 - (breached +
+failed this month) / SLA-eligible bugs`, defaulting to 100 when a partner
+has no SLA-eligible bugs at all), derived from the directly-queryable
+`slaBreachesAt` timestamp rather than Linear's `slaStatus` *filter* (that
+one's filter-only - it can't be selected as a field, see `quality.py`'s
+docstring for why the filter version exists) - comparing it against
+`completedAt`/`canceledAt`/now reproduces the same Breached/Failed/
+Completed semantics.
+
+`featureScore` (0-100) has no formal SLA to measure against, so it's a
+staleness proxy instead: `1 - (feature requests open longer than
+FEATURE_STALE_DAYS with no resolution) / total feature requests`,
+defaulting to 100 when a partner has none. Both scores are shown
+separately (never folded into one number) so it's clear which side of the
+backlog is driving a partner's standing; raw volume/count breakdowns are
+reported alongside for context. Weights/definitions live as named
+constants below so they're easy to retune later.
 
 ## Support score (Intercom + Claude, incremental - one small batch/day)
 Scoring full conversation transcripts via an LLM on every refresh would be
@@ -72,7 +79,7 @@ PARTNER_INSIGHTS_CACHE_KEY = "dashboard-partner-insights"
 # Bump whenever this module's output shape or underlying metric logic
 # changes - see `milestones_report.py:MILESTONES_REPORT_CACHE_VERSION` for
 # why (the cache backend has no schema of its own).
-PARTNER_INSIGHTS_CACHE_VERSION = 1
+PARTNER_INSIGHTS_CACHE_VERSION = 2
 
 # Separate raw key (accumulating log, not aged/versioned like the main
 # report - see `cache.read_raw`) for Claude-scored conversations. Never
@@ -89,6 +96,9 @@ _BATCH_MIN_INTERVAL_SECONDS = 20 * 60 * 60
 # How far back the *support* score looks once conversations start
 # accumulating in the log - see module docstring.
 SUPPORT_SCORE_WINDOW_DAYS = 30
+# A still-open feature request older than this with no resolution counts
+# against `featureScore` - see module docstring.
+FEATURE_STALE_DAYS = 90
 
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_API_VERSION = "2023-06-01"
@@ -162,9 +172,20 @@ def _sla_bucket(issue: Dict[str, Any], now_iso: str) -> Optional[str]:
     return "failed" if closed_at > sla_breaches_at else "met"
 
 
+def _is_stale_feature(feature: Dict[str, Any], stale_cutoff_iso: str) -> bool:
+    """A feature request/other ask counts against `featureScore` once it's
+    been open (never completed or canceled) longer than
+    `FEATURE_STALE_DAYS` - see module docstring."""
+    if feature.get("completedAt") or feature.get("canceledAt"):
+        return False
+    created = feature.get("createdAt")
+    return bool(created) and created < stale_cutoff_iso
+
+
 def _product_metrics_for_customer(
     issues: List[Dict[str, Any]],
     now_iso: str,
+    stale_cutoff_iso: str,
     month_start: str,
     month_end: str,
 ) -> Dict[str, Any]:
@@ -185,15 +206,21 @@ def _product_metrics_for_customer(
     # on an empty sample - see module docstring.
     bug_responsiveness_rate = 1.0 if sla_eligible_bugs == 0 else max(0.0, 1 - sla_incidents / sla_eligible_bugs)
 
+    stale_feature_requests = sum(1 for f in features if _is_stale_feature(f, stale_cutoff_iso))
+    # Same "empty sample -> clean slate" reasoning as bugs above.
+    feature_freshness_rate = 1.0 if not features else max(0.0, 1 - stale_feature_requests / len(features))
+
     return {
         "totalFeatureRequests": len(features),
         "newFeatureRequestsThisMonth": sum(1 for f in features if _in_range(f.get("createdAt"), month_start, month_end)),
+        "staleFeatureRequests": stale_feature_requests,
+        "featureScore": round(feature_freshness_rate * 100),
         "totalBugs": len(bugs),
         "newBugsThisMonth": sum(1 for b in bugs if _in_range(b.get("createdAt"), month_start, month_end)),
         "bugsCurrentlyOutOfSla": bugs_currently_out_of_sla,
         "bugsFailedSlaThisMonth": bugs_failed_sla_this_month,
         "slaEligibleBugs": sla_eligible_bugs,
-        "productScore": round(bug_responsiveness_rate * 100),
+        "bugScore": round(bug_responsiveness_rate * 100),
     }
 
 
@@ -201,13 +228,16 @@ def compute_product_scores(
     registry: List[Dict[str, Any]],
     linear_client: Optional[LinearClient] = None,
 ) -> Dict[str, Optional[Dict[str, Any]]]:
-    """`partnerId -> product metrics dict`, or `None` for a partner with no
-    linked Linear customer (shown as "not linked" rather than a
-    misleadingly perfect score - see module docstring)."""
+    """`partnerId -> product metrics dict` (with both `bugScore` and
+    `featureScore`), or `None` for a partner with no linked Linear customer
+    (shown as "not linked" rather than misleadingly perfect scores - see
+    module docstring)."""
     linear_client = linear_client or LinearClient()
     issues = _fetch_customer_linked_issues(linear_client)
     by_customer = _group_issues_by_customer(issues)
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    stale_cutoff_iso = (now - timedelta(days=FEATURE_STALE_DAYS)).isoformat()
     month_start, month_end = _month_bounds()
 
     scores: Dict[str, Optional[Dict[str, Any]]] = {}
@@ -217,7 +247,7 @@ def compute_product_scores(
             scores[partner["partnerId"]] = None
             continue
         scores[partner["partnerId"]] = _product_metrics_for_customer(
-            by_customer.get(customer_id, []), now_iso, month_start, month_end
+            by_customer.get(customer_id, []), now_iso, stale_cutoff_iso, month_start, month_end
         )
     return scores
 

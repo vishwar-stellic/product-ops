@@ -2079,28 +2079,34 @@ function renderScoreCell(score, emptyLabel) {
   return `<span class="partner-score-badge ${scoreBand(score)}">${score}</span>`;
 }
 
+const PARTNER_INSIGHTS_COLUMNS = 4; // Partner, Bug Score, Feature Score, Support Score
+
 function partnerInsightsRows() {
   return (partnerInsightsData && partnerInsightsData.partners) || [];
 }
 
-function renderPartnerInsightsDrilldown() {
-  if (!partnerInsightsActivePartnerId) return "";
-  const partner = partnerInsightsRows().find((p) => p.partnerId === partnerInsightsActivePartnerId);
-  if (!partner) return "";
-
+// The expanded-row content for one partner - rendered as a single wide
+// `<td colspan>` directly under that partner's own row in the main table
+// (see `renderPartnerInsights`), rather than one shared panel pinned to
+// the bottom of the whole table, so it's obvious which partner it belongs
+// to and other rows don't shift around unexpectedly.
+function renderPartnerInsightsExpandedRow(partner) {
   const product = partner.product;
   const support = partner.support;
 
   const productBlock = !product
-    ? `<p class="empty-note">Not linked to a Linear customer yet - no Product score available.</p>`
+    ? `<p class="empty-note">Not linked to a Linear customer yet - no Product scores available.</p>`
     : `
       <table class="data-table">
         <tbody>
-          <tr><td>Feature requests (total / new this month)</td><td class="num">${product.totalFeatureRequests} / ${product.newFeatureRequestsThisMonth}</td></tr>
+          <tr><td>Bug score</td><td class="num">${renderScoreCell(product.bugScore, "n/a")}</td></tr>
           <tr><td>Bugs (total / new this month)</td><td class="num">${product.totalBugs} / ${product.newBugsThisMonth}</td></tr>
           <tr><td>Currently out of SLA</td><td class="num">${product.bugsCurrentlyOutOfSla}</td></tr>
           <tr><td>Failed SLA this month</td><td class="num">${product.bugsFailedSlaThisMonth}</td></tr>
           <tr><td>SLA-eligible bugs (Urgent/High)</td><td class="num">${product.slaEligibleBugs}</td></tr>
+          <tr><td>Feature score</td><td class="num">${renderScoreCell(product.featureScore, "n/a")}</td></tr>
+          <tr><td>Feature requests/other (total / new this month)</td><td class="num">${product.totalFeatureRequests} / ${product.newFeatureRequestsThisMonth}</td></tr>
+          <tr><td>Stale (open &gt;90d, unresolved)</td><td class="num">${product.staleFeatureRequests}</td></tr>
         </tbody>
       </table>`;
 
@@ -2148,23 +2154,20 @@ function renderPartnerInsightsDrilldown() {
       </table>`;
 
   return `
-    <div class="squad-block partner-insights-drilldown">
-      <h3 class="block-title">${escapeHtml(partner.name)}${
-    !partner.matched
-      ? ' <span class="label-badge">unmatched between Linear/Intercom</span>'
-      : ""
-  }</h3>
-      <div class="partner-insights-drilldown-grid">
-        <div>
-          <h4 class="block-subtitle">Product</h4>
-          ${productBlock}
+    <tr class="partner-insights-expanded-row">
+      <td colspan="${PARTNER_INSIGHTS_COLUMNS}">
+        <div class="partner-insights-drilldown-grid">
+          <div>
+            <h4 class="block-subtitle">Product</h4>
+            ${productBlock}
+          </div>
+          <div>
+            <h4 class="block-subtitle">Support</h4>
+            ${supportBlock}
+          </div>
         </div>
-        <div>
-          <h4 class="block-subtitle">Support</h4>
-          ${supportBlock}
-        </div>
-      </div>
-    </div>`;
+      </td>
+    </tr>`;
 }
 
 function renderPartnerInsights(data) {
@@ -2174,39 +2177,45 @@ function renderPartnerInsights(data) {
 
   const rows = partners
     .map((p) => {
-      const productScore = p.product ? p.product.productScore : null;
+      const bugScore = p.product ? p.product.bugScore : null;
+      const featureScore = p.product ? p.product.featureScore : null;
       const supportScore = p.support ? p.support.supportScore : null;
-      const activeClass = p.partnerId === partnerInsightsActivePartnerId ? " active-row" : "";
-      return `
-      <tr class="clickable-row${activeClass}" data-partner-id="${escapeHtml(p.partnerId)}">
+      const isActive = p.partnerId === partnerInsightsActivePartnerId;
+      const mainRow = `
+      <tr class="clickable-row${isActive ? " active-row" : ""}" data-partner-id="${escapeHtml(p.partnerId)}">
         <td>${escapeHtml(p.name)}${!p.matched ? ' <span class="unmatched-flag" title="Couldn\'t be matched between Linear and Intercom">⚠</span>' : ""}</td>
-        <td class="num">${renderScoreCell(productScore, "not linked")}</td>
+        <td class="num">${renderScoreCell(bugScore, "not linked")}</td>
+        <td class="num">${renderScoreCell(featureScore, "not linked")}</td>
         <td class="num">${renderScoreCell(supportScore, "no data yet")}</td>
       </tr>`;
+      return isActive ? mainRow + renderPartnerInsightsExpandedRow(p) : mainRow;
     })
     .join("");
 
   els.partnerInsightsContainer.innerHTML = `
     <div class="squad-block">
       <p class="quality-definitions" style="list-style: none; padding-left: 0;">
-        Product score reflects bug-SLA responsiveness for that partner's Linear customer requests (100 = no
-        SLA misses). Support score is Claude's read of professionalism/helpfulness/genuineness across that
-        partner's Intercom conversations closed in the last ${data.supportScoreWindowDays || 30} days -
-        scored incrementally once/day, so it starts empty and fills in over time.${
-          data.claudeConfigured === false
-            ? " Support scoring isn't configured yet (ANTHROPIC_API_KEY missing) - see README."
-            : ""
-        }
+        Bug score reflects bug-SLA responsiveness; Feature score reflects how many of a partner's feature
+        requests/other asks have gone stale (open 90+ days, unresolved) - both from that partner's Linear
+        customer requests, 100 = clean. Support score is Claude's read of professionalism/helpfulness/
+        genuineness across that partner's Intercom conversations closed in the last ${
+          data.supportScoreWindowDays || 30
+        } days - scored incrementally once/day, so it starts empty and fills in over time.${
+    data.claudeConfigured === false
+      ? " Support scoring isn't configured yet (ANTHROPIC_API_KEY missing) - see README."
+      : ""
+  }
         Click a partner for the full breakdown.
       </p>
       <table class="data-table partner-insights-table">
         <thead>
-          <tr><th>Partner</th><th class="num">Product Score</th><th class="num">Support Score</th></tr>
+          <tr><th>Partner</th><th class="num">Bug Score</th><th class="num">Feature Score</th><th class="num">Support Score</th></tr>
         </thead>
-        <tbody>${rows || `<tr><td colspan="3"><p class="empty-note">No partners found.</p></td></tr>`}</tbody>
+        <tbody>${
+          rows || `<tr><td colspan="${PARTNER_INSIGHTS_COLUMNS}"><p class="empty-note">No partners found.</p></td></tr>`
+        }</tbody>
       </table>
-    </div>
-    ${renderPartnerInsightsDrilldown()}`;
+    </div>`;
 
   if (els.partnerInsightsUpdatedAt && data.fetchedAt) {
     els.partnerInsightsUpdatedAt.textContent = `Updated ${formatRelativeTime(data.fetchedAt)}`;

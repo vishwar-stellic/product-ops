@@ -239,12 +239,12 @@ the site into separate capabilities, each its own tab:
   docstring section), so the chart fills in gradually over time rather than
   needing a backfill; it shows a placeholder until at least two points
   exist.
-- **Partner Insights** — one row per partner institution with a **Product
-  score** and a **Support score**, out of 100 each. Unlike every other tab,
-  this one is hidden from the tab bar entirely unless the signed-in user's
-  email is on `PARTNER_INSIGHTS_ALLOWED_EMAILS` (see "Partner Insights
-  access" below) — most of the team doesn't need per-partner scoring
-  visible.
+- **Partner Insights** — one row per partner institution with a **Bug
+  score**, a **Feature score**, and a **Support score**, out of 100 each.
+  Unlike every other tab, this one is hidden from the tab bar entirely
+  unless the signed-in user's email is on `PARTNER_INSIGHTS_ALLOWED_EMAILS`
+  (see "Partner Insights access" below) — most of the team doesn't need
+  per-partner scoring visible.
   - **Partners** come from `product_status/partner_identity.py`'s
     `build_partner_registry`: every Intercom company cross-referenced
     against Linear's `Customer`/`CustomerNeed` objects ("Customer
@@ -253,13 +253,18 @@ the site into separate capabilities, each its own tab:
     falling back to a normalized name match. Either side missing a match is
     still shown (Product-only or Support-only) rather than dropped, flagged
     with a small ⚠ next to the name.
-  - **Product score** (Linear only, recomputed on every refresh, no LLM) —
-    driven by bug-SLA responsiveness across that partner's linked
-    `CustomerNeed` issues: `100 × (1 − (currently-out-of-SLA + failed-this-
-    month) / SLA-eligible bugs)`, defaulting to 100 when a partner has no
-    SLA-eligible (Urgent/High) bugs at all. Feature-request/bug volume is
-    shown as plain counts in the drilldown rather than folded into the
-    score. A partner with no linked Linear customer shows "not linked"
+  - **Bug score** and **Feature score** (Linear only, recomputed on every
+    refresh, no LLM) — every Linear issue linked to a partner via a
+    `CustomerNeed` is split into Bug-labeled vs. feature request/other, each
+    scored independently rather than folded into one number:
+    - **Bug score** — bug-SLA responsiveness: `100 × (1 − (currently-out-
+      of-SLA + failed-this-month) / SLA-eligible bugs)`, defaulting to 100
+      when a partner has no SLA-eligible (Urgent/High) bugs at all.
+    - **Feature score** — a staleness proxy (feature requests have no
+      formal SLA): `100 × (1 − (open >90 days, still unresolved) / total
+      feature requests/other)`, defaulting to 100 when a partner has none.
+
+    A partner with no linked Linear customer shows "not linked" for both
     instead of a score. See `product_status/partner_insights.py`'s module
     docstring.
   - **Support score** (Intercom conversations, graded by Claude) —
@@ -274,11 +279,13 @@ the site into separate capabilities, each its own tab:
     yet" — there's no backfill, so this fills in gradually starting from
     whenever `ANTHROPIC_API_KEY` was first configured, not from the tab's
     full history. Leaving `ANTHROPIC_API_KEY` unset keeps the rest of the
-    tab (Product score, registry) fully working, with every Support score
-    left as "no data yet".
-  - Click a partner row for the full breakdown — the Product metrics table,
-    plus the Support metrics and a list of individually-scored conversations
-    with Claude's one-sentence rationale and a link back to Intercom.
+    tab (Bug/Feature scores, registry) fully working, with every Support
+    score left as "no data yet".
+  - Click a partner row to expand it in place (an extra row directly below
+    that partner, not a separate panel at the bottom of the table) with the
+    full breakdown — the Bug/Feature metrics, plus the Support metrics and a
+    list of individually-scored conversations with Claude's one-sentence
+    rationale and a link back to Intercom.
   - Cached the same way as the other tabs (24h, own **Update** button to
     force a refresh) — a forced refresh also bypasses the ~20h minimum gap
     between Claude scoring batches, so it's slow (Linear pull + Intercom

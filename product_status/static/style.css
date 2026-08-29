@@ -1383,6 +1383,20 @@ body {
   cursor: help;
 }
 
+.partner-insights-expanded-row {
+  cursor: default;
+}
+
+.partner-insights-expanded-row:hover td {
+  background: var(--surface-2) !important;
+}
+
+.partner-insights-expanded-row > td {
+  background: var(--surface-2);
+  padding: 16px 18px;
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
 .partner-insights-drilldown-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
