@@ -1704,19 +1704,45 @@ if (els.supportReportContainer) {
 
 let supportReportLoaded = false;
 
+// A cache-version bump (or the daily 24h expiry) makes the *first* hit of
+// the day block for ~1-2 minutes with nothing sent back to the browser
+// while it pulls fresh data from Intercom - long enough that some browsers/
+// networks give up on the connection and `fetch()` throws a plain
+// "Failed to fetch" TypeError (a network-level failure, not an HTTP error,
+// so a `!res.ok` check never sees it) even though the server keeps working
+// and finishes writing the cache regardless. Retrying after a delay picks
+// up that now-warm cache instead of surfacing a scary error for what's
+// really just a slow-but-successful first load. Delays are long enough to
+// clear that worst case rather than piling up duplicate concurrent pulls.
+const SUPPORT_REPORT_RETRY_DELAYS_MS = [20000, 45000];
+
+function isNetworkFetchError(err) {
+  return err instanceof TypeError;
+}
+
 async function loadSupportReport() {
   if (!els.supportReportContainer) return;
-  try {
-    const res = await fetch("/api/support-report");
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      throw new Error(body.detail || `Request failed (${res.status})`);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const res = await fetch("/api/support-report");
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || `Request failed (${res.status})`);
+      }
+      renderSupportReport(await res.json());
+      return;
+    } catch (err) {
+      const canRetry = isNetworkFetchError(err) && attempt < SUPPORT_REPORT_RETRY_DELAYS_MS.length;
+      if (!canRetry) {
+        els.supportReportContainer.innerHTML = `<p class="empty-note">Couldn't load the support report: ${escapeHtml(
+          err.message
+        )}</p>`;
+        return;
+      }
+      els.supportReportContainer.innerHTML =
+        '<p class="empty-note">Still working — the first load of the day can take up to ~2 minutes while it pulls fresh data from Intercom. Retrying…</p>';
+      await new Promise((resolve) => setTimeout(resolve, SUPPORT_REPORT_RETRY_DELAYS_MS[attempt]));
     }
-    renderSupportReport(await res.json());
-  } catch (err) {
-    els.supportReportContainer.innerHTML = `<p class="empty-note">Couldn't load the support report: ${escapeHtml(
-      err.message
-    )}</p>`;
   }
 }
 

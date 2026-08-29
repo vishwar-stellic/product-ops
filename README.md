@@ -216,7 +216,14 @@ the site into separate capabilities, each its own tab:
   (`product_status/static/app.js:renderSupportReportDrilldown`). This is
   the slowest tab to refresh - a full pull takes roughly a minute - so the
   **Update** button warns about that; lazy-loaded and cached (24h) like the
-  other tabs.
+  other tabs. The first load of the day (or right after a cache-version
+  bump) has to block on that same ~1-2 minute pull with nothing sent back
+  in the meantime, which is long enough that some browsers/networks give up
+  on the connection and throw a network-level `fetch` error even though the
+  server keeps working and the cache still gets written - so a plain
+  `fetch` failure here (not an HTTP error) auto-retries with backoff rather
+  than surfacing an error immediately
+  (`product_status/static/app.js:loadSupportReport`).
 
 #### Signing in
 
