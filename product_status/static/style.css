@@ -566,6 +566,71 @@ body {
   font-weight: 700;
 }
 
+/* Support Report tab */
+
+.support-report-table th.support-squad-col,
+.support-report-table td.support-squad-col {
+  text-align: center;
+}
+
+.support-report-table tr.clickable-row {
+  cursor: pointer;
+}
+
+.support-report-table tr.clickable-row:hover td {
+  background: var(--surface-2);
+}
+
+.support-report-table tr.clickable-row.active-row td {
+  background: var(--surface-2);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.support-drilldown {
+  margin-top: 0;
+}
+
+.filter-table th {
+  white-space: nowrap;
+}
+
+.filter-table .filter-row th {
+  padding-top: 6px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.filter-table .filter-row input,
+.filter-table .filter-row select {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 12px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  padding: 5px 7px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.filter-table .filter-row input:focus,
+.filter-table .filter-row select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.filter-table td a {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.filter-table td a:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
 .card {
   background: var(--surface);
   border: 1px solid var(--border);

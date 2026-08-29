@@ -41,8 +41,23 @@ as the skill's `match()`) is mapped to this dashboard's squad keys via
 `AREA_TO_SQUAD`. `DEVX` has no customer-facing Intercom area (it's an
 internal team) and always reports `None` metrics - shown as "—" on the
 tab rather than a misleading zero.
+
+## Ticket-level detail (drill-down)
+Each squad's metrics also carry the underlying ticket list
+(`openKUTickets`/`newKUTickets`/`closedKUTickets`) so the dashboard can show
+"which tickets" behind a number without a second live Intercom call - the
+"out of first response" / "out of resolution" rows are just a client-side
+filter over `openKUTickets` (`firstResponseSLA != "Met"` /
+`outOfResolutionSLA`), since every open KU ticket already carries both
+flags. "Customer Name" is the ticket's requester (`source.author.name`),
+not the partner/institution - simpler and more reliably present than the
+skill's full partner-resolution chain (company -> external_id code ->
+email domain), and more useful at the individual-ticket grain this table
+operates at.
 """
 
+import html
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -55,7 +70,9 @@ SUPPORT_REPORT_CACHE_KEY = "dashboard-support-report"
 # Bump whenever this module's output shape or underlying metric logic
 # changes - see `milestones_report.py:MILESTONES_REPORT_CACHE_VERSION` for
 # why (same cache has no schema of its own).
-SUPPORT_REPORT_CACHE_VERSION = 1
+SUPPORT_REPORT_CACHE_VERSION = 2
+
+INTERCOM_INBOX_PREFIX = "g60t55rg"
 
 FR_TARGET_HOURS = 24.0
 RES_TARGET_DAYS = 21.0
@@ -188,8 +205,77 @@ def _fr_breach(conversation: Dict[str, Any], reply_overrides: Dict[str, Optional
     return _business_hours_between(created, now) > FR_TARGET_HOURS
 
 
+def _first_response_label(conversation: Dict[str, Any], reply_overrides: Dict[str, Optional[float]], now: float) -> str:
+    """"Met" / "Not Met" / "Pending" (still within the clock, no reply yet)
+    - the same grading `_fr_breach` uses, spelled out for the ticket table."""
+    created = conversation.get("created_at")
+    if not created:
+        return "Pending"
+    reply = (conversation.get("statistics") or {}).get("first_admin_reply_at") or reply_overrides.get(
+        conversation["id"]
+    )
+    if reply:
+        return "Met" if _business_hours_between(created, reply) <= FR_TARGET_HOURS else "Not Met"
+    return "Pending" if _business_hours_between(created, now) <= FR_TARGET_HOURS else "Not Met"
+
+
+def _strip_html(value: Optional[str]) -> str:
+    if not value:
+        return ""
+    return html.unescape(re.sub(r"<[^>]+>", " ", value)).strip()
+
+
+def _ticket_description(conversation: Dict[str, Any]) -> str:
+    ticket_attrs = ((conversation.get("ticket") or {}).get("custom_attributes")) or {}
+    title = ticket_attrs.get("_default_title_")
+    title = title.get("value") if isinstance(title, dict) else title
+    if title:
+        return _strip_html(title)
+    subject = (conversation.get("source") or {}).get("subject")
+    if subject:
+        return _strip_html(subject)
+    return f"Conversation {conversation.get('id')}"
+
+
+def _customer_name(conversation: Dict[str, Any]) -> str:
+    author = (conversation.get("source") or {}).get("author") or {}
+    return author.get("name") or author.get("email") or "(unknown)"
+
+
+def _epoch_to_iso(value: Optional[float]) -> Optional[str]:
+    return datetime.fromtimestamp(value, timezone.utc).isoformat() if value else None
+
+
+def _ticket_record(
+    conversation: Dict[str, Any],
+    squad: str,
+    squad_label: str,
+    reply_overrides: Dict[str, Optional[float]],
+    now: float,
+) -> Dict[str, Any]:
+    created = conversation.get("created_at")
+    priority = _priority(conversation) or "(blank)"
+    out_of_resolution = bool(
+        created and (now - created) / 86400.0 > RES_TARGET_DAYS and priority in ("Urgent", "High")
+    )
+    return {
+        "id": conversation.get("id"),
+        "url": f"https://app.intercom.com/a/inbox/{INTERCOM_INBOX_PREFIX}/inbox/shared/all/conversation/{conversation.get('id')}",
+        "squad": squad,
+        "squadLabel": squad_label,
+        "createdAt": _epoch_to_iso(created),
+        "updatedAt": _epoch_to_iso(conversation.get("updated_at")),
+        "customerName": _customer_name(conversation),
+        "priority": priority,
+        "description": _ticket_description(conversation),
+        "firstResponseSLA": _first_response_label(conversation, reply_overrides, now),
+        "outOfResolutionSLA": out_of_resolution,
+    }
+
+
 def _area_metrics(
     squad: str,
+    label: str,
     open_register: List[Dict[str, Any]],
     created_raw: List[Dict[str, Any]],
     closed_raw: List[Dict[str, Any]],
@@ -219,12 +305,24 @@ def _area_metrics(
         and (now - c["created_at"]) / 86400.0 > RES_TARGET_DAYS
         and _priority(c) in ("Urgent", "High")
     )
+
+    def _records(conversations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return [_ticket_record(c, squad, label, reply_overrides, now) for c in conversations]
+
     return {
         "totalOpenKU": len(ku_open),
         "newKUThisWeek": len(new_ku),
         "closedKUThisWeek": len(closed_ku),
         "outOfFirstResponseSLA": out_of_first_response,
         "outOfResolutionSLA": out_of_resolution,
+        # Ticket-level detail for the dashboard's drill-down table - see
+        # module docstring ("Ticket-level detail"). "Out of first response"/
+        # "out of resolution" reuse `openKUTickets` client-side rather than
+        # getting their own lists, since every record already carries both
+        # flags.
+        "openKUTickets": _records(ku_open),
+        "newKUTickets": _records(new_ku),
+        "closedKUTickets": _records(closed_ku),
     }
 
 
@@ -286,7 +384,16 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
         area["squad"]: (
             None
             if area["intercomArea"] is None
-            else _area_metrics(area["squad"], open_register, created_raw, closed_raw, reply_overrides, now, window_start)
+            else _area_metrics(
+                area["squad"],
+                area["label"],
+                open_register,
+                created_raw,
+                closed_raw,
+                reply_overrides,
+                now,
+                window_start,
+            )
         )
         for area in AREAS
     }

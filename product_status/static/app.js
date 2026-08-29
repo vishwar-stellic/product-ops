@@ -1445,19 +1445,204 @@ const SUPPORT_REPORT_ROWS = [
   { key: "outOfResolutionSLA", label: "Out of resolution SLA" },
 ];
 
+const SUPPORT_REPORT_SLA_OPTIONS = ["Met", "Not Met", "Pending"];
+const SUPPORT_REPORT_PRIORITY_ORDER = ["Urgent", "High", "Medium", "Low", "(blank)"];
+
+// The last-loaded report payload, so clicking a row / typing in a filter can
+// re-render without a fresh fetch - see `switchTab`'s lazy-load and
+// `refreshSupportReport`.
+let supportReportData = null;
+// Which metric row's ticket list is currently expanded below the table, or
+// null if none - toggled by clicking a row (`renderSupportReport`'s click
+// handler).
+let supportReportActiveMetric = null;
+const supportReportFilters = {
+  squad: "",
+  createdAt: "",
+  firstResponseSLA: "",
+  updatedAt: "",
+  customerName: "",
+  priority: "",
+  description: "",
+};
+
+function formatDateTime(isoString) {
+  if (!isoString) return "—";
+  const d = new Date(isoString);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+// "Out of first response"/"out of resolution" aren't their own ticket
+// lists on the wire - every `openKUTickets` record already carries both
+// flags (see `support_report.py`'s docstring), so those two rows are just
+// a client-side filter over the same open-ticket list.
+function supportReportTicketsForMetric(data, metricKey) {
+  const areas = data.areas || [];
+  const openTickets = areas.flatMap((area) => (area.metrics && area.metrics.openKUTickets) || []);
+  if (metricKey === "newKUThisWeek") {
+    return areas.flatMap((area) => (area.metrics && area.metrics.newKUTickets) || []);
+  }
+  if (metricKey === "closedKUThisWeek") {
+    return areas.flatMap((area) => (area.metrics && area.metrics.closedKUTickets) || []);
+  }
+  if (metricKey === "outOfFirstResponseSLA") {
+    return openTickets.filter((t) => t.firstResponseSLA === "Not Met");
+  }
+  if (metricKey === "outOfResolutionSLA") {
+    return openTickets.filter((t) => t.outOfResolutionSLA);
+  }
+  return openTickets; // totalOpenKU
+}
+
+function supportReportFilteredTickets(tickets) {
+  const f = supportReportFilters;
+  return tickets.filter((t) => {
+    if (f.squad && t.squadLabel !== f.squad) return false;
+    if (f.firstResponseSLA && t.firstResponseSLA !== f.firstResponseSLA) return false;
+    if (f.priority && t.priority !== f.priority) return false;
+    if (f.customerName && !(t.customerName || "").toLowerCase().includes(f.customerName.toLowerCase())) return false;
+    if (f.description && !(t.description || "").toLowerCase().includes(f.description.toLowerCase())) return false;
+    if (f.createdAt && !formatDateTime(t.createdAt).toLowerCase().includes(f.createdAt.toLowerCase())) return false;
+    if (f.updatedAt && !formatDateTime(t.updatedAt).toLowerCase().includes(f.updatedAt.toLowerCase())) return false;
+    return true;
+  });
+}
+
+function slaStatusClass(status) {
+  if (status === "Met") return "status-completed";
+  if (status === "Not Met") return "status-canceled";
+  return "status-planned"; // Pending
+}
+
+function renderSupportReportTicketRows(tickets) {
+  if (!tickets.length) {
+    return '<tr><td colspan="7"><p class="empty-note">No tickets match these filters.</p></td></tr>';
+  }
+  return tickets
+    .map(
+      (t) => `
+      <tr>
+        <td>${escapeHtml(t.squadLabel)}</td>
+        <td>${formatDateTime(t.createdAt)}</td>
+        <td><span class="status-badge ${slaStatusClass(t.firstResponseSLA)}">${escapeHtml(
+        t.firstResponseSLA
+      )}</span></td>
+        <td>${formatDateTime(t.updatedAt)}</td>
+        <td>${escapeHtml(t.customerName)}</td>
+        <td>${escapeHtml(t.priority)}</td>
+        <td><a href="${escapeHtml(t.url)}" target="_blank" rel="noopener">${escapeHtml(t.description)}</a></td>
+      </tr>`
+    )
+    .join("");
+}
+
+// Re-renders just the drill-down table's rows + count badge (not the
+// filter inputs themselves) so typing in a text filter doesn't steal focus
+// away from the input on every keystroke - see the `input`/`change`
+// listeners below.
+function updateSupportReportDrilldownRows() {
+  if (!supportReportData || !supportReportActiveMetric || !els.supportReportContainer) return;
+  const tbody = els.supportReportContainer.querySelector(".support-drilldown tbody");
+  const badge = els.supportReportContainer.querySelector(".support-drilldown .label-badge");
+  if (!tbody) return;
+  const allTickets = supportReportTicketsForMetric(supportReportData, supportReportActiveMetric);
+  const filtered = supportReportFilteredTickets(allTickets);
+  tbody.innerHTML = renderSupportReportTicketRows(filtered);
+  if (badge) badge.textContent = `${filtered.length} of ${allTickets.length}`;
+}
+
+function renderSupportReportDrilldown() {
+  if (!supportReportData || !supportReportActiveMetric) return "";
+  const row = SUPPORT_REPORT_ROWS.find((r) => r.key === supportReportActiveMetric);
+  const allTickets = supportReportTicketsForMetric(supportReportData, supportReportActiveMetric);
+  const filtered = supportReportFilteredTickets(allTickets);
+
+  // Filter dropdown options are derived from the full (unfiltered) ticket
+  // set for this metric, not the currently-filtered one, so options never
+  // disappear out from under the user while they're narrowing down.
+  const squadOptions = [...new Set(allTickets.map((t) => t.squadLabel))].sort();
+  const priorityOptions = [...new Set(allTickets.map((t) => t.priority))].sort(
+    (a, b) => SUPPORT_REPORT_PRIORITY_ORDER.indexOf(a) - SUPPORT_REPORT_PRIORITY_ORDER.indexOf(b)
+  );
+
+  const selectOptions = (options, current) =>
+    ['<option value="">All</option>']
+      .concat(
+        options.map(
+          (o) => `<option value="${escapeHtml(o)}"${o === current ? " selected" : ""}>${escapeHtml(o)}</option>`
+        )
+      )
+      .join("");
+
+  return `
+    <div class="squad-block support-drilldown">
+      <h3 class="block-title">${escapeHtml(row ? row.label : "")} <span class="label-badge">${
+    filtered.length
+  } of ${allTickets.length}</span></h3>
+      <table class="data-table filter-table">
+        <thead>
+          <tr>
+            <th>Squad</th>
+            <th>Date Created</th>
+            <th>First Response SLA</th>
+            <th>Last Update</th>
+            <th>Customer Name</th>
+            <th>Priority</th>
+            <th>Ticket Description</th>
+          </tr>
+          <tr class="filter-row">
+            <th><select data-filter="squad">${selectOptions(squadOptions, supportReportFilters.squad)}</select></th>
+            <th><input type="text" data-filter="createdAt" placeholder="Filter…" value="${escapeHtml(
+              supportReportFilters.createdAt
+            )}"></th>
+            <th><select data-filter="firstResponseSLA">${selectOptions(
+              SUPPORT_REPORT_SLA_OPTIONS,
+              supportReportFilters.firstResponseSLA
+            )}</select></th>
+            <th><input type="text" data-filter="updatedAt" placeholder="Filter…" value="${escapeHtml(
+              supportReportFilters.updatedAt
+            )}"></th>
+            <th><input type="text" data-filter="customerName" placeholder="Filter…" value="${escapeHtml(
+              supportReportFilters.customerName
+            )}"></th>
+            <th><select data-filter="priority">${selectOptions(
+              priorityOptions,
+              supportReportFilters.priority
+            )}</select></th>
+            <th><input type="text" data-filter="description" placeholder="Filter…" value="${escapeHtml(
+              supportReportFilters.description
+            )}"></th>
+          </tr>
+        </thead>
+        <tbody>${renderSupportReportTicketRows(filtered)}</tbody>
+      </table>
+    </div>`;
+}
+
 function renderSupportReport(data) {
   if (!els.supportReportContainer) return;
+  supportReportData = data;
   const areas = data.areas || [];
 
-  const headerCells = areas.map((area) => `<th>${escapeHtml(area.label)}</th>`).join("");
+  const headerCells = areas.map((area) => `<th class="support-squad-col">${escapeHtml(area.label)}</th>`).join("");
   const bodyRows = SUPPORT_REPORT_ROWS.map((row) => {
     const cells = areas
       .map((area) => {
         const value = area.metrics ? area.metrics[row.key] : null;
-        return `<td class="num">${value === null || value === undefined ? "—" : value}</td>`;
+        return `<td class="num support-squad-col">${value === null || value === undefined ? "—" : value}</td>`;
       })
       .join("");
-    return `<tr><td>${escapeHtml(row.label)}</td>${cells}</tr>`;
+    const activeClass = row.key === supportReportActiveMetric ? " active-row" : "";
+    return `<tr class="clickable-row${activeClass}" data-metric="${row.key}"><td>${escapeHtml(
+      row.label
+    )}</td>${cells}</tr>`;
   }).join("");
 
   els.supportReportContainer.innerHTML = `
@@ -1466,13 +1651,15 @@ function renderSupportReport(data) {
         Key User tickets only. "Open" means Intercom state open or snoozed. First response SLA is
         ${data.frTargetHours} business hours (weekends don't count); resolution SLA is ${data.resTargetDays}
         calendar days for Urgent/High priority tickets. "This week" is a trailing ${data.windowDays}-day window.
-        Dev-ex has no customer-facing Intercom area, so it always shows "—".
+        Dev-ex has no customer-facing Intercom area, so it always shows "—". Click a row to see the underlying
+        tickets.
       </p>
-      <table class="data-table">
+      <table class="data-table support-report-table">
         <thead><tr><th></th>${headerCells}</tr></thead>
         <tbody>${bodyRows}</tbody>
       </table>
-    </div>`;
+    </div>
+    ${renderSupportReportDrilldown()}`;
 
   if (els.supportReportUpdatedAt && data.fetchedAt) {
     const asOfSuffix = data.asOf ? ` (as of ${new Date(data.asOf).toLocaleString()})` : "";
@@ -1480,6 +1667,30 @@ function renderSupportReport(data) {
     els.supportReportUpdatedAt.classList.toggle("stale", isStale(data.fetchedAt));
     els.supportReportUpdatedAt.title = new Date(data.fetchedAt * 1000).toLocaleString();
   }
+}
+
+if (els.supportReportContainer) {
+  els.supportReportContainer.addEventListener("click", (event) => {
+    const row = event.target.closest("tr.clickable-row");
+    if (!row || !supportReportData) return;
+    const metric = row.dataset.metric;
+    supportReportActiveMetric = supportReportActiveMetric === metric ? null : metric;
+    renderSupportReport(supportReportData);
+  });
+
+  els.supportReportContainer.addEventListener("input", (event) => {
+    const filterKey = event.target.dataset.filter;
+    if (!filterKey || event.target.tagName !== "INPUT") return;
+    supportReportFilters[filterKey] = event.target.value;
+    updateSupportReportDrilldownRows();
+  });
+
+  els.supportReportContainer.addEventListener("change", (event) => {
+    const filterKey = event.target.dataset.filter;
+    if (!filterKey || event.target.tagName !== "SELECT") return;
+    supportReportFilters[filterKey] = event.target.value;
+    updateSupportReportDrilldownRows();
+  });
 }
 
 let supportReportLoaded = false;
