@@ -1342,33 +1342,35 @@ body {
   text-align: left;
 }
 
-.partner-score-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 34px;
-  padding: 3px 9px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  background: rgba(122, 130, 144, 0.18);
+.partner-score-dot {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--gray);
+  cursor: help;
+}
+
+.partner-score-dot.score-ok {
+  background: var(--green);
+}
+
+.partner-score-dot.score-warn {
+  background: var(--yellow);
+}
+
+.partner-score-dot.score-over {
+  background: var(--red);
+}
+
+.sortable-header {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.sortable-header:hover {
   color: var(--text);
-}
-
-.partner-score-badge.score-ok {
-  background: rgba(62, 207, 142, 0.16);
-  color: var(--green);
-}
-
-.partner-score-badge.score-warn {
-  background: rgba(229, 193, 92, 0.15);
-  color: var(--yellow);
-}
-
-.partner-score-badge.score-over {
-  background: rgba(241, 101, 101, 0.16);
-  color: var(--red);
 }
 
 .empty-note-inline {

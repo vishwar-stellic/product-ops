@@ -2067,22 +2067,60 @@ let partnerInsightsActivePartnerId = null;
 
 function scoreBand(score) {
   if (score === null || score === undefined) return "";
-  if (score >= 85) return "score-ok";
-  if (score < 60) return "score-over";
-  return "score-warn";
+  if (score >= 85) return "score-ok"; // green
+  if (score < 60) return "score-over"; // red
+  return "score-warn"; // yellow
 }
 
+// A plain red/yellow/green dot - the exact number is still available on
+// hover (title attribute) for anyone who wants it, but the at-a-glance
+// table reads as a traffic light rather than a wall of numbers.
 function renderScoreCell(score, emptyLabel) {
   if (score === null || score === undefined) {
     return `<span class="empty-note-inline">${escapeHtml(emptyLabel)}</span>`;
   }
-  return `<span class="partner-score-badge ${scoreBand(score)}">${score}</span>`;
+  return `<span class="partner-score-dot ${scoreBand(score)}" title="Score: ${score}/100"></span>`;
 }
 
 const PARTNER_INSIGHTS_COLUMNS = 4; // Partner, Bug Score, Feature Score, Support Score
 
+// Column headers are clickable to sort - see `renderPartnerInsights`'s
+// `<th data-sort-key>` and the click handler below. Defaults to Partner
+// name, ascending.
+const partnerInsightsSort = { key: "name", dir: "asc" };
+
+const PARTNER_INSIGHTS_SORT_COLUMNS = [
+  { key: "name", label: "Partner" },
+  { key: "bugScore", label: "Bug Score" },
+  { key: "featureScore", label: "Feature Score" },
+  { key: "supportScore", label: "Support Score" },
+];
+
+function partnerInsightsSortValue(partner, key) {
+  if (key === "name") return partner.name || "";
+  if (key === "bugScore") return partner.product ? partner.product.bugScore : null;
+  if (key === "featureScore") return partner.product ? partner.product.featureScore : null;
+  if (key === "supportScore") return partner.support ? partner.support.supportScore : null;
+  return null;
+}
+
 function partnerInsightsRows() {
-  return (partnerInsightsData && partnerInsightsData.partners) || [];
+  const rows = ((partnerInsightsData && partnerInsightsData.partners) || []).slice();
+  const { key, dir } = partnerInsightsSort;
+  const mult = dir === "asc" ? 1 : -1;
+  rows.sort((a, b) => {
+    const va = partnerInsightsSortValue(a, key);
+    const vb = partnerInsightsSortValue(b, key);
+    // Partners missing that particular score ("not linked"/"no data yet")
+    // always sort to the bottom regardless of direction, rather than
+    // flip-flopping to the top on a descending sort.
+    if (va === null && vb === null) return 0;
+    if (va === null) return 1;
+    if (vb === null) return -1;
+    if (typeof va === "string") return va.localeCompare(vb) * mult;
+    return (va - vb) * mult;
+  });
+  return rows;
 }
 
 // The expanded-row content for one partner - rendered as a single wide
@@ -2170,10 +2208,19 @@ function renderPartnerInsightsExpandedRow(partner) {
     </tr>`;
 }
 
+function renderPartnerInsightsHeaderCells() {
+  return PARTNER_INSIGHTS_SORT_COLUMNS.map(({ key, label }) => {
+    const isActive = partnerInsightsSort.key === key;
+    const arrow = isActive ? (partnerInsightsSort.dir === "asc" ? " ▲" : " ▼") : "";
+    const numClass = key === "name" ? "" : " num";
+    return `<th class="sortable-header${numClass}" data-sort-key="${key}">${escapeHtml(label)}${arrow}</th>`;
+  }).join("");
+}
+
 function renderPartnerInsights(data) {
   if (!els.partnerInsightsContainer) return;
   partnerInsightsData = data;
-  const partners = data.partners || [];
+  const partners = partnerInsightsRows();
 
   const rows = partners
     .map((p) => {
@@ -2209,7 +2256,7 @@ function renderPartnerInsights(data) {
       </p>
       <table class="data-table partner-insights-table">
         <thead>
-          <tr><th>Partner</th><th class="num">Bug Score</th><th class="num">Feature Score</th><th class="num">Support Score</th></tr>
+          <tr>${renderPartnerInsightsHeaderCells()}</tr>
         </thead>
         <tbody>${
           rows || `<tr><td colspan="${PARTNER_INSIGHTS_COLUMNS}"><p class="empty-note">No partners found.</p></td></tr>`
@@ -2226,8 +2273,21 @@ function renderPartnerInsights(data) {
 
 if (els.partnerInsightsContainer) {
   els.partnerInsightsContainer.addEventListener("click", (event) => {
+    if (!partnerInsightsData) return;
+
+    const header = event.target.closest("th.sortable-header");
+    if (header) {
+      const key = header.dataset.sortKey;
+      // Same column clicked again -> flip direction; a different column ->
+      // start fresh at ascending.
+      partnerInsightsSort.dir = partnerInsightsSort.key === key && partnerInsightsSort.dir === "asc" ? "desc" : "asc";
+      partnerInsightsSort.key = key;
+      renderPartnerInsights(partnerInsightsData);
+      return;
+    }
+
     const row = event.target.closest("tr.clickable-row");
-    if (!row || !partnerInsightsData) return;
+    if (!row) return;
     const partnerId = row.dataset.partnerId;
     partnerInsightsActivePartnerId = partnerInsightsActivePartnerId === partnerId ? null : partnerId;
     renderPartnerInsights(partnerInsightsData);
