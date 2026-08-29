@@ -56,6 +56,11 @@ Endpoints:
                                           bypassing the 24h cache (this one
                                           is slow - a couple minutes, see
                                           support_report.py's docstring)
+    GET  /api/support-report/history  -> accumulated trend-chart history for
+                                          the support report's top table -
+                                          one point recorded per actual
+                                          refresh (not per page load), see
+                                          support_report.py's docstring
     GET  /api/notion/status       -> whether Notion is connected (OAuth) and
                                       to which workspace, plus
                                       defaultParentPageUrl
@@ -113,7 +118,12 @@ from .notion_report import (
 )
 from .projects import DEFAULT_SUMMIT_LABEL, build_dashboard_projects_report, build_summit_projects_report
 from .report import build_current_sprint, build_full_report, build_previous_sprint
-from .support_report import SUPPORT_REPORT_CACHE_KEY, SUPPORT_REPORT_CACHE_VERSION, build_support_report
+from .support_report import (
+    SUPPORT_REPORT_CACHE_KEY,
+    SUPPORT_REPORT_CACHE_VERSION,
+    build_support_report,
+    get_support_report_history,
+)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -600,6 +610,13 @@ def support_report_refresh():
         return _get_support_report(force=True)
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/support-report/history")
+def support_report_history():
+    """Accumulated trend-chart history for the support report's top table -
+    see support_report.py's docstring ("Trend history")."""
+    return get_support_report_history()
 
 
 @app.get("/api/notion/status")

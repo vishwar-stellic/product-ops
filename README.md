@@ -223,7 +223,14 @@ the site into separate capabilities, each its own tab:
   server keeps working and the cache still gets written - so a plain
   `fetch` failure here (not an HTTP error) auto-retries with backoff rather
   than surfacing an error immediately
-  (`product_status/static/app.js:loadSupportReport`).
+  (`product_status/static/app.js:loadSupportReport`). Above the table sits
+  a **Trend** chart - one line per metric row (its Total across all
+  squads), one point per *actual* refresh (not per page view). Every real
+  refresh appends a snapshot to a small history log stored alongside the
+  main cache (`GET /api/support-report/history`; see
+  `support_report.py`'s "Trend history" docstring section), so the chart
+  fills in gradually over time rather than needing a backfill; it shows a
+  placeholder until at least two points exist.
 
 #### Signing in
 

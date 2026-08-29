@@ -1452,6 +1452,9 @@ const SUPPORT_REPORT_PRIORITY_ORDER = ["Urgent", "High", "Medium", "Low", "(blan
 // re-render without a fresh fetch - see `switchTab`'s lazy-load and
 // `refreshSupportReport`.
 let supportReportData = null;
+// The trend chart's accumulated history log (`{points: [...]}`), fetched
+// alongside the main report - see `loadSupportReportHistory`.
+let supportReportHistoryData = null;
 // Which metric row's ticket list is currently expanded below the table, or
 // null if none - toggled by clicking a row (`renderSupportReport`'s click
 // handler).
@@ -1635,6 +1638,135 @@ function renderSupportReportDrilldown() {
     </div>`;
 }
 
+// One color per SUPPORT_REPORT_ROWS entry, in order - picked to stay
+// distinguishable against the dashboard's dark theme (the first four reuse
+// the theme's own semantic colors; the 5th is a one-off purple since there's
+// no existing 5th semantic color to borrow).
+const SUPPORT_REPORT_TREND_COLORS = ["#6e8bff", "#3ecf8e", "#e5c15c", "#f16565", "#b98af6"];
+
+function formatTrendDate(isoString) {
+  const d = new Date(isoString);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+// Builds the actual <svg>...</svg> markup for the trend chart at a given
+// pixel width. Called with the *real* measured container width (see
+// `mountSupportReportTrendChart`) so the SVG's viewBox maps 1:1 to on-screen
+// pixels - avoids the classic responsive-SVG trap where a fixed viewBox
+// scaled to fill a flexible-width container via `preserveAspectRatio="none"`
+// stretches circles into ellipses and warps text.
+function renderSupportReportTrendSVG(points, width) {
+  const height = 220;
+  const paddingLeft = 44;
+  const paddingRight = 12;
+  const paddingTop = 14;
+  const paddingBottom = 26;
+  const plotWidth = Math.max(1, width - paddingLeft - paddingRight);
+  const plotHeight = height - paddingTop - paddingBottom;
+  const n = points.length;
+
+  const series = SUPPORT_REPORT_ROWS.map((row, idx) => ({
+    key: row.key,
+    label: row.label,
+    color: SUPPORT_REPORT_TREND_COLORS[idx % SUPPORT_REPORT_TREND_COLORS.length],
+    values: points.map((p) => ((p.metrics && p.metrics[row.key] && p.metrics[row.key].TOTAL) || 0)),
+  }));
+
+  const maxValue = Math.max(1, ...series.flatMap((s) => s.values));
+  const xFor = (i) => paddingLeft + (n === 1 ? plotWidth / 2 : (i / (n - 1)) * plotWidth);
+  const yFor = (v) => paddingTop + plotHeight - (v / maxValue) * plotHeight;
+
+  const gridLines = [0, 0.25, 0.5, 0.75, 1]
+    .map((t) => {
+      const y = paddingTop + plotHeight - t * plotHeight;
+      return `<line x1="${paddingLeft}" y1="${y.toFixed(1)}" x2="${width - paddingRight}" y2="${y.toFixed(
+        1
+      )}" class="trend-gridline" />
+        <text x="${paddingLeft - 8}" y="${(y + 4).toFixed(1)}" class="trend-axis-label" text-anchor="end">${Math.round(
+        t * maxValue
+      )}</text>`;
+    })
+    .join("");
+
+  const maxLabels = Math.min(n, Math.max(2, Math.floor(plotWidth / 90)));
+  const labelStep = Math.max(1, Math.round((n - 1) / Math.max(1, maxLabels - 1)));
+  const xLabels = points
+    .map((p, i) => ({ i, at: p.at }))
+    .filter(({ i }) => i % labelStep === 0 || i === n - 1)
+    .map(
+      ({ i, at }) =>
+        `<text x="${xFor(i).toFixed(1)}" y="${height - 6}" class="trend-axis-label" text-anchor="middle">${escapeHtml(
+          formatTrendDate(at)
+        )}</text>`
+    )
+    .join("");
+
+  const seriesSvg = series
+    .map((s) => {
+      const path = s.values.map((v, i) => `${i === 0 ? "M" : "L"}${xFor(i).toFixed(1)},${yFor(v).toFixed(1)}`).join(" ");
+      const dots = s.values
+        .map(
+          (v, i) =>
+            `<circle cx="${xFor(i).toFixed(1)}" cy="${yFor(v).toFixed(1)}" r="3" fill="${s.color}"><title>${escapeHtml(
+              s.label
+            )}: ${v} (${escapeHtml(formatTrendDate(points[i].at))})</title></circle>`
+        )
+        .join("");
+      return `<path d="${path}" fill="none" stroke="${s.color}" stroke-width="2" />${dots}`;
+    })
+    .join("");
+
+  return `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" class="trend-svg">${gridLines}${seriesSvg}${xLabels}</svg>`;
+}
+
+let supportTrendResizeObserver = null;
+
+// Draws (or redraws, on container resize) the trend chart at the wrap
+// div's *actual* pixel width - see `renderSupportReportTrendSVG`'s comment.
+function mountSupportReportTrendChart() {
+  const wrap = els.supportReportContainer && els.supportReportContainer.querySelector(".trend-svg-wrap");
+  const points = (supportReportHistoryData && supportReportHistoryData.points) || [];
+  if (!wrap || points.length < 2) return;
+  const draw = () => {
+    const width = Math.max(300, Math.round(wrap.clientWidth));
+    wrap.innerHTML = renderSupportReportTrendSVG(points, width);
+  };
+  draw();
+  if (supportTrendResizeObserver) supportTrendResizeObserver.disconnect();
+  supportTrendResizeObserver = new ResizeObserver(draw);
+  supportTrendResizeObserver.observe(wrap);
+}
+
+function renderSupportReportTrendChart() {
+  const points = (supportReportHistoryData && supportReportHistoryData.points) || [];
+  if (points.length < 2) {
+    return `
+      <div class="squad-block support-trend-chart">
+        <h3 class="block-title">Trend</h3>
+        <p class="empty-note">
+          Not enough history yet to chart a trend — one point is logged every time this report actually refreshes
+          (once a day at most, or whenever someone hits Update), not on every page view. Check back after a couple
+          of refreshes.
+        </p>
+      </div>`;
+  }
+  const legend = SUPPORT_REPORT_ROWS.map(
+    (row, idx) =>
+      `<span class="trend-legend-item"><span class="trend-legend-swatch" style="background:${
+        SUPPORT_REPORT_TREND_COLORS[idx % SUPPORT_REPORT_TREND_COLORS.length]
+      }"></span>${escapeHtml(row.label)}</span>`
+  ).join("");
+  return `
+    <div class="squad-block support-trend-chart">
+      <h3 class="block-title">Trend <span class="label-badge">${points.length} refresh${
+    points.length === 1 ? "" : "es"
+  } logged</span></h3>
+      <div class="trend-legend">${legend}</div>
+      <div class="trend-svg-wrap"></div>
+    </div>`;
+}
+
 function renderSupportReport(data) {
   if (!els.supportReportContainer) return;
   supportReportData = data;
@@ -1656,6 +1788,7 @@ function renderSupportReport(data) {
   }).join("");
 
   els.supportReportContainer.innerHTML = `
+    ${renderSupportReportTrendChart()}
     <div class="squad-block">
       <p class="quality-definitions" style="list-style: none; padding-left: 0;">
         Key User tickets only. "Open" means Intercom state open or snoozed. First response SLA is
@@ -1669,6 +1802,8 @@ function renderSupportReport(data) {
       </table>
     </div>
     ${renderSupportReportDrilldown()}`;
+
+  mountSupportReportTrendChart();
 
   if (els.supportReportUpdatedAt && data.fetchedAt) {
     const asOfSuffix = data.asOf ? ` (as of ${new Date(data.asOf).toLocaleString()})` : "";
@@ -1720,6 +1855,19 @@ function isNetworkFetchError(err) {
   return err instanceof TypeError;
 }
 
+// Best-effort - a history-log request failing shouldn't take down the main
+// report, and doesn't need the same retry treatment (it's a fast, cheap
+// read regardless of whether the main report is cold).
+async function loadSupportReportHistory() {
+  try {
+    const res = await fetch("/api/support-report/history");
+    if (!res.ok) return;
+    supportReportHistoryData = await res.json();
+  } catch (err) {
+    // swallow - trend chart just won't render this time.
+  }
+}
+
 async function loadSupportReport() {
   if (!els.supportReportContainer) return;
   for (let attempt = 0; ; attempt++) {
@@ -1729,7 +1877,9 @@ async function loadSupportReport() {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.detail || `Request failed (${res.status})`);
       }
-      renderSupportReport(await res.json());
+      const data = await res.json();
+      await loadSupportReportHistory();
+      renderSupportReport(data);
       return;
     } catch (err) {
       const canRetry = isNetworkFetchError(err) && attempt < SUPPORT_REPORT_RETRY_DELAYS_MS.length;
@@ -1758,7 +1908,11 @@ async function refreshSupportReport() {
       const body = await res.json().catch(() => ({}));
       throw new Error(body.detail || `Request failed (${res.status})`);
     }
-    renderSupportReport(await res.json());
+    const data = await res.json();
+    // The refresh just logged a new history point server-side - re-fetch so
+    // the trend chart picks it up rather than showing last load's data.
+    await loadSupportReportHistory();
+    renderSupportReport(data);
   } catch (err) {
     showError(`Couldn't update the support report: ${err.message}`);
   } finally {

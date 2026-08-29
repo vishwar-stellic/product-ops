@@ -67,6 +67,20 @@ flags. Two different "who" fields are included per ticket:
   else the requester's email domain against a small manual map for a few
   known non-obvious domains (`_DOMAIN_TO_PARTNER`). Unmatched stays
   "(unknown)" rather than guessing.
+
+## Trend history
+Every time this module actually runs (a cache-miss GET or a forced
+Update - *not* every page load, which usually just reads the 24h cache -
+see `server.py`'s `_get_support_report`), it appends one snapshot of the
+top table's numbers to a small history log in the same cache backend
+(`cache.read_raw`/`write_raw`, bypassing the usual TTL/version wrapping
+since this is an accumulating log, not a point-in-time entry). Each
+snapshot records, per metric row, the Total plus each squad's value at
+that moment - the dashboard's trend chart reads this via
+`get_support_report_history` / `GET /api/support-report/history`. Capped
+at `SUPPORT_REPORT_HISTORY_MAX_POINTS` (oldest points drop off) so the log
+can't grow unbounded; recording is best-effort (wrapped so a storage
+hiccup never breaks the report itself).
 """
 
 import html
@@ -76,6 +90,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from . import cache
 from .intercom_client import IntercomClient
 
 SUPPORT_REPORT_CACHE_KEY = "dashboard-support-report"
@@ -85,6 +100,13 @@ SUPPORT_REPORT_CACHE_KEY = "dashboard-support-report"
 # why (same cache has no schema of its own).
 SUPPORT_REPORT_CACHE_VERSION = 4
 
+# Separate raw key (not versioned/aged like the main report - see
+# `cache.read_raw`) for the trend chart's accumulating history log.
+SUPPORT_REPORT_HISTORY_KEY = "dashboard-support-report-history"
+# ~1.5 years of daily snapshots (one point per real refresh, so in practice
+# far slower than daily) - generous headroom while keeping the blob small.
+SUPPORT_REPORT_HISTORY_MAX_POINTS = 500
+
 INTERCOM_INBOX_PREFIX = "g60t55rg"
 
 FR_TARGET_HOURS = 24.0
@@ -92,6 +114,17 @@ RES_TARGET_DAYS = 21.0
 WEEK_WINDOW_DAYS = 7
 
 RESOLVED_TICKET_STATE = "Resolved"
+
+# The 5 metric row keys, in table order - mirrors the frontend's
+# `SUPPORT_REPORT_ROWS` (`static/app.js`) and each area's `_area_metrics`
+# dict keys. Used by `_history_snapshot` to know which keys to log.
+SUPPORT_REPORT_METRIC_KEYS: List[str] = [
+    "totalOpenKU",
+    "newKUThisWeek",
+    "closedKUThisWeek",
+    "outOfFirstResponseSLA",
+    "outOfResolutionSLA",
+]
 
 # Intercom "Product Area" prefix -> this dashboard's squad key/label, in
 # display order (per request: Progress, then Plan/Platform/Integration/
@@ -442,6 +475,42 @@ def _area_metrics(
     }
 
 
+def _history_snapshot(report: Dict[str, Any]) -> Dict[str, Any]:
+    """One point-in-time row for the trend chart: per metric key, the Total
+    across squads plus each squad's own value - see module docstring."""
+    metrics: Dict[str, Dict[str, int]] = {}
+    for row in SUPPORT_REPORT_METRIC_KEYS:
+        by_squad: Dict[str, int] = {}
+        total = 0
+        for area in report["areas"]:
+            value = (area.get("metrics") or {}).get(row)
+            if isinstance(value, (int, float)):
+                by_squad[area["squad"]] = value
+                total += value
+        by_squad["TOTAL"] = total
+        metrics[row] = by_squad
+    return {"at": report["generatedAt"], "metrics": metrics}
+
+
+def _record_history(report: Dict[str, Any]) -> None:
+    """Best-effort append to the trend history log - a storage hiccup here
+    should never fail the report itself (see module docstring)."""
+    try:
+        existing = cache.read_raw(SUPPORT_REPORT_HISTORY_KEY) or {}
+        points = existing.get("points") or []
+        points.append(_history_snapshot(report))
+        points = points[-SUPPORT_REPORT_HISTORY_MAX_POINTS:]
+        cache.write_raw(SUPPORT_REPORT_HISTORY_KEY, {"points": points})
+    except Exception as exc:  # noqa: BLE001 - never let history logging break the report
+        print(f"[support_report] failed to record history point: {exc}")
+
+
+def get_support_report_history() -> Dict[str, Any]:
+    """The accumulated trend history log, for `GET
+    /api/support-report/history` - `{"points": [...]}`, oldest first."""
+    return cache.read_raw(SUPPORT_REPORT_HISTORY_KEY) or {"points": []}
+
+
 def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, Any]:
     client = client or IntercomClient()
     now = time.time()
@@ -526,7 +595,7 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
         for area in AREAS
     ]
 
-    return {
+    report = {
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "asOf": datetime.fromtimestamp(now, timezone.utc).isoformat(),
         "windowDays": WEEK_WINDOW_DAYS,
@@ -534,3 +603,5 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
         "resTargetDays": RES_TARGET_DAYS,
         "areas": areas,
     }
+    _record_history(report)
+    return report

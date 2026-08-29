@@ -91,3 +91,18 @@ def get_or_refresh(
 def peek(key: str) -> Optional[Dict[str, Any]]:
     """Return the cached entry (if any) without triggering a refetch."""
     return _read(key)
+
+
+def read_raw(key: str) -> Optional[Dict[str, Any]]:
+    """Read whatever JSON payload is stored under `key`, bypassing
+    `get_or_refresh`'s `{fetchedAt, data}` wrapping and age/version
+    semantics entirely - for data that's an accumulating log rather than a
+    single point-in-time snapshot (e.g.
+    `support_report.py`'s trend-chart history), which this module's TTL
+    model doesn't fit."""
+    return _read(key)
+
+
+def write_raw(key: str, payload: Dict[str, Any]) -> None:
+    """Write a raw JSON payload under `key` - see `read_raw`."""
+    _write(key, payload)
