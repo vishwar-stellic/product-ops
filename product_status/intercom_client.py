@@ -84,6 +84,21 @@ class IntercomClient:
         parts, just summary `statistics`)."""
         return self._request("GET", f"/conversations/{conversation_id}")
 
+    def search_contacts(self, query: Dict[str, Any], per_page: int = 150) -> Iterator[Dict[str, Any]]:
+        """Same shape as `search_conversations` but against `/contacts/search`
+        - used to batch-resolve real contact names for admin/bot-authored
+        conversations (see `support_report.py:_build_contact_name_map`)."""
+        body: Dict[str, Any] = {"query": query, "pagination": {"per_page": per_page}}
+        while True:
+            data = self._request("POST", "/contacts/search", json_body=body)
+            for contact in data.get("data", []):
+                yield contact
+            next_page = (data.get("pages") or {}).get("next")
+            starting_after = next_page.get("starting_after") if isinstance(next_page, dict) else next_page
+            if not starting_after:
+                return
+            body["pagination"]["starting_after"] = starting_after
+
     def list_companies(self, per_page: int = 60) -> Iterator[Dict[str, Any]]:
         """Yields every company in the workspace - unlike conversations,
         `/companies` pages by plain page number (`pages.next` is a full URL,

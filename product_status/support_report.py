@@ -50,7 +50,15 @@ Each squad's metrics also carry the underlying ticket list
 filter over `openKUTickets` (`firstResponseSLA != "Met"` /
 `outOfResolutionSLA`), since every open KU ticket already carries both
 flags. Two different "who" fields are included per ticket:
-- `userName` - the individual requester (`source.author.name`).
+- `userName` - the individual requester. For a normal (`user`-authored)
+  conversation this is just `source.author.name`. But a sizeable chunk of
+  tickets are *admin-initiated* (created via API/integration, or on a
+  customer's behalf) - there `source.author` is a Stellic admin/bot (often
+  literally named "Support Team"), which isn't a customer name at all and
+  would be misleading here. For those, the real requester is looked up
+  from the conversation's linked `contacts` entry via a batched
+  `/contacts/search` (`id IN [...]`) call - see
+  `_build_contact_name_map` - rather than trusting `source.author`.
 - `partnerName` - the institution, resolved the same way as the skill's
   `resolve_partner`: the conversation's `company.name` if present, else the
   partner code embedded in a contact's `external_id` (commonly
@@ -75,7 +83,7 @@ SUPPORT_REPORT_CACHE_KEY = "dashboard-support-report"
 # Bump whenever this module's output shape or underlying metric logic
 # changes - see `milestones_report.py:MILESTONES_REPORT_CACHE_VERSION` for
 # why (same cache has no schema of its own).
-SUPPORT_REPORT_CACHE_VERSION = 3
+SUPPORT_REPORT_CACHE_VERSION = 4
 
 INTERCOM_INBOX_PREFIX = "g60t55rg"
 
@@ -256,9 +264,57 @@ def _ticket_description(conversation: Dict[str, Any]) -> str:
     return f"Conversation {conversation.get('id')}"
 
 
-def _user_name(conversation: Dict[str, Any]) -> str:
+def _primary_contact_id(conversation: Dict[str, Any]) -> Optional[str]:
+    contacts = ((conversation.get("contacts") or {}).get("contacts")) or []
+    return contacts[0].get("id") if contacts and contacts[0].get("id") else None
+
+
+def _needs_contact_lookup(conversation: Dict[str, Any]) -> bool:
+    """True when `source.author` is a Stellic admin/bot rather than the
+    customer - see module docstring's `userName` section."""
     author = (conversation.get("source") or {}).get("author") or {}
-    return author.get("name") or author.get("email") or "(unknown)"
+    return author.get("type") in ("admin", "bot")
+
+
+def _build_contact_name_map(client: IntercomClient, conversations: List[Dict[str, Any]]) -> Dict[str, str]:
+    """contact id -> display name (name, falling back to email), for every
+    contact behind an admin/bot-authored Key User conversation - batched via
+    `/contacts/search`'s `id IN [...]` (Intercom caps composite `IN` queries
+    at 15 values) rather than one `/contacts/{id}` call each."""
+    contact_ids = sorted(
+        {
+            _primary_contact_id(c)
+            for c in conversations
+            if _is_key_user(c) and _needs_contact_lookup(c) and _primary_contact_id(c)
+        }
+    )
+    if not contact_ids:
+        return {}
+
+    batch_size = 15
+    batches = [contact_ids[i : i + batch_size] for i in range(0, len(contact_ids), batch_size)]
+
+    def _fetch(batch: List[str]) -> Dict[str, str]:
+        result = {}
+        for contact in client.search_contacts({"field": "id", "operator": "IN", "value": batch}):
+            display = contact.get("name") or contact.get("email")
+            if contact.get("id") and display:
+                result[contact["id"]] = display
+        return result
+
+    mapping: Dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        for result in pool.map(_fetch, batches):
+            mapping.update(result)
+    return mapping
+
+
+def _user_name(conversation: Dict[str, Any], contact_name_map: Dict[str, str]) -> str:
+    author = (conversation.get("source") or {}).get("author") or {}
+    if not _needs_contact_lookup(conversation):
+        return author.get("name") or author.get("email") or "(unknown)"
+    contact_id = _primary_contact_id(conversation)
+    return (contact_name_map.get(contact_id) if contact_id else None) or "(unknown)"
 
 
 def _build_company_map(client: IntercomClient) -> Dict[str, str]:
@@ -304,6 +360,7 @@ def _ticket_record(
     squad_label: str,
     reply_overrides: Dict[str, Optional[float]],
     company_map: Dict[str, str],
+    contact_name_map: Dict[str, str],
     now: float,
 ) -> Dict[str, Any]:
     created = conversation.get("created_at")
@@ -318,7 +375,7 @@ def _ticket_record(
         "squadLabel": squad_label,
         "createdAt": _epoch_to_iso(created),
         "updatedAt": _epoch_to_iso(conversation.get("updated_at")),
-        "userName": _user_name(conversation),
+        "userName": _user_name(conversation, contact_name_map),
         "partnerName": _partner_name(conversation, company_map),
         "priority": priority,
         "description": _ticket_description(conversation),
@@ -335,6 +392,7 @@ def _area_metrics(
     closed_raw: List[Dict[str, Any]],
     reply_overrides: Dict[str, Optional[float]],
     company_map: Dict[str, str],
+    contact_name_map: Dict[str, str],
     now: float,
     window_start: float,
 ) -> Dict[str, Any]:
@@ -362,7 +420,10 @@ def _area_metrics(
     )
 
     def _records(conversations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        return [_ticket_record(c, squad, label, reply_overrides, company_map, now) for c in conversations]
+        return [
+            _ticket_record(c, squad, label, reply_overrides, company_map, contact_name_map, now)
+            for c in conversations
+        ]
 
     return {
         "totalOpenKU": len(ku_open),
@@ -435,7 +496,15 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
         and _is_key_user(c)
         and not (c.get("statistics") or {}).get("first_admin_reply_at")
     ]
-    reply_overrides = _verify_replies(client, needs_verification)
+    # These two extra lookups are independent of each other, so run them
+    # side by side rather than one after another.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        reply_future = pool.submit(_verify_replies, client, needs_verification)
+        contact_name_future = pool.submit(
+            _build_contact_name_map, client, open_register + created_raw + closed_raw
+        )
+        reply_overrides = reply_future.result()
+        contact_name_map = contact_name_future.result()
 
     areas = [
         {
@@ -449,6 +518,7 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
                 closed_raw,
                 reply_overrides,
                 company_map,
+                contact_name_map,
                 now,
                 window_start,
             ),
