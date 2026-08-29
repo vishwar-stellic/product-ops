@@ -1819,8 +1819,15 @@ function renderSupportReport(data) {
       <p class="quality-definitions" style="list-style: none; padding-left: 0;">
         Key User tickets only. "Open" means Intercom state open or snoozed. First response SLA is
         ${data.frTargetHours} business hours (weekends don't count); resolution SLA is ${data.resTargetDays}
-        calendar days for Urgent/High priority tickets. "This week" is a trailing ${data.windowDays}-day window.
-        Click a row to see the underlying tickets.
+        calendar days for Urgent/High priority tickets. "This week" is week-to-date (resets every Sunday,
+        Pacific time)${
+          data.weekStartAt
+            ? ` - currently counting since ${new Date(data.weekStartAt).toLocaleDateString(undefined, {
+                month: "short",
+                day: "numeric",
+              })}`
+            : ""
+        }. Click a row to see the underlying tickets.
       </p>
       <table class="data-table support-report-table">
         <thead><tr><th></th>${headerCells}</tr></thead>

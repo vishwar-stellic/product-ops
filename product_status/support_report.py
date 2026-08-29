@@ -9,15 +9,27 @@ isn't available to this service; it shows area-level totals only).
 1. Total open KU tickets - open + snoozed, excluding any already marked
    "Resolved" at the ticket level (a ticket can be "Resolved" while its
    conversation is still technically open in Intercom).
-2. New KU tickets this week - created in the trailing `WEEK_WINDOW_DAYS`
-   window, regardless of current state.
+2. New KU tickets this week - created since the start of the current
+   calendar week, regardless of current state.
 3. KU tickets closed this week - first closed (`statistics.first_close_at`)
-   in that window, regardless of when created.
+   since the start of the current calendar week, regardless of when
+   created.
 4. Out of first-response SLA - no genuine admin/bot reply within
    `FR_TARGET_HOURS` *business* hours (weekends don't tick), including
    never-answered.
 5. Out of resolution SLA - open more than `RES_TARGET_DAYS` calendar days
    AND priority is Urgent or High.
+
+"This week" (metrics 2 and 3) is a **calendar week-to-date** counter, not a
+rolling trailing-N-days window: it's everything since the most recent
+Sunday 00:00 *Pacific time* (`_current_week_start` - Pacific to match how
+the team refers to dates day-to-day elsewhere, e.g.
+`notion_report.py:_PACIFIC`), so it grows through the week and snaps back
+down to (near) zero at each Sunday reset - a genuine week-to-date number
+rather than an always-full "last 7 days" figure. This matters once this
+report runs on a schedule (a daily cron, say): each day's snapshot reflects
+that day's actual progress through the week, not a smeared-out trailing
+average.
 
 "Open" always means Intercom state `open` **or** `snoozed` - snoozing is a
 working convenience, not a resolution (the skill's own hard rule, born from
@@ -87,18 +99,23 @@ import html
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 from . import cache
 from .intercom_client import IntercomClient
+
+# Matches `notion_report.py:_PACIFIC` - "this week" resets on Pacific-time
+# Sundays, not UTC ones, to match how the team actually thinks about weeks.
+_PACIFIC = ZoneInfo("America/Los_Angeles")
 
 SUPPORT_REPORT_CACHE_KEY = "dashboard-support-report"
 
 # Bump whenever this module's output shape or underlying metric logic
 # changes - see `milestones_report.py:MILESTONES_REPORT_CACHE_VERSION` for
 # why (same cache has no schema of its own).
-SUPPORT_REPORT_CACHE_VERSION = 4
+SUPPORT_REPORT_CACHE_VERSION = 5
 
 # Separate raw key (not versioned/aged like the main report - see
 # `cache.read_raw`) for the trend chart's accumulating history log.
@@ -111,7 +128,6 @@ INTERCOM_INBOX_PREFIX = "g60t55rg"
 
 FR_TARGET_HOURS = 24.0
 RES_TARGET_DAYS = 21.0
-WEEK_WINDOW_DAYS = 7
 
 RESOLVED_TICKET_STATE = "Resolved"
 
@@ -194,6 +210,21 @@ def _priority(conversation: Dict[str, Any]) -> Optional[str]:
 
 def _ticket_state(conversation: Dict[str, Any]) -> str:
     return (conversation.get("ticket") or {}).get("ticket_custom_state_admin_label") or "(blank)"
+
+
+def _current_week_start(now: float) -> float:
+    """Epoch timestamp for 00:00 Pacific time on the most recent Sunday - the
+    "this week" boundary for `newKUThisWeek`/`closedKUThisWeek` (see module
+    docstring). A calendar week-to-date window, not a rolling trailing-7-days
+    one: it resets to (near) zero every Sunday rather than always covering a
+    full 7 days."""
+    now_pacific = datetime.fromtimestamp(now, _PACIFIC)
+    # datetime.weekday(): Monday=0 ... Sunday=6. Days elapsed since the most
+    # recent Sunday:
+    days_since_sunday = (now_pacific.weekday() + 1) % 7
+    sunday_date = (now_pacific - timedelta(days=days_since_sunday)).date()
+    week_start = datetime(sunday_date.year, sunday_date.month, sunday_date.day, tzinfo=_PACIFIC)
+    return week_start.timestamp()
 
 
 def _business_hours_between(start: Optional[float], end: Optional[float]) -> float:
@@ -427,13 +458,13 @@ def _area_metrics(
     company_map: Dict[str, str],
     contact_name_map: Dict[str, str],
     now: float,
-    window_start: float,
+    week_start: float,
 ) -> Dict[str, Any]:
     ku_open = [c for c in open_register if _squad_for(c) == squad and _is_key_user(c)]
     new_ku = [
         c
         for c in created_raw
-        if _squad_for(c) == squad and _is_key_user(c) and c.get("created_at") and window_start <= c["created_at"] < now
+        if _squad_for(c) == squad and _is_key_user(c) and c.get("created_at") and week_start <= c["created_at"] < now
     ]
     closed_ku = [
         c
@@ -441,7 +472,7 @@ def _area_metrics(
         if _squad_for(c) == squad
         and _is_key_user(c)
         and (c.get("statistics") or {}).get("first_close_at")
-        and window_start <= c["statistics"]["first_close_at"] < now
+        and week_start <= c["statistics"]["first_close_at"] < now
     ]
     out_of_first_response = sum(1 for c in ku_open if _fr_breach(c, reply_overrides, now))
     out_of_resolution = sum(
@@ -514,7 +545,7 @@ def get_support_report_history() -> Dict[str, Any]:
 def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, Any]:
     client = client or IntercomClient()
     now = time.time()
-    window_start = now - WEEK_WINDOW_DAYS * 86400
+    week_start = _current_week_start(now)
 
     # Intercom's search API can't filter on the "Product Area" custom
     # attribute (or its prefix-match semantics), so - like the skill - this
@@ -534,13 +565,13 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
         )
         created_future = pool.submit(
             lambda: list(
-                client.search_conversations({"field": "created_at", "operator": ">=", "value": int(window_start)})
+                client.search_conversations({"field": "created_at", "operator": ">=", "value": int(week_start)})
             )
         )
         closed_future = pool.submit(
             lambda: list(
                 client.search_conversations(
-                    {"field": "statistics.first_close_at", "operator": ">=", "value": int(window_start)}
+                    {"field": "statistics.first_close_at", "operator": ">=", "value": int(week_start)}
                 )
             )
         )
@@ -589,7 +620,7 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
                 company_map,
                 contact_name_map,
                 now,
-                window_start,
+                week_start,
             ),
         }
         for area in AREAS
@@ -598,7 +629,11 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
     report = {
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "asOf": datetime.fromtimestamp(now, timezone.utc).isoformat(),
-        "windowDays": WEEK_WINDOW_DAYS,
+        # "This week" resets every Sunday (Pacific) rather than being a
+        # rolling N-day window - see `_current_week_start` and the module
+        # docstring. `weekStartAt` tells the frontend exactly which Sunday
+        # this particular report's "this week" figures are counting from.
+        "weekStartAt": datetime.fromtimestamp(week_start, timezone.utc).isoformat(),
         "frTargetHours": FR_TARGET_HOURS,
         "resTargetDays": RES_TARGET_DAYS,
         "areas": areas,

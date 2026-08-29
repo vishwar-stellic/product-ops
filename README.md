@@ -202,9 +202,14 @@ the site into separate capabilities, each its own tab:
   it'd always read "—"). Requires `INTERCOM_ACCESS_TOKEN` (see
   `.env.example`); see `product_status/support_report.py`'s module
   docstring for exactly how each metric is derived (business-hours-aware
-  first-response clock, high-priority-only resolution SLA, and why some
-  tickets need an extra API call to confirm they were never actually
-  replied to). Click any metric row to drill into the underlying tickets
+  first-response clock, high-priority-only resolution SLA, "this week" as a
+  **calendar week-to-date** counter that resets every Sunday (Pacific time)
+  rather than a rolling trailing-7-days window - matters once this report
+  runs on a schedule, since each day's snapshot should reflect that day's
+  actual progress through the week, not a smeared trailing average - and
+  why some tickets need an extra API call to confirm they were never
+  actually replied to). Click any metric row to drill into the underlying
+  tickets
   (across every squad) in a table below - Date Created, First Response
   SLA, Last Update, **User Name** (the individual requester) plus a
   separately-resolved **Partner Name** (the institution - company name,
