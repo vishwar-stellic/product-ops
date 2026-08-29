@@ -26,7 +26,9 @@
     <div class="tabbar-inner">
       <button class="tab-btn active" data-tab="epd-report" type="button">EPD Report</button>
       <button class="tab-btn" data-tab="sprint-report" type="button">Sprint Report</button>
-      <button class="tab-btn" data-tab="project-milestones" type="button">Project Milestones</button>
+      <!-- Hidden per request - code/markup kept intact, just not linked to from the tab bar. Remove "hidden" to bring back. -->
+      <button class="tab-btn hidden" data-tab="project-milestones" type="button">Project Milestones</button>
+      <button class="tab-btn" data-tab="support-report" type="button">Support Report</button>
     </div>
   </nav>
 
@@ -115,6 +117,10 @@
       <div id="milestones-report-container">
         <p class="empty-note">Loading…</p>
       </div>
+    </section>
+
+    <section id="tab-support-report" class="tab-panel hidden">
+      <p class="empty-note">Coming soon.</p>
     </section>
   </main>
 
