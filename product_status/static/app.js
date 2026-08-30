@@ -2129,7 +2129,7 @@ function partnerInsightsRows() {
 // just the plain number (0, or no workspace URL could be sniffed).
 function renderCountLink(count, url) {
   if (!url || !count) return String(count);
-  return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener" title="Open these ${count} issue(s) in Linear">${count}</a>`;
+  return `<a class="count-link" href="${escapeHtml(url)}" target="_blank" rel="noopener" title="Open these ${count} issue(s) in Linear">${count}</a>`;
 }
 
 // The expanded-row content for one partner - rendered as a single wide
