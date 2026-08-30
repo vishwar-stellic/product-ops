@@ -20,19 +20,30 @@ has no SLA-eligible bugs at all), derived from the directly-queryable
 one's filter-only - it can't be selected as a field, see `quality.py`'s
 docstring for why the filter version exists) - comparing it against
 `completedAt`/`canceledAt`/now reproduces the same Breached/Failed/
-Completed semantics.
+Completed semantics. "SLA-eligible bugs" (the denominator) is scoped to
+currently-open bugs only (`_is_open_state` - Backlog/Todo/In Progress/In
+Review/Triage, i.e. not Done/Canceled) - a bug that already closed cleanly
+within SLA isn't part of today's open workload. "Failed this month" is the
+deliberate exception: it's inherently about already-closed bugs (missed
+SLA before closing), so it keeps using the full bug set rather than the
+open-only one - see `_product_metrics_for_customer`'s inline comments for
+exactly which rows are open-only vs. all-statuses (a per-row product
+decision, not a blanket rule).
 
 `featureScore` (0-100) has no formal SLA to measure against, so it's a
 staleness proxy instead: `1 - (feature requests open longer than
-FEATURE_STALE_DAYS with no resolution) / total feature requests`,
-defaulting to 100 when a partner has none. Both scores are shown
+FEATURE_STALE_DAYS with no resolution) / total *open* feature requests`,
+defaulting to 100 when a partner has none open. Both scores are shown
 separately (never folded into one number) so it's clear which side of the
 backlog is driving a partner's standing; raw volume/count breakdowns are
 reported alongside for context, each paired with a `*Url` field
 (`_multi_issue_url`) so the frontend can make every count clickable,
-opening the exact matching issues as an ad-hoc Linear list view. Weights/
-definitions live as named constants below so they're easy to retune
-later.
+opening the exact matching issues as an ad-hoc Linear list view - "total"
+counts/links are open-only (matching the score denominators above), while
+"new this month" counts/links intentionally include every status (a bug
+opened and already closed within the same month still counts as new
+incoming work). Weights/definitions live as named constants below so
+they're easy to retune later.
 
 ## Support score (Intercom + Claude, incremental - one small batch/day)
 Scoring full conversation transcripts via an LLM on every refresh would be
@@ -82,7 +93,7 @@ PARTNER_INSIGHTS_CACHE_KEY = "dashboard-partner-insights"
 # Bump whenever this module's output shape or underlying metric logic
 # changes - see `milestones_report.py:MILESTONES_REPORT_CACHE_VERSION` for
 # why (the cache backend has no schema of its own).
-PARTNER_INSIGHTS_CACHE_VERSION = 3
+PARTNER_INSIGHTS_CACHE_VERSION = 4
 
 # Separate raw key (accumulating log, not aged/versioned like the main
 # report - see `cache.read_raw`) for Claude-scored conversations. Never
@@ -125,6 +136,7 @@ query PartnerInsightsIssues($first: Int!, $after: String) {
       canceledAt
       priority
       slaBreachesAt
+      state { type }
       labels { nodes { name } }
       needs { nodes { customer { id } } }
     }
@@ -132,6 +144,16 @@ query PartnerInsightsIssues($first: Int!, $after: String) {
   }
 }
 """
+
+# Linear's workflow state types are a fixed enum (unlike state *names*, which
+# are freely renamed per-workspace) - "completed"/"canceled" are the only
+# terminal ones, so "not one of those" reliably means Backlog/Todo/In
+# Progress/In Review/Triage regardless of how a workspace has renamed them.
+_TERMINAL_STATE_TYPES = {"completed", "canceled"}
+
+
+def _is_open_state(issue: Dict[str, Any]) -> bool:
+    return ((issue.get("state") or {}).get("type")) not in _TERMINAL_STATE_TYPES
 
 _LINEAR_ISSUE_URL_RE = re.compile(r"^(https://linear\.app/[^/]+)/")
 
@@ -222,7 +244,19 @@ def _product_metrics_for_customer(
 ) -> Dict[str, Any]:
     bugs = [i for i in issues if _is_bug(i)]
     features = [i for i in issues if not _is_bug(i)]
+    # "Total" counts (and their score denominators) are scoped to
+    # currently-open work only (Backlog/Todo/In Progress/In Review/Triage) -
+    # per-row exceptions from that below are deliberate, not oversights, see
+    # the per-field comments (this mirrors an explicit product decision, not
+    # a general "all counts are open-only" rule).
+    open_bugs = [b for b in bugs if _is_open_state(b)]
+    open_features = [f for f in features if _is_open_state(f)]
 
+    # SLA bucketing itself still runs over *all* bugs regardless of state -
+    # "failed" (missed SLA, already closed) is only reachable for closed
+    # bugs by construction, and "failed this month" is intentionally kept
+    # exactly as before (closed-ticket based), so it still needs the full
+    # (not open-only) bucket set.
     buckets = [_sla_bucket(b, now_iso) for b in bugs]
     currently_out_of_sla_issues = [b for b, bucket in zip(bugs, buckets) if bucket == "breached"]
     failed_sla_this_month_issues = [
@@ -230,7 +264,14 @@ def _product_metrics_for_customer(
         for bug, bucket in zip(bugs, buckets)
         if bucket == "failed" and _in_range(bug.get("completedAt") or bug.get("canceledAt"), month_start, month_end)
     ]
-    sla_eligible_issues = [b for b, bucket in zip(bugs, buckets) if bucket is not None]
+    # "SLA-eligible bugs" is scoped to currently-open bugs only (a bug that
+    # already closed cleanly within SLA - "met" - or missed it and closed
+    # long ago isn't part of today's open workload); this also directly
+    # narrows the Bug score's denominator, not just the displayed count.
+    # (An open bug's bucket, if any, can only be "breached" or "pending" -
+    # never "failed"/"met", which require a `closed_at` - so this is just
+    # "does it carry an SLA at all".)
+    sla_eligible_issues = [b for b in open_bugs if b.get("slaBreachesAt")]
     sla_eligible_bugs = len(sla_eligible_issues)
     bugs_currently_out_of_sla = len(currently_out_of_sla_issues)
     bugs_failed_sla_this_month = len(failed_sla_this_month_issues)
@@ -240,26 +281,36 @@ def _product_metrics_for_customer(
     # on an empty sample - see module docstring.
     bug_responsiveness_rate = 1.0 if sla_eligible_bugs == 0 else max(0.0, 1 - sla_incidents / sla_eligible_bugs)
 
+    # "New this month" intentionally stays scoped to *all* statuses (a bug
+    # opened and already closed again within the same month still counts as
+    # new work that came in) - only the "total" rows above are open-only.
     new_bugs_this_month_issues = [b for b in bugs if _in_range(b.get("createdAt"), month_start, month_end)]
+    new_features_this_month_issues = [f for f in features if _in_range(f.get("createdAt"), month_start, month_end)]
+
+    # Staleness is inherently open-only already (a completed/canceled
+    # feature can never be "stale"), so this is naturally consistent with
+    # `open_features` without needing to intersect explicitly.
     stale_feature_issues = [f for f in features if _is_stale_feature(f, stale_cutoff_iso)]
     stale_feature_requests = len(stale_feature_issues)
-    # Same "empty sample -> clean slate" reasoning as bugs above.
-    feature_freshness_rate = 1.0 if not features else max(0.0, 1 - stale_feature_requests / len(features))
-    new_features_this_month_issues = [f for f in features if _in_range(f.get("createdAt"), month_start, month_end)]
+    # Same "empty sample -> clean slate" reasoning as bugs above. Denominator
+    # is the open-only feature count, matching "total feature requests" below.
+    feature_freshness_rate = (
+        1.0 if not open_features else max(0.0, 1 - stale_feature_requests / len(open_features))
+    )
 
     def link(bucket_issues: List[Dict[str, Any]]) -> Optional[str]:
         return _multi_issue_url(workspace_base_url, bucket_issues)
 
     return {
-        "totalFeatureRequests": len(features),
-        "totalFeatureRequestsUrl": link(features),
+        "totalFeatureRequests": len(open_features),
+        "totalFeatureRequestsUrl": link(open_features),
         "newFeatureRequestsThisMonth": len(new_features_this_month_issues),
         "newFeatureRequestsThisMonthUrl": link(new_features_this_month_issues),
         "staleFeatureRequests": stale_feature_requests,
         "staleFeatureRequestsUrl": link(stale_feature_issues),
         "featureScore": round(feature_freshness_rate * 100),
-        "totalBugs": len(bugs),
-        "totalBugsUrl": link(bugs),
+        "totalBugs": len(open_bugs),
+        "totalBugsUrl": link(open_bugs),
         "newBugsThisMonth": len(new_bugs_this_month_issues),
         "newBugsThisMonthUrl": link(new_bugs_this_month_issues),
         "bugsCurrentlyOutOfSla": bugs_currently_out_of_sla,

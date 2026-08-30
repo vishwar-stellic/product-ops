@@ -260,19 +260,30 @@ the site into separate capabilities, each its own tab:
     - **Bug score** — bug-SLA responsiveness: `100 × (1 − (currently-out-
       of-SLA + failed-this-month) / SLA-eligible bugs)`, defaulting to 100
       when a partner has no SLA-eligible (Urgent/High) bugs at all.
+      "SLA-eligible bugs" only counts bugs still in an open workflow state
+      (Backlog/Todo/In Progress/In Review/Triage) — a bug that already
+      closed cleanly within SLA isn't part of today's open workload.
+      "Failed this month" is the deliberate exception: it's inherently
+      about bugs that already closed (missed SLA before closing), so it
+      keeps counting closed bugs regardless of that open-state rule.
     - **Feature score** — a staleness proxy (feature requests have no
       formal SLA): `100 × (1 − (open >90 days, still unresolved) / total
-      feature requests/other)`, defaulting to 100 when a partner has none.
+      *open* feature requests/other)`, defaulting to 100 when a partner has
+      none open.
 
     A partner with no linked Linear customer shows "not linked" for both
     instead of a score. See `product_status/partner_insights.py`'s module
-    docstring.
+    docstring (and `_product_metrics_for_customer`'s inline comments for
+    exactly which row is open-state-only vs. all-statuses — it's a
+    deliberate per-row product decision, not a blanket rule).
     - Every raw count in the expanded breakdown (total bugs, currently
       out-of-SLA, failed-SLA-this-month, SLA-eligible, total/new/stale
       feature requests) is clickable — it opens the exact matching Linear
       issues as an ad-hoc list view (`linear.app/<workspace>/issues/ID-1,
       ID-2,...`, the same URL scheme Linear itself uses for "open these
-      issues together"). Zero-count cells aren't clickable.
+      issues together"). Zero-count cells aren't clickable. "Total" counts/
+      links are open-state-only (matching the score denominators above);
+      "new this month" counts/links intentionally include every status.
   - **Support score** (Intercom conversations, graded by Claude) —
     incremental, not live: roughly once a day, every conversation closed in
     the last ~24h is resolved to a partner and scored by Claude
