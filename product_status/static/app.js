@@ -2123,6 +2123,15 @@ function partnerInsightsRows() {
   return rows;
 }
 
+// Renders a raw count as a link to the exact matching Linear issues
+// (`_multi_issue_url` server-side - an ad-hoc "/issues/ID-1,ID-2,..." list
+// view) whenever there's a non-empty, non-zero bucket to show; otherwise
+// just the plain number (0, or no workspace URL could be sniffed).
+function renderCountLink(count, url) {
+  if (!url || !count) return String(count);
+  return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener" title="Open these ${count} issue(s) in Linear">${count}</a>`;
+}
+
 // The expanded-row content for one partner - rendered as a single wide
 // `<td colspan>` directly under that partner's own row in the main table
 // (see `renderPartnerInsights`), rather than one shared panel pinned to
@@ -2138,13 +2147,13 @@ function renderPartnerInsightsExpandedRow(partner) {
       <table class="data-table">
         <tbody>
           <tr><td>Bug score</td><td class="num">${renderScoreCell(product.bugScore, "n/a")}</td></tr>
-          <tr><td>Bugs (total / new this month)</td><td class="num">${product.totalBugs} / ${product.newBugsThisMonth}</td></tr>
-          <tr><td>Currently out of SLA</td><td class="num">${product.bugsCurrentlyOutOfSla}</td></tr>
-          <tr><td>Failed SLA this month</td><td class="num">${product.bugsFailedSlaThisMonth}</td></tr>
-          <tr><td>SLA-eligible bugs (Urgent/High)</td><td class="num">${product.slaEligibleBugs}</td></tr>
+          <tr><td>Bugs (total / new this month)</td><td class="num">${renderCountLink(product.totalBugs, product.totalBugsUrl)} / ${renderCountLink(product.newBugsThisMonth, product.newBugsThisMonthUrl)}</td></tr>
+          <tr><td>Currently out of SLA</td><td class="num">${renderCountLink(product.bugsCurrentlyOutOfSla, product.bugsCurrentlyOutOfSlaUrl)}</td></tr>
+          <tr><td>Failed SLA this month</td><td class="num">${renderCountLink(product.bugsFailedSlaThisMonth, product.bugsFailedSlaThisMonthUrl)}</td></tr>
+          <tr><td>SLA-eligible bugs (Urgent/High)</td><td class="num">${renderCountLink(product.slaEligibleBugs, product.slaEligibleBugsUrl)}</td></tr>
           <tr><td>Feature score</td><td class="num">${renderScoreCell(product.featureScore, "n/a")}</td></tr>
-          <tr><td>Feature requests/other (total / new this month)</td><td class="num">${product.totalFeatureRequests} / ${product.newFeatureRequestsThisMonth}</td></tr>
-          <tr><td>Stale (open &gt;90d, unresolved)</td><td class="num">${product.staleFeatureRequests}</td></tr>
+          <tr><td>Feature requests/other (total / new this month)</td><td class="num">${renderCountLink(product.totalFeatureRequests, product.totalFeatureRequestsUrl)} / ${renderCountLink(product.newFeatureRequestsThisMonth, product.newFeatureRequestsThisMonthUrl)}</td></tr>
+          <tr><td>Stale (open &gt;90d, unresolved)</td><td class="num">${renderCountLink(product.staleFeatureRequests, product.staleFeatureRequestsUrl)}</td></tr>
         </tbody>
       </table>`;
 

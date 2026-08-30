@@ -28,8 +28,11 @@ FEATURE_STALE_DAYS with no resolution) / total feature requests`,
 defaulting to 100 when a partner has none. Both scores are shown
 separately (never folded into one number) so it's clear which side of the
 backlog is driving a partner's standing; raw volume/count breakdowns are
-reported alongside for context. Weights/definitions live as named
-constants below so they're easy to retune later.
+reported alongside for context, each paired with a `*Url` field
+(`_multi_issue_url`) so the frontend can make every count clickable,
+opening the exact matching issues as an ad-hoc Linear list view. Weights/
+definitions live as named constants below so they're easy to retune
+later.
 
 ## Support score (Intercom + Claude, incremental - one small batch/day)
 Scoring full conversation transcripts via an LLM on every refresh would be
@@ -79,7 +82,7 @@ PARTNER_INSIGHTS_CACHE_KEY = "dashboard-partner-insights"
 # Bump whenever this module's output shape or underlying metric logic
 # changes - see `milestones_report.py:MILESTONES_REPORT_CACHE_VERSION` for
 # why (the cache backend has no schema of its own).
-PARTNER_INSIGHTS_CACHE_VERSION = 2
+PARTNER_INSIGHTS_CACHE_VERSION = 3
 
 # Separate raw key (accumulating log, not aged/versioned like the main
 # report - see `cache.read_raw`) for Claude-scored conversations. Never
@@ -114,6 +117,7 @@ query PartnerInsightsIssues($first: Int!, $after: String) {
   issues(first: $first, after: $after, filter: { needs: { some: {} } }) {
     nodes {
       id
+      identifier
       title
       url
       createdAt
@@ -128,6 +132,32 @@ query PartnerInsightsIssues($first: Int!, $after: String) {
   }
 }
 """
+
+_LINEAR_ISSUE_URL_RE = re.compile(r"^(https://linear\.app/[^/]+)/")
+
+
+def _linear_workspace_base_url(issues: List[Dict[str, Any]]) -> Optional[str]:
+    """`https://linear.app/<workspace>`, sniffed from the first issue's own
+    `url` rather than a separate `organization` query/env var - every
+    customer-linked issue already carries one, so there's always a sample
+    to sniff from whenever there's anything to link to."""
+    for issue in issues:
+        match = _LINEAR_ISSUE_URL_RE.match(issue.get("url") or "")
+        if match:
+            return match.group(1)
+    return None
+
+
+def _multi_issue_url(workspace_base_url: Optional[str], issues: List[Dict[str, Any]]) -> Optional[str]:
+    """A single Linear URL that opens exactly `issues` as an ad-hoc list
+    view - see https://linear.app/docs/custom-views ("share or revisit a
+    one-off set of issues" via `/issues/ID-1,ID-2,...`). `None` (not
+    clickable) when there's nothing to show or the workspace couldn't be
+    sniffed."""
+    identifiers = [i["identifier"] for i in issues if i.get("identifier")]
+    if not identifiers or not workspace_base_url:
+        return None
+    return f"{workspace_base_url}/issues/{','.join(identifiers)}"
 
 
 def _fetch_customer_linked_issues(client: LinearClient) -> List[Dict[str, Any]]:
@@ -188,38 +218,56 @@ def _product_metrics_for_customer(
     stale_cutoff_iso: str,
     month_start: str,
     month_end: str,
+    workspace_base_url: Optional[str],
 ) -> Dict[str, Any]:
     bugs = [i for i in issues if _is_bug(i)]
     features = [i for i in issues if not _is_bug(i)]
 
     buckets = [_sla_bucket(b, now_iso) for b in bugs]
-    sla_eligible_bugs = sum(1 for b in buckets if b is not None)
-    bugs_currently_out_of_sla = sum(1 for b in buckets if b == "breached")
-    bugs_failed_sla_this_month = sum(
-        1
+    currently_out_of_sla_issues = [b for b, bucket in zip(bugs, buckets) if bucket == "breached"]
+    failed_sla_this_month_issues = [
+        bug
         for bug, bucket in zip(bugs, buckets)
         if bucket == "failed" and _in_range(bug.get("completedAt") or bug.get("canceledAt"), month_start, month_end)
-    )
+    ]
+    sla_eligible_issues = [b for b, bucket in zip(bugs, buckets) if bucket is not None]
+    sla_eligible_bugs = len(sla_eligible_issues)
+    bugs_currently_out_of_sla = len(currently_out_of_sla_issues)
+    bugs_failed_sla_this_month = len(failed_sla_this_month_issues)
     sla_incidents = bugs_currently_out_of_sla + bugs_failed_sla_this_month
     # No SLA-eligible bugs at all -> nothing to be unresponsive to yet;
     # treat as a clean slate (100) rather than penalizing/rewarding based
     # on an empty sample - see module docstring.
     bug_responsiveness_rate = 1.0 if sla_eligible_bugs == 0 else max(0.0, 1 - sla_incidents / sla_eligible_bugs)
 
-    stale_feature_requests = sum(1 for f in features if _is_stale_feature(f, stale_cutoff_iso))
+    new_bugs_this_month_issues = [b for b in bugs if _in_range(b.get("createdAt"), month_start, month_end)]
+    stale_feature_issues = [f for f in features if _is_stale_feature(f, stale_cutoff_iso)]
+    stale_feature_requests = len(stale_feature_issues)
     # Same "empty sample -> clean slate" reasoning as bugs above.
     feature_freshness_rate = 1.0 if not features else max(0.0, 1 - stale_feature_requests / len(features))
+    new_features_this_month_issues = [f for f in features if _in_range(f.get("createdAt"), month_start, month_end)]
+
+    def link(bucket_issues: List[Dict[str, Any]]) -> Optional[str]:
+        return _multi_issue_url(workspace_base_url, bucket_issues)
 
     return {
         "totalFeatureRequests": len(features),
-        "newFeatureRequestsThisMonth": sum(1 for f in features if _in_range(f.get("createdAt"), month_start, month_end)),
+        "totalFeatureRequestsUrl": link(features),
+        "newFeatureRequestsThisMonth": len(new_features_this_month_issues),
+        "newFeatureRequestsThisMonthUrl": link(new_features_this_month_issues),
         "staleFeatureRequests": stale_feature_requests,
+        "staleFeatureRequestsUrl": link(stale_feature_issues),
         "featureScore": round(feature_freshness_rate * 100),
         "totalBugs": len(bugs),
-        "newBugsThisMonth": sum(1 for b in bugs if _in_range(b.get("createdAt"), month_start, month_end)),
+        "totalBugsUrl": link(bugs),
+        "newBugsThisMonth": len(new_bugs_this_month_issues),
+        "newBugsThisMonthUrl": link(new_bugs_this_month_issues),
         "bugsCurrentlyOutOfSla": bugs_currently_out_of_sla,
+        "bugsCurrentlyOutOfSlaUrl": link(currently_out_of_sla_issues),
         "bugsFailedSlaThisMonth": bugs_failed_sla_this_month,
+        "bugsFailedSlaThisMonthUrl": link(failed_sla_this_month_issues),
         "slaEligibleBugs": sla_eligible_bugs,
+        "slaEligibleBugsUrl": link(sla_eligible_issues),
         "bugScore": round(bug_responsiveness_rate * 100),
     }
 
@@ -235,6 +283,7 @@ def compute_product_scores(
     linear_client = linear_client or LinearClient()
     issues = _fetch_customer_linked_issues(linear_client)
     by_customer = _group_issues_by_customer(issues)
+    workspace_base_url = _linear_workspace_base_url(issues)
     now = datetime.now(timezone.utc)
     now_iso = now.isoformat()
     stale_cutoff_iso = (now - timedelta(days=FEATURE_STALE_DAYS)).isoformat()
@@ -247,7 +296,7 @@ def compute_product_scores(
             scores[partner["partnerId"]] = None
             continue
         scores[partner["partnerId"]] = _product_metrics_for_customer(
-            by_customer.get(customer_id, []), now_iso, stale_cutoff_iso, month_start, month_end
+            by_customer.get(customer_id, []), now_iso, stale_cutoff_iso, month_start, month_end, workspace_base_url
         )
     return scores
 

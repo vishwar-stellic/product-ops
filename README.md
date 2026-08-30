@@ -267,6 +267,12 @@ the site into separate capabilities, each its own tab:
     A partner with no linked Linear customer shows "not linked" for both
     instead of a score. See `product_status/partner_insights.py`'s module
     docstring.
+    - Every raw count in the expanded breakdown (total bugs, currently
+      out-of-SLA, failed-SLA-this-month, SLA-eligible, total/new/stale
+      feature requests) is clickable — it opens the exact matching Linear
+      issues as an ad-hoc list view (`linear.app/<workspace>/issues/ID-1,
+      ID-2,...`, the same URL scheme Linear itself uses for "open these
+      issues together"). Zero-count cells aren't clickable.
   - **Support score** (Intercom conversations, graded by Claude) —
     incremental, not live: roughly once a day, every conversation closed in
     the last ~24h is resolved to a partner and scored by Claude
