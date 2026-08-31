@@ -61,6 +61,16 @@ Endpoints:
                                           one point recorded per actual
                                           refresh (not per page load), see
                                           support_report.py's docstring
+    GET  /api/cron/refresh-support-report -> forces a fresh Support Report
+                                          pull (same as the POST /refresh
+                                          above), meant to be hit by a
+                                          scheduled job (Vercel Cron - see
+                                          vercel.json's "crons" entry, which
+                                          runs this nightly) rather than a
+                                          person. Requires `Authorization:
+                                          Bearer <CRON_SECRET>` whenever
+                                          CRON_SECRET is set - see
+                                          `_require_cron_secret`
     GET  /api/partner-insights        -> per-partner Product + Support
                                           scores (see partner_insights.py) -
                                           cached like /api/dashboard.
@@ -156,6 +166,11 @@ _AUTH_PUBLIC_PATHS = {
     "/style.css",
     "/app.js",
     "/favicon.svg",
+    # Hit by Vercel Cron (a scheduled job, not a signed-in person) - see
+    # `_require_cron_secret` for the real security boundary here, same
+    # pattern as `_require_partner_insights_access` gating its own routes
+    # independently of this Google-login middleware.
+    "/api/cron/refresh-support-report",
 }
 
 
@@ -641,6 +656,37 @@ def support_report_history():
     """Accumulated trend-chart history for the support report's top table -
     see support_report.py's docstring ("Trend history")."""
     return get_support_report_history()
+
+
+def _require_cron_secret(request: Request) -> None:
+    """The real security boundary for `/api/cron/*` routes (they're exempt
+    from `require_login` above since a scheduled job has no Google session
+    cookie) - a 401 unless `Authorization: Bearer <CRON_SECRET>` matches.
+    Mirrors Vercel's own recommended pattern: Vercel automatically sends
+    this header set to the `CRON_SECRET` env var's value on every cron
+    invocation (see vercel.json), so this rejects anyone else who finds the
+    URL. A no-op (open) when `CRON_SECRET` itself isn't configured, matching
+    every other "open for local dev" gate in this file - but it should
+    always be set in production (see README "Deploying")."""
+    secret = os.environ.get("CRON_SECRET")
+    if not secret:
+        return
+    if request.headers.get("authorization") != f"Bearer {secret}":
+        raise HTTPException(status_code=401, detail="Not authorized")
+
+
+@app.get("/api/cron/refresh-support-report")
+def cron_refresh_support_report(request: Request):
+    """Meant to be invoked by Vercel Cron once a night (see vercel.json),
+    not by a person - forces the same fresh Intercom pull as
+    `POST /api/support-report/refresh`, so the dashboard's first load each
+    day is already warm instead of paying the ~1-2 minute cold-cache
+    penalty (see the "Failed to fetch" fix in support_report.py's history)."""
+    _require_cron_secret(request)
+    try:
+        return _get_support_report(force=True)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 def _require_partner_insights_access(request: Request) -> None:

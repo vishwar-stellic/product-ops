@@ -726,6 +726,27 @@ you to reconnect more often on Vercel than it would on a normal host.
 `NOTION_API_KEY` doesn't have this problem (it's just a static env var), so
 prefer that on Vercel.
 
+**Nightly Support Report refresh (Vercel Cron):** `vercel.json` registers
+a cron job that hits `GET /api/cron/refresh-support-report` once a night
+(`"schedule": "0 7 * * *"`, i.e. 07:00 UTC = midnight Pacific during
+daylight saving - Vercel Cron schedules are always UTC with no DST
+adjustment, so this drifts to 11pm Pacific for the few months a year it's
+on standard time; adjust the schedule if you want it pinned exactly). This
+just forces the same slow full pull as the **Update** button
+(`build_support_report()`, a whole-workspace Intercom pull), so the
+dashboard's cache is already warm before anyone opens it that day rather
+than the first visitor of the day eating the ~1-2 minute cold-pull penalty
+described above. Secure it by setting `CRON_SECRET` (see `.env.example`)
+as a Vercel env var - Vercel automatically sends it back as an
+`Authorization: Bearer <CRON_SECRET>` header on every cron invocation,
+which `_require_cron_secret` in `server.py` checks; leave it unset locally
+(same "open for local dev" pattern as the rest of the app), but always set
+it in production so the endpoint can't be triggered by anyone who finds
+the URL. On the Hobby plan, cron jobs are capped at once/day and Vercel
+may invoke anywhere within that hour rather than exactly on the minute -
+see [Vercel's Cron Jobs docs](https://vercel.com/docs/cron-jobs) for
+current plan limits.
+
 ## Project layout
 
 ```

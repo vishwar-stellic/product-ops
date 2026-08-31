@@ -3,5 +3,11 @@
     "main.py": {
       "maxDuration": 300
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/cron/refresh-support-report",
+      "schedule": "0 7 * * *"
+    }
+  ]
 }

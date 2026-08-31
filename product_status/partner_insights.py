@@ -145,15 +145,18 @@ query PartnerInsightsIssues($first: Int!, $after: String) {
 }
 """
 
-# Linear's workflow state types are a fixed enum (unlike state *names*, which
-# are freely renamed per-workspace) - "completed"/"canceled" are the only
-# terminal ones, so "not one of those" reliably means Backlog/Todo/In
-# Progress/In Review/Triage regardless of how a workspace has renamed them.
-_TERMINAL_STATE_TYPES = {"completed", "canceled"}
+# Linear's workflow state `type` is a fixed 6-value string (unlike state
+# *names*, which are freely renamed/added per-workspace - see the "commit
+# and deploy" conversation's live sample: {backlog: Backlog, unstarted:
+# Todo, started: In Review, triage: Triage, completed: Done/Merged}) - an
+# explicit allowlist of the 4 non-terminal ones, rather than "not
+# completed/canceled", so a hypothetical future 7th type defaults to
+# *excluded* rather than silently counted as open.
+_OPEN_STATE_TYPES = {"backlog", "unstarted", "started", "triage"}
 
 
 def _is_open_state(issue: Dict[str, Any]) -> bool:
-    return ((issue.get("state") or {}).get("type")) not in _TERMINAL_STATE_TYPES
+    return ((issue.get("state") or {}).get("type")) in _OPEN_STATE_TYPES
 
 _LINEAR_ISSUE_URL_RE = re.compile(r"^(https://linear\.app/[^/]+)/")
 
