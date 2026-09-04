@@ -2191,8 +2191,8 @@ function renderEscalationCell(escalations, escalationsConfigured) {
 }
 
 // Computed live from `lastMovementAt` on every render rather than a number
-// Claude wrote once (see `escalation_report.py`'s module docstring) - stays
-// accurate between refreshes without needing a new Claude call.
+// the LLM wrote once (see `escalation_report.py`'s module docstring) - stays
+// accurate between refreshes without needing a new LLM call.
 function daysSince(isoDate) {
   if (!isoDate) return null;
   const then = new Date(isoDate).getTime();
@@ -2211,7 +2211,7 @@ function renderEscalationsBlock(partner, escalationsConfigured) {
     return `<p class="empty-note">${
       escalationsConfigured
         ? "Not matched to a Vitally account - no partner emails to triage."
-        : "Escalation triage isn't configured yet (needs ANTHROPIC_API_KEY and VITALLY_ACCESS_TOKEN) - see README."
+        : "Escalation triage isn't configured yet (needs OPENAI_API_KEY and VITALLY_ACCESS_TOKEN) - see README."
     }</p>`;
   }
   const items = (escalations.items || [])
@@ -2378,8 +2378,8 @@ function renderPartnerInsightsExpandedRow(partner) {
     ? `<p class="empty-note">No conversations scored in the last ${
         (partnerInsightsData && partnerInsightsData.supportScoreWindowDays) || 30
       } days yet${
-        partnerInsightsData && partnerInsightsData.claudeConfigured === false
-          ? " (ANTHROPIC_API_KEY isn't configured yet - see README)"
+        partnerInsightsData && partnerInsightsData.llmConfigured === false
+          ? " (OPENAI_API_KEY isn't configured yet - see README)"
           : " - this fills in day by day as new conversations close"
       }.</p>`
     : `
@@ -2460,22 +2460,22 @@ function renderPartnerInsights(data) {
       <p class="quality-definitions" style="list-style: none; padding-left: 0;">
         Bug score reflects bug-SLA responsiveness; Feature score reflects how many of a partner's feature
         requests/other asks have gone stale (open 90+ days, unresolved) - both from that partner's Linear
-        customer requests, 100 = clean. Support score is Claude's read of professionalism/helpfulness/
+        customer requests, 100 = clean. Support score is the LLM's read of professionalism/helpfulness/
         genuineness across that partner's Intercom conversations closed in the last ${
           data.supportScoreWindowDays || 30
         } days - scored incrementally once/day, so it starts empty and fills in over time.${
-    data.claudeConfigured === false
-      ? " Support scoring isn't configured yet (ANTHROPIC_API_KEY missing) - see README."
+    data.llmConfigured === false
+      ? " Support scoring isn't configured yet (OPENAI_API_KEY missing) - see README."
       : ""
   } Vitally is that partner's own health score from Vitally (already red/yellow/green there, shown as-is).${
     data.vitallyConfigured === false
       ? " Vitally isn't configured yet (VITALLY_ACCESS_TOKEN missing) - see README."
       : ""
-  } Escalation flags a partner's recent human-written emails (synced via Vitally) that Claude's triage
+  } Escalation flags a partner's recent human-written emails (synced via Vitally) that the LLM's triage
         flagged as a live or brewing risk - only re-analyzed on a forced Update, and only the newest
         email each time.${
           data.escalationsConfigured === false
-            ? " Escalation triage isn't configured yet (needs ANTHROPIC_API_KEY and VITALLY_ACCESS_TOKEN) - see README."
+            ? " Escalation triage isn't configured yet (needs OPENAI_API_KEY and VITALLY_ACCESS_TOKEN) - see README."
             : ""
         }
         Click a partner for the full breakdown.
@@ -2542,7 +2542,7 @@ async function refreshPartnerInsights() {
   const btn = els.partnerInsightsUpdateBtn;
   if (btn) {
     btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span><span class="btn-label">Updating… (Linear + Intercom + Claude, can be slow)</span>';
+    btn.innerHTML = '<span class="spinner"></span><span class="btn-label">Updating… (Linear + Intercom + LLM, can be slow)</span>';
   }
   try {
     const res = await fetch("/api/partner-insights/refresh", { method: "POST" });

@@ -45,16 +45,16 @@ opened and already closed within the same month still counts as new
 incoming work). Weights/definitions live as named constants below so
 they're easy to retune later.
 
-## Support score (Intercom + Claude, incremental - one small batch/day)
+## Support score (Intercom + an LLM, incremental - one small batch/day)
 Scoring full conversation transcripts via an LLM on every refresh would be
 slow and needlessly re-scores the same history repeatedly. Instead, once
 roughly every `_BATCH_MIN_INTERVAL_SECONDS` (~20h, so it lines up with the
 normal once-a-day cache refresh), `_run_daily_scoring_batch` pulls
 conversations closed in roughly the last 24h, resolves each to a partner
 via `partner_identity.partner_name`, and scores the support team's side of
-each with Claude (professionalism / helpfulness / how "canned" the replies
-read) - see `_claude_score_conversation`. Every scored conversation is
-appended *once* to a small accumulating log
+each with OpenAI (`openai_client.py` - professionalism / helpfulness / how
+"canned" the replies read) - see `_score_conversation`. Every scored
+conversation is appended *once* to a small accumulating log
 (`cache.read_raw`/`write_raw`, same pattern as
 `support_report.py`'s trend history) and never rescored - the log only
 ever grows. `compute_support_scores` reads that log and averages every
@@ -77,36 +77,33 @@ rather than recomputed - this tab doesn't try to second-guess a human
 judgment call that already exists elsewhere. `None` when the partner has
 no matching Vitally account (`vitally_client.py`) or `VITALLY_ACCESS_TOKEN`
 isn't configured (`vitallyConfigured` in the report - graceful degradation,
-same pattern as `claudeConfigured` below).
+same pattern as `llmConfigured` below).
 
 ## Partners this tab shows
 See `partner_identity.build_partner_registry` - Intercom companies and
 Linear customers that couldn't be cross-referenced are still shown (with
 whichever score is available), not dropped.
 
-## Escalations (Vitally emails + Claude triage, incremental, forced-refresh only)
+## Escalations (Vitally emails + LLM triage, incremental, forced-refresh only)
 A fourth, independent signal - see `escalation_report.py`'s module
 docstring for the full design. In short: partner-authored, human-written
 emails synced into Vitally from Gmail/Outlook (not Intercom, which the
-Support score above already covers) are triaged by Claude against a fixed
+Support score above already covers) are triaged by OpenAI against a fixed
 risk framework into LIVE_FIRE/SMOLDERING/WATCH items, cached and updated
 incrementally (only new email since the last run is ever re-analyzed).
 Unlike Bug/Feature/Support score, this never runs on a passive/cache-age
-refresh - only an explicit "Update" button click triggers new Claude
-calls, since it's the most expensive of the four to compute.
+refresh - only an explicit "Update" button click triggers new LLM calls,
+since it's the most expensive of the four to compute.
 """
 
 import json
-import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-import requests
-
-from . import cache
+from . import cache, openai_client
 from .escalation_report import escalations_configured, refresh_partner_escalations, vitally_app_account_url
 from .intercom_client import IntercomClient
 from .linear_client import LinearClient
@@ -120,17 +117,17 @@ PARTNER_INSIGHTS_CACHE_KEY = "dashboard-partner-insights"
 # Bump whenever this module's output shape or underlying metric logic
 # changes - see `milestones_report.py:MILESTONES_REPORT_CACHE_VERSION` for
 # why (the cache backend has no schema of its own).
-PARTNER_INSIGHTS_CACHE_VERSION = 6
+PARTNER_INSIGHTS_CACHE_VERSION = 7
 
 # Separate raw key (accumulating log, not aged/versioned like the main
-# report - see `cache.read_raw`) for Claude-scored conversations. Never
+# report - see `cache.read_raw`) for LLM-scored conversations. Never
 # rewritten for old entries, only appended to - see module docstring.
 PARTNER_INSIGHTS_SUPPORT_LOG_KEY = "partner-insights-support-scores"
 # Generous cap on total logged conversations across every partner combined
 # (mirrors `support_report.SUPPORT_REPORT_HISTORY_MAX_POINTS`'s reasoning) -
 # oldest entries drop off once exceeded.
 PARTNER_INSIGHTS_SUPPORT_LOG_MAX_ENTRIES = 20000
-# Gates the daily Claude batch to roughly once/day regardless of how often
+# Gates the daily scoring batch to roughly once/day regardless of how often
 # the outer 24h cache happens to get invalidated (a cache-version bump, or
 # repeated manual "Update" clicks) - see module docstring.
 _BATCH_MIN_INTERVAL_SECONDS = 20 * 60 * 60
@@ -140,10 +137,6 @@ SUPPORT_SCORE_WINDOW_DAYS = 30
 # A still-open feature request older than this with no resolution counts
 # against `featureScore` - see module docstring.
 FEATURE_STALE_DAYS = 90
-
-ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
-ANTHROPIC_API_VERSION = "2023-06-01"
-DEFAULT_ANTHROPIC_MODEL = "claude-3-5-haiku-latest"
 
 
 # ---------------------------------------------------------------------------
@@ -383,26 +376,8 @@ def compute_product_scores(
 
 
 # ---------------------------------------------------------------------------
-# Support score (Intercom conversations, scored by Claude)
+# Support score (Intercom conversations, scored by an LLM - see openai_client.py)
 # ---------------------------------------------------------------------------
-
-
-def _anthropic_configured() -> bool:
-    return bool(os.environ.get("ANTHROPIC_API_KEY"))
-
-
-def _anthropic_api_key() -> str:
-    key = os.environ.get("ANTHROPIC_API_KEY")
-    if not key:
-        raise RuntimeError(
-            "ANTHROPIC_API_KEY is not set - see .env.example. Needed for Partner Insights' "
-            "support-side conversation scoring."
-        )
-    return key
-
-
-def _anthropic_model() -> str:
-    return os.environ.get("ANTHROPIC_MODEL", DEFAULT_ANTHROPIC_MODEL)
 
 
 def _strip_html(value: Optional[str]) -> str:
@@ -415,8 +390,8 @@ def _strip_html(value: Optional[str]) -> str:
 
 
 def _conversation_transcript(full_conversation: Dict[str, Any]) -> str:
-    """A plain-text `[Support]`/`[Customer]` transcript for Claude to grade
-    - built from the conversation's opening message plus every
+    """A plain-text `[Support]`/`[Customer]` transcript for the LLM to
+    grade - built from the conversation's opening message plus every
     customer-facing part (internal notes excluded, since those were never
     seen by the customer and shouldn't count toward "how we responded")."""
     lines: List[str] = []
@@ -475,29 +450,16 @@ def _clamp_score(value: Any) -> int:
         return 0
 
 
-def _claude_score_conversation(transcript: str) -> Optional[Dict[str, Any]]:
-    """One Claude call scoring `transcript` - `None` on any failure (a bad
-    response, a timeout, malformed JSON) so one flaky conversation never
-    takes down the whole daily batch (see `_run_daily_scoring_batch`)."""
+def _score_conversation(transcript: str) -> Optional[Dict[str, Any]]:
+    """One LLM call scoring `transcript` (`openai_client.chat_completion`)
+    - `None` on any failure (a bad response, a timeout, malformed JSON) so
+    one flaky conversation never takes down the whole daily batch (see
+    `_run_daily_scoring_batch`)."""
     try:
-        response = requests.post(
-            ANTHROPIC_API_URL,
-            headers={
-                "x-api-key": _anthropic_api_key(),
-                "anthropic-version": ANTHROPIC_API_VERSION,
-                "content-type": "application/json",
-            },
-            json={
-                "model": _anthropic_model(),
-                "max_tokens": 300,
-                "messages": [
-                    {"role": "user", "content": _SCORE_PROMPT_TEMPLATE.format(transcript=transcript[:12000])}
-                ],
-            },
-            timeout=30,
+        text = openai_client.chat_completion(
+            _SCORE_PROMPT_TEMPLATE.format(transcript=transcript[:12000]),
+            max_completion_tokens=1000,
         )
-        response.raise_for_status()
-        text = response.json()["content"][0]["text"]
         parsed = json.loads(_extract_json_object(text))
         return {
             "professionalism": _clamp_score(parsed.get("professionalism")),
@@ -506,7 +468,7 @@ def _claude_score_conversation(transcript: str) -> Optional[Dict[str, Any]]:
             "rationale": str(parsed.get("rationale") or "")[:500],
         }
     except Exception as exc:  # noqa: BLE001 - one bad conversation shouldn't break the batch
-        print(f"[partner_insights] Claude scoring failed for a conversation: {exc}")
+        print(f"[partner_insights] LLM scoring failed for a conversation: {exc}")
         return None
 
 
@@ -545,7 +507,7 @@ def _run_daily_scoring_batch(
         if "[Support]" not in transcript:
             return None  # nothing our team actually said yet - nothing to grade
 
-        scores = _claude_score_conversation(transcript)
+        scores = _score_conversation(transcript)
         if scores is None:
             return None
 
@@ -580,8 +542,8 @@ def _append_support_log(new_entries: List[Dict[str, Any]], run_at: float) -> Non
 
 
 def _should_run_batch(force: bool) -> bool:
-    if not _anthropic_configured():
-        return False  # graceful degradation - see module docstring / _anthropic_configured
+    if not openai_client.is_configured():
+        return False  # graceful degradation - see module docstring
     if force:
         return True
     last_run_at = _get_support_log().get("lastRunAt")
@@ -632,7 +594,7 @@ def build_partner_insights_report(force: bool = False) -> Dict[str, Any]:
     linear_client = LinearClient()
     # `None` (not an empty client) when unconfigured - `build_partner_registry`
     # treats that as "skip Vitally matching entirely" rather than erroring,
-    # same graceful-degradation shape as Claude scoring below.
+    # same graceful-degradation shape as LLM scoring below.
     vitally_client = VitallyClient() if vitally_configured() else None
 
     registry = build_partner_registry(intercom_client, linear_client, vitally_client)
@@ -676,7 +638,7 @@ def build_partner_insights_report(force: bool = False) -> Dict[str, Any]:
 
     return {
         "generatedAt": datetime.now(timezone.utc).isoformat(),
-        "claudeConfigured": _anthropic_configured(),
+        "llmConfigured": openai_client.is_configured(),
         "vitallyConfigured": vitally_configured(),
         "escalationsConfigured": escalations_configured(),
         "supportScoreWindowDays": SUPPORT_SCORE_WINDOW_DAYS,

@@ -78,7 +78,7 @@ Endpoints:
                                           signed-in email is in
                                           PARTNER_INSIGHTS_ALLOWED_EMAILS)
     POST /api/partner-insights/refresh -> force a fresh pull (Linear +
-                                          Intercom, plus a Claude scoring
+                                          Intercom, plus an LLM scoring
                                           batch), bypassing the 24h cache -
                                           slow, same allowlist gate
     GET  /api/notion/status       -> whether Notion is connected (OAuth) and
@@ -731,7 +731,7 @@ def partner_insights(request: Request):
 
 @app.post("/api/partner-insights/refresh")
 def partner_insights_refresh(request: Request):
-    """Force a fresh pull (Linear + Intercom, plus a Claude scoring batch
+    """Force a fresh pull (Linear + Intercom, plus an LLM scoring batch
     for the last day's closed conversations), regardless of cache age -
     slow, see partner_insights.py. Same allowlist gate as the GET above."""
     _require_partner_insights_access(request)

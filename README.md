@@ -286,20 +286,21 @@ the site into separate capabilities, each its own tab:
       issues together"). Zero-count cells aren't clickable. "Total" counts/
       links are open-state-only (matching the score denominators above);
       "new this month" counts/links intentionally include every status.
-  - **Support score** (Intercom conversations, graded by Claude) —
+  - **Support score** (Intercom conversations, graded by an LLM) —
     incremental, not live: roughly once a day, every conversation closed in
-    the last ~24h is resolved to a partner and scored by Claude
-    (`ANTHROPIC_API_KEY`) on professionalism, helpfulness, and how "canned"/
-    generic the reply was — each conversation is scored exactly once and
-    permanently appended to a small log (`cache.write_raw`, same pattern as
-    the Support Report's trend history), never rescored. The displayed
-    score averages a partner's log entries over a trailing 30-day window. A
-    partner with no scored conversations yet in that window shows "no data
-    yet" — there's no backfill, so this fills in gradually starting from
-    whenever `ANTHROPIC_API_KEY` was first configured, not from the tab's
-    full history. Leaving `ANTHROPIC_API_KEY` unset keeps the rest of the
-    tab (Bug/Feature scores, registry) fully working, with every Support
-    score left as "no data yet".
+    the last ~24h is resolved to a partner and scored by OpenAI
+    (`OPENAI_API_KEY`, see `product_status/openai_client.py`) on
+    professionalism, helpfulness, and how "canned"/generic the reply was —
+    each conversation is scored exactly once and permanently appended to a
+    small log (`cache.write_raw`, same pattern as the Support Report's trend
+    history), never rescored. The displayed score averages a partner's log
+    entries over a trailing 30-day window. A partner with no scored
+    conversations yet in that window shows "no data yet" — there's no
+    backfill, so this fills in gradually starting from whenever
+    `OPENAI_API_KEY` was first configured, not from the tab's full history.
+    Leaving `OPENAI_API_KEY` unset keeps the rest of the tab (Bug/Feature
+    scores, registry) fully working, with every Support score left as "no
+    data yet".
   - **Vitally** — shown as a plain red/yellow/green dot (hover for the
     exact number), same visual convention as the other three scores. This
     is *not* computed by this app: Vitally already computes its own
@@ -310,9 +311,9 @@ the site into separate capabilities, each its own tab:
     elsewhere. Requires `VITALLY_ACCESS_TOKEN` (see `.env.example` and
     `product_status/vitally_client.py`) — leave it unset and the column
     just shows "not configured" for everyone, same graceful-degradation
-    pattern as `ANTHROPIC_API_KEY` above. A partner matched to Intercom/
+    pattern as `OPENAI_API_KEY` above. A partner matched to Intercom/
     Linear but not to any Vitally account shows "not in Vitally" instead.
-  - **Escalation** (Vitally emails, triaged by Claude) — flags a partner's
+  - **Escalation** (Vitally emails, triaged by an LLM) — flags a partner's
     recent *human-written* emails (synced into Vitally from Gmail/Outlook —
     a separate channel from the Intercom conversations the Support score
     above covers) that look like a live or brewing escalation, using a fixed
@@ -322,18 +323,18 @@ the site into separate capabilities, each its own tab:
     **Watch**, plus a count if there's more than one) — `clear` if none, or
     `not in Vitally`/`not configured` same as the Vitally column.
     - Needs *both* `VITALLY_ACCESS_TOKEN` (the email source) and
-      `ANTHROPIC_API_KEY` (the triage) — either missing shows "not
+      `OPENAI_API_KEY` (the triage) — either missing shows "not
       configured" for everyone.
-    - Before anything reaches Claude, calendar invites/responses and
+    - Before anything reaches the LLM, calendar invites/responses and
       out-of-office auto-replies are dropped mechanically (these dominate
       Vitally's Gmail-synced conversation volume) — subtler auto-generated
       content (newsletters, marketing, recruiting, system alerts) is left to
-      Claude's own judgment per the prompt's SCOPE section.
+      the LLM's own judgment per the prompt's SCOPE section.
     - **Incremental, and only on a forced refresh** — unlike the other three
       signals, this never runs on a passive 24h cache-age refresh, only the
       **Update** button. Each run only fetches emails newer than the last
       run's newest processed email (capped at a 3-day lookback), hands them
-      to Claude *alongside* the currently-tracked items, and asks it to
+      to the LLM *alongside* the currently-tracked items, and asks it to
       adjust (add/update/drop) rather than re-derive the list from scratch —
       a partner with no new eligible email since last time costs nothing.
       "Days since last movement" is computed live on every page load from
@@ -353,9 +354,11 @@ the site into separate capabilities, each its own tab:
     just the main-table dot.)
   - Cached the same way as the other tabs (24h, own **Update** button to
     force a refresh) — a forced refresh also bypasses the ~20h minimum gap
-    between Claude scoring batches and re-runs escalation triage, so it's
-    slow (Linear pull + Intercom pull + Vitally pull + a Claude call per
-    newly-closed conversation + a Claude call per partner with new email).
+    between Support scoring batches and re-runs escalation triage, so it's
+    slow (Linear pull + Intercom pull + Vitally pull + an LLM call per
+    newly-closed conversation + an LLM call per partner with new email).
+    LLM calls go to OpenAI's `us.api.openai.com` regional endpoint by
+    default (US data residency) — see `product_status/openai_client.py`.
 
 #### Partner Insights access
 
@@ -813,9 +816,10 @@ product_status/
   intercom_client.py     # raw Intercom REST API client (auth, retries, search pagination)
   support_report.py      # live Intercom SLA "5 metrics" per squad for the Support Report tab
   partner_identity.py    # shared Intercom<->Linear<->Vitally partner resolution (support_report.py + partner_insights.py)
-  partner_insights.py    # per-partner Product (Linear) + Support (Claude-scored Intercom) + Vitally health + Escalations for the Partner Insights tab
+  partner_insights.py    # per-partner Product (Linear) + Support (LLM-scored Intercom) + Vitally health + Escalations for the Partner Insights tab
   vitally_client.py      # raw Vitally REST API client (Basic Auth, cursor pagination) for the Vitally health score column + escalation_report.py's email source
-  escalation_report.py   # Vitally-synced partner emails, triaged by Claude, for Partner Insights' Escalations column
+  escalation_report.py   # Vitally-synced partner emails, triaged by an LLM, for Partner Insights' Escalations column
+  openai_client.py       # thin OpenAI Chat Completions wrapper shared by partner_insights.py + escalation_report.py
   cache.py             # JSON cache keyed by age (used by the dashboard, 24h default) - on disk, or...
   blob_cache.py         # ...Vercel Blob-backed, when BLOB_READ_WRITE_TOKEN is set (persists on serverless hosts)
   notion_client.py      # raw Notion REST API client (auth, retries, nested block creation)
