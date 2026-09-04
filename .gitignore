@@ -5,3 +5,4 @@ __pycache__/
 .cache/
 .vercel
 .env*
+.DS_Store

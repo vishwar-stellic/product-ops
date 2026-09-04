@@ -1,5 +1,5 @@
 """Partner Insights dashboard tab - a per-partner (institution) rollup of
-three independent scores:
+independent scores:
 
 ## Product score - split into Bug score and Feature score (Linear only, no
 ## LLM, cheap - recomputed on every refresh)
@@ -66,6 +66,19 @@ day by day as the daily batch runs - there's no backfill of history from
 before this tab existed, by explicit design (this was scoped as
 incremental-only, not a one-time bulk score of everything).
 
+## Vitally health score (Vitally only, no computation - recomputed on
+## every refresh)
+Vitally (a customer-success platform, separate from both Linear and
+Intercom) already computes its own per-account `healthScore` - in this
+workspace it's a direct 0/5/10 encoding of a manually-set Red/Yellow/Green
+"pulse" trait imported from a CSV upload (confirmed against live data:
+Red -> 0, Yellow -> 5, Green -> 10 with no exceptions), so it's shown as-is
+rather than recomputed - this tab doesn't try to second-guess a human
+judgment call that already exists elsewhere. `None` when the partner has
+no matching Vitally account (`vitally_client.py`) or `VITALLY_ACCESS_TOKEN`
+isn't configured (`vitallyConfigured` in the report - graceful degradation,
+same pattern as `claudeConfigured` below).
+
 ## Partners this tab shows
 See `partner_identity.build_partner_registry` - Intercom companies and
 Linear customers that couldn't be cross-referenced are still shown (with
@@ -88,12 +101,14 @@ from .linear_client import LinearClient
 from .partner_identity import build_company_map, build_partner_registry, partner_name
 from .quality import BUG_LABEL, _month_bounds
 from .support_report import INTERCOM_INBOX_PREFIX
+from .vitally_client import VitallyClient
+from .vitally_client import is_configured as vitally_configured
 
 PARTNER_INSIGHTS_CACHE_KEY = "dashboard-partner-insights"
 # Bump whenever this module's output shape or underlying metric logic
 # changes - see `milestones_report.py:MILESTONES_REPORT_CACHE_VERSION` for
 # why (the cache backend has no schema of its own).
-PARTNER_INSIGHTS_CACHE_VERSION = 4
+PARTNER_INSIGHTS_CACHE_VERSION = 5
 
 # Separate raw key (accumulating log, not aged/versioned like the main
 # report - see `cache.read_raw`) for Claude-scored conversations. Never
@@ -603,8 +618,12 @@ def compute_support_scores(
 def build_partner_insights_report(force: bool = False) -> Dict[str, Any]:
     intercom_client = IntercomClient()
     linear_client = LinearClient()
+    # `None` (not an empty client) when unconfigured - `build_partner_registry`
+    # treats that as "skip Vitally matching entirely" rather than erroring,
+    # same graceful-degradation shape as Claude scoring below.
+    vitally_client = VitallyClient() if vitally_configured() else None
 
-    registry = build_partner_registry(intercom_client, linear_client)
+    registry = build_partner_registry(intercom_client, linear_client, vitally_client)
     product_scores = compute_product_scores(registry, linear_client=linear_client)
 
     if _should_run_batch(force):
@@ -626,6 +645,7 @@ def build_partner_insights_report(force: bool = False) -> Dict[str, Any]:
     return {
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "claudeConfigured": _anthropic_configured(),
+        "vitallyConfigured": vitally_configured(),
         "supportScoreWindowDays": SUPPORT_SCORE_WINDOW_DAYS,
         "partners": partners,
     }

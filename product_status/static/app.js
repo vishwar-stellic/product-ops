@@ -1670,7 +1670,7 @@ function formatTrendDate(isoString) {
 // pixels - avoids the classic responsive-SVG trap where a fixed viewBox
 // scaled to fill a flexible-width container via `preserveAspectRatio="none"`
 // stretches circles into ellipses and warps text.
-function renderSupportReportTrendSVG(points, width, column, columnLabel) {
+function renderSupportReportTrendSVG(points, width, column, columnLabel, hiddenSeriesKeys) {
   const height = 220;
   const paddingLeft = 44;
   const paddingRight = 12;
@@ -1695,12 +1695,22 @@ function renderSupportReportTrendSVG(points, width, column, columnLabel) {
   const slotX = (slot) => paddingLeft + (slot / totalGaps) * plotWidth;
   const xFor = (dataIndex) => slotX(dataIndex + 1);
 
+  // Series hidden via the legend (see `renderSupportReportTrendChart`'s
+  // clickable legend items) are dropped entirely here - not just visually
+  // suppressed - so the y-axis rescales to whatever's still showing rather
+  // than leaving dead space sized for a line that's currently off.
   const series = SUPPORT_REPORT_ROWS.map((row, idx) => ({
     key: row.key,
     label: row.label,
     color: SUPPORT_REPORT_TREND_COLORS[idx % SUPPORT_REPORT_TREND_COLORS.length],
     values: points.map((p) => ((p.metrics && p.metrics[row.key] && p.metrics[row.key][column]) || 0)),
-  }));
+  })).filter((s) => !hiddenSeriesKeys || !hiddenSeriesKeys.has(s.key));
+
+  if (series.length === 0) {
+    return `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" class="trend-svg">
+      <text x="${width / 2}" y="${height / 2}" text-anchor="middle" class="trend-axis-label">Every series is hidden — click a legend item to show it again.</text>
+    </svg>`;
+  }
 
   const maxValue = Math.max(1, ...series.flatMap((s) => s.values));
   const yFor = (v) => paddingTop + plotHeight - (v / maxValue) * plotHeight;
@@ -1796,6 +1806,16 @@ function attachTrendTooltipHandlers(wrap) {
   });
 }
 
+// Re-renders just the legend (for its hidden/active styling) and redraws
+// the chart after a legend-item click toggles `supportReportTrendHiddenSeries`
+// - deliberately scoped to these two pieces rather than the whole tab so the
+// ticket drilldown/filters below aren't blown away by an unrelated click.
+function refreshSupportReportTrendLegendAndChart() {
+  const legendEl = els.supportReportContainer && els.supportReportContainer.querySelector(".trend-legend");
+  if (legendEl) legendEl.innerHTML = renderSupportReportTrendLegend();
+  mountSupportReportTrendChart();
+}
+
 let supportTrendResizeObserver = null;
 
 // Draws (or redraws, on container resize) the trend chart at the wrap
@@ -1810,7 +1830,8 @@ function mountSupportReportTrendChart() {
       points,
       width,
       supportReportTrendColumn,
-      supportReportTrendColumnLabel(supportReportTrendColumn)
+      supportReportTrendColumnLabel(supportReportTrendColumn),
+      supportReportTrendHiddenSeries
     );
     attachTrendTooltipHandlers(wrap);
   };
@@ -1823,6 +1844,12 @@ function mountSupportReportTrendChart() {
 // Which table column (a squad key, or "TOTAL") the trend chart's 5 series
 // currently plot - picked via the radio buttons in `renderSupportReportTrendChart`.
 let supportReportTrendColumn = "TOTAL";
+
+// Row keys toggled off by clicking their legend item (see
+// `renderSupportReportTrendChart`'s legend and the click handler below) -
+// persists across column-picker changes/re-renders until toggled back on,
+// same session-only lifetime as `supportReportTrendColumn`.
+const supportReportTrendHiddenSeries = new Set();
 
 // "Total" plus every squad currently in the main table, in the same order -
 // derived from the loaded report rather than hardcoded so it never drifts
@@ -1840,6 +1867,25 @@ function supportReportTrendColumnLabel(key) {
   return opt ? opt.label : key;
 }
 
+// Clickable to show/hide that row's line - see the click handler on
+// `els.supportReportContainer` and `renderSupportReportTrendSVG`'s
+// `hiddenSeriesKeys` filtering. Pulled into its own function so a toggle
+// click can refresh just the legend's `<div class="trend-legend">` innerHTML
+// (via `refreshSupportReportTrendLegendAndChart`) without re-rendering the
+// whole tab.
+function renderSupportReportTrendLegend() {
+  return SUPPORT_REPORT_ROWS.map((row, idx) => {
+    const hidden = supportReportTrendHiddenSeries.has(row.key);
+    return `<span class="trend-legend-item${
+      hidden ? " trend-legend-item-hidden" : ""
+    }" data-series-key="${escapeHtml(row.key)}" title="Click to ${
+      hidden ? "show" : "hide"
+    } this line" role="button"><span class="trend-legend-swatch" style="background:${
+      SUPPORT_REPORT_TREND_COLORS[idx % SUPPORT_REPORT_TREND_COLORS.length]
+    }"></span>${escapeHtml(row.label)}</span>`;
+  }).join("");
+}
+
 function renderSupportReportTrendChart() {
   const points = (supportReportHistoryData && supportReportHistoryData.points) || [];
   if (points.length < 2) {
@@ -1853,12 +1899,7 @@ function renderSupportReportTrendChart() {
         </p>
       </div>`;
   }
-  const legend = SUPPORT_REPORT_ROWS.map(
-    (row, idx) =>
-      `<span class="trend-legend-item"><span class="trend-legend-swatch" style="background:${
-        SUPPORT_REPORT_TREND_COLORS[idx % SUPPORT_REPORT_TREND_COLORS.length]
-      }"></span>${escapeHtml(row.label)}</span>`
-  ).join("");
+  const legend = renderSupportReportTrendLegend();
   const columnPicker = supportReportTrendColumnOptions()
     .map(
       (opt) => `
@@ -1938,6 +1979,18 @@ function renderSupportReport(data) {
 
 if (els.supportReportContainer) {
   els.supportReportContainer.addEventListener("click", (event) => {
+    const legendItem = event.target.closest(".trend-legend-item");
+    if (legendItem) {
+      const key = legendItem.dataset.seriesKey;
+      if (supportReportTrendHiddenSeries.has(key)) {
+        supportReportTrendHiddenSeries.delete(key);
+      } else {
+        supportReportTrendHiddenSeries.add(key);
+      }
+      refreshSupportReportTrendLegendAndChart();
+      return;
+    }
+
     const row = event.target.closest("tr.clickable-row");
     if (!row || !supportReportData) return;
     const metric = row.dataset.metric;
@@ -2082,7 +2135,25 @@ function renderScoreCell(score, emptyLabel) {
   return `<span class="partner-score-dot ${scoreBand(score)}" title="Score: ${score}/100"></span>`;
 }
 
-const PARTNER_INSIGHTS_COLUMNS = 4; // Partner, Bug Score, Feature Score, Support Score
+// Vitally's `healthScore` is a 0-10 scale in this workspace (a direct
+// encoding of a manual Red/Yellow/Green "pulse" trait - see
+// partner_insights.py's module docstring: 0/5/10 map exactly to
+// Red/Yellow/Green), not the 0-100 scale `scoreBand` above expects.
+function vitallyHealthBand(score) {
+  if (score === null || score === undefined) return "";
+  if (score >= 8) return "score-ok"; // green
+  if (score <= 3) return "score-over"; // red
+  return "score-warn"; // yellow
+}
+
+function renderVitallyHealthCell(score, vitallyConfigured) {
+  if (score === null || score === undefined) {
+    return `<span class="empty-note-inline">${vitallyConfigured ? "not in Vitally" : "not configured"}</span>`;
+  }
+  return `<span class="partner-score-dot ${vitallyHealthBand(score)}" title="Vitally health score: ${score}/10"></span>`;
+}
+
+const PARTNER_INSIGHTS_COLUMNS = 5; // Partner, Bug Score, Feature Score, Support Score, Vitally
 
 // Column headers are clickable to sort - see `renderPartnerInsights`'s
 // `<th data-sort-key>` and the click handler below. Defaults to Partner
@@ -2094,6 +2165,7 @@ const PARTNER_INSIGHTS_SORT_COLUMNS = [
   { key: "bugScore", label: "Bug Score" },
   { key: "featureScore", label: "Feature Score" },
   { key: "supportScore", label: "Support Score" },
+  { key: "vitallyHealthScore", label: "Vitally" },
 ];
 
 function partnerInsightsSortValue(partner, key) {
@@ -2101,6 +2173,7 @@ function partnerInsightsSortValue(partner, key) {
   if (key === "bugScore") return partner.product ? partner.product.bugScore : null;
   if (key === "featureScore") return partner.product ? partner.product.featureScore : null;
   if (key === "supportScore") return partner.support ? partner.support.supportScore : null;
+  if (key === "vitallyHealthScore") return partner.vitallyHealthScore ?? null;
   return null;
 }
 
@@ -2243,6 +2316,7 @@ function renderPartnerInsights(data) {
         <td class="num">${renderScoreCell(bugScore, "not linked")}</td>
         <td class="num">${renderScoreCell(featureScore, "not linked")}</td>
         <td class="num">${renderScoreCell(supportScore, "no data yet")}</td>
+        <td class="num">${renderVitallyHealthCell(p.vitallyHealthScore, data.vitallyConfigured !== false)}</td>
       </tr>`;
       return isActive ? mainRow + renderPartnerInsightsExpandedRow(p) : mainRow;
     })
@@ -2259,6 +2333,10 @@ function renderPartnerInsights(data) {
         } days - scored incrementally once/day, so it starts empty and fills in over time.${
     data.claudeConfigured === false
       ? " Support scoring isn't configured yet (ANTHROPIC_API_KEY missing) - see README."
+      : ""
+  } Vitally is that partner's own health score from Vitally (already red/yellow/green there, shown as-is).${
+    data.vitallyConfigured === false
+      ? " Vitally isn't configured yet (VITALLY_ACCESS_TOKEN missing) - see README."
       : ""
   }
         Click a partner for the full breakdown.

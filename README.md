@@ -240,19 +240,21 @@ the site into separate capabilities, each its own tab:
   needing a backfill; it shows a placeholder until at least two points
   exist.
 - **Partner Insights** — one row per partner institution with a **Bug
-  score**, a **Feature score**, and a **Support score**, out of 100 each.
-  Unlike every other tab, this one is hidden from the tab bar entirely
-  unless the signed-in user's email is on `PARTNER_INSIGHTS_ALLOWED_EMAILS`
-  (see "Partner Insights access" below) — most of the team doesn't need
-  per-partner scoring visible.
+  score**, a **Feature score**, a **Support score** (out of 100 each), and
+  a **Vitally** health score. Unlike every other tab, this one is hidden
+  from the tab bar entirely unless the signed-in user's email is on
+  `PARTNER_INSIGHTS_ALLOWED_EMAILS` (see "Partner Insights access" below) —
+  most of the team doesn't need per-partner scoring visible.
   - **Partners** come from `product_status/partner_identity.py`'s
     `build_partner_registry`: every Intercom company cross-referenced
     against Linear's `Customer`/`CustomerNeed` objects ("Customer
-    Requests"), matched primarily by a Linear customer's `externalIds`
-    containing the same short `company_id` code Intercom uses (e.g. `fsu`),
-    falling back to a normalized name match. Either side missing a match is
-    still shown (Product-only or Support-only) rather than dropped, flagged
-    with a small ⚠ next to the name.
+    Requests") and (optionally) Vitally's `Account` objects, each matched
+    primarily by that other side's short code (Linear's `externalIds`,
+    Vitally's `externalId`) matching the same short `company_id` code
+    Intercom uses (e.g. `fsu`), falling back to a normalized name match.
+    Either side missing a match is still shown (Product-only or
+    Support-only, and/or no Vitally health score) rather than dropped,
+    flagged with a small ⚠ next to the name for the Linear/Intercom case.
   - **Bug score** and **Feature score** (Linear only, recomputed on every
     refresh, no LLM) — every Linear issue linked to a partner via a
     `CustomerNeed` is split into Bug-labeled vs. feature request/other, each
@@ -298,15 +300,28 @@ the site into separate capabilities, each its own tab:
     full history. Leaving `ANTHROPIC_API_KEY` unset keeps the rest of the
     tab (Bug/Feature scores, registry) fully working, with every Support
     score left as "no data yet".
+  - **Vitally** — shown as a plain red/yellow/green dot (hover for the
+    exact number), same visual convention as the other three scores. This
+    is *not* computed by this app: Vitally already computes its own
+    per-account `healthScore`, which in this workspace is a direct 0/5/10
+    encoding of a manually-set Red/Yellow/Green "pulse" trait imported from
+    a CSV upload — it's shown as-is rather than recomputed, since this tab
+    isn't trying to second-guess a human judgment call that already exists
+    elsewhere. Requires `VITALLY_ACCESS_TOKEN` (see `.env.example` and
+    `product_status/vitally_client.py`) — leave it unset and the column
+    just shows "not configured" for everyone, same graceful-degradation
+    pattern as `ANTHROPIC_API_KEY` above. A partner matched to Intercom/
+    Linear but not to any Vitally account shows "not in Vitally" instead.
   - Click a partner row to expand it in place (an extra row directly below
     that partner, not a separate panel at the bottom of the table) with the
     full breakdown — the Bug/Feature metrics, plus the Support metrics and a
     list of individually-scored conversations with Claude's one-sentence
-    rationale and a link back to Intercom.
+    rationale and a link back to Intercom. (Vitally doesn't get its own
+    drilldown block yet — just the main-table dot.)
   - Cached the same way as the other tabs (24h, own **Update** button to
     force a refresh) — a forced refresh also bypasses the ~20h minimum gap
     between Claude scoring batches, so it's slow (Linear pull + Intercom
-    pull + a Claude call per newly-closed conversation).
+    pull + Vitally pull + a Claude call per newly-closed conversation).
 
 #### Partner Insights access
 
@@ -763,8 +778,9 @@ product_status/
   milestones_report.py  # cross-project milestone timeline + overloaded-person detection for the Project Milestones tab
   intercom_client.py     # raw Intercom REST API client (auth, retries, search pagination)
   support_report.py      # live Intercom SLA "5 metrics" per squad for the Support Report tab
-  partner_identity.py    # shared Intercom<->Linear partner resolution (support_report.py + partner_insights.py)
-  partner_insights.py    # per-partner Product (Linear) + Support (Claude-scored Intercom) scores for the Partner Insights tab
+  partner_identity.py    # shared Intercom<->Linear<->Vitally partner resolution (support_report.py + partner_insights.py)
+  partner_insights.py    # per-partner Product (Linear) + Support (Claude-scored Intercom) + Vitally health scores for the Partner Insights tab
+  vitally_client.py      # raw Vitally REST API client (Basic Auth, cursor pagination) for the Vitally health score column
   cache.py             # JSON cache keyed by age (used by the dashboard, 24h default) - on disk, or...
   blob_cache.py         # ...Vercel Blob-backed, when BLOB_READ_WRITE_TOKEN is set (persists on serverless hosts)
   notion_client.py      # raw Notion REST API client (auth, retries, nested block creation)

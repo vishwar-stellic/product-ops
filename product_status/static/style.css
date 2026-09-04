@@ -694,6 +694,22 @@ body {
   gap: 6px;
   font-size: 12px;
   color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+  padding: 2px 4px;
+  margin: -2px -4px;
+  border-radius: 6px;
+  transition: background 0.15s ease, opacity 0.15s ease;
+}
+
+.trend-legend-item:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.trend-legend-item-hidden {
+  opacity: 0.4;
+  text-decoration: line-through;
 }
 
 .trend-legend-swatch {
