@@ -93,3 +93,28 @@ class VitallyClient:
             if payload.get("atEnd") or not payload.get("next"):
                 break
             cursor = payload["next"]
+
+    def list_account_conversations(self, account_id: str, page_size: int = 100) -> Iterator[Dict[str, Any]]:
+        """Every Conversation for one Account (Vitally's internal `id`, not
+        `externalId`), ordered by `updatedAt` desc per the API docs -
+        https://docs.vitally.io/en/articles/9880665-rest-api-conversations.
+        Each entry here is a *summary* (subject/source/status/etc, no
+        `messages` array) - call `get_conversation` for the full thread."""
+        cursor: Optional[str] = None
+        while True:
+            params: Dict[str, Any] = {"limit": page_size}
+            if cursor:
+                params["from"] = cursor
+            payload = self._get(f"/accounts/{account_id}/conversations", params=params)
+            for conversation in payload.get("results") or []:
+                yield conversation
+            if payload.get("atEnd") or not payload.get("next"):
+                break
+            cursor = payload["next"]
+
+    def get_conversation(self, conversation_id: str) -> Dict[str, Any]:
+        """Full Conversation including its `messages` array - each Message
+        has `type` ("inbound" from a `user`, or "outbound" from an
+        `admin`), `timestamp`, `message` (HTML), and `from`/`to`/`cc`/`bcc`
+        Participant objects."""
+        return self._get(f"/conversations/{conversation_id}")

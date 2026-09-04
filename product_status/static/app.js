@@ -2153,7 +2153,117 @@ function renderVitallyHealthCell(score, vitallyConfigured) {
   return `<span class="partner-score-dot ${vitallyHealthBand(score)}" title="Vitally health score: ${score}/10"></span>`;
 }
 
-const PARTNER_INSIGHTS_COLUMNS = 5; // Partner, Bug Score, Feature Score, Support Score, Vitally
+// Escalation severity badges - a small colored pill (not a dot, unlike the
+// score columns above) since the label itself ("LIVE FIRE") carries
+// meaning that's worth showing at a glance, not just hidden in a tooltip.
+const ESCALATION_SEVERITY_CLASS = {
+  LIVE_FIRE: "escalation-badge-live-fire",
+  SMOLDERING: "escalation-badge-smoldering",
+  WATCH: "escalation-badge-watch",
+};
+const ESCALATION_SEVERITY_LABEL = {
+  LIVE_FIRE: "Live fire",
+  SMOLDERING: "Smoldering",
+  WATCH: "Watch",
+};
+
+function renderEscalationBadge(severity) {
+  if (!severity) return "";
+  return `<span class="escalation-badge ${ESCALATION_SEVERITY_CLASS[severity] || ""}">${escapeHtml(
+    ESCALATION_SEVERITY_LABEL[severity] || severity
+  )}</span>`;
+}
+
+// Main-table cell: just the worst active item's badge (or a quiet "clear"/
+// "not in Vitally"/"not configured"), plus an item count when there's more
+// than one - full detail lives in the expanded row (`renderEscalationsBlock`).
+function renderEscalationCell(escalations, escalationsConfigured) {
+  if (!escalations) {
+    return `<span class="empty-note-inline">${escalationsConfigured ? "not in Vitally" : "not configured"}</span>`;
+  }
+  const items = escalations.items || [];
+  if (!items.length) {
+    return `<span class="empty-note-inline">clear</span>`;
+  }
+  const worst = worstEscalationSeverity(escalations);
+  const countSuffix = items.length > 1 ? ` <span class="label-badge">${items.length}</span>` : "";
+  return renderEscalationBadge(worst) + countSuffix;
+}
+
+// Computed live from `lastMovementAt` on every render rather than a number
+// Claude wrote once (see `escalation_report.py`'s module docstring) - stays
+// accurate between refreshes without needing a new Claude call.
+function daysSince(isoDate) {
+  if (!isoDate) return null;
+  const then = new Date(isoDate).getTime();
+  if (Number.isNaN(then)) return null;
+  return Math.max(0, Math.floor((Date.now() - then) / 86400000));
+}
+
+const BLOCKED_ON_LABEL = { us: "Us", them: "Them", unclear: "Unclear" };
+
+// The expanded row's third block (alongside Product/Support) - one card
+// per tracked item, most urgent first (per the triage prompt's "Rank by
+// urgency, not by date"), each an OUTPUT-shaped 1-6 breakdown.
+function renderEscalationsBlock(partner, escalationsConfigured) {
+  const escalations = partner.escalations;
+  if (!escalations) {
+    return `<p class="empty-note">${
+      escalationsConfigured
+        ? "Not matched to a Vitally account - no partner emails to triage."
+        : "Escalation triage isn't configured yet (needs ANTHROPIC_API_KEY and VITALLY_ACCESS_TOKEN) - see README."
+    }</p>`;
+  }
+  const items = (escalations.items || [])
+    .slice()
+    .sort((a, b) => (ESCALATION_SEVERITY_RANK[b.severity] || 0) - (ESCALATION_SEVERITY_RANK[a.severity] || 0));
+  if (!items.length) {
+    return `<p class="empty-note">No live or brewing escalations found in this partner's recent email${
+      escalations.checkedAt ? ` - last checked ${formatRelativeTime(new Date(escalations.checkedAt).getTime() / 1000)}` : ""
+    }.</p>`;
+  }
+  const linkSuffix = escalations.vitallyAccountUrl
+    ? ` <a href="${escapeHtml(
+        escalations.vitallyAccountUrl
+      )}" target="_blank" rel="noopener" class="count-link">Open account in Vitally</a>`
+    : "";
+  const cards = items
+    .map((item) => {
+      const days = daysSince(item.lastMovementAt);
+      const evidenceRows = (item.evidence || [])
+        .map(
+          (e) =>
+            `<li>"${escapeHtml(e.quote)}" — ${escapeHtml(e.sender || "")}${
+              e.date ? `, ${escapeHtml(formatDateTime(e.date))}` : ""
+            }</li>`
+        )
+        .join("");
+      return `
+      <div class="escalation-card">
+        <div class="escalation-card-header">
+          ${renderEscalationBadge(item.severity)}
+          <strong>${escapeHtml(item.headline)}</strong>
+        </div>
+        <p class="escalation-card-reason">${escapeHtml(item.severityReason || "")}</p>
+        ${evidenceRows ? `<ul class="escalation-evidence">${evidenceRows}</ul>` : ""}
+        <table class="data-table" style="margin-top: 8px;">
+          <tbody>
+            <tr><td>Blocked on</td><td>${escapeHtml(BLOCKED_ON_LABEL[item.blockedOn] || item.blockedOn)}${
+        item.blockedOnReason ? ` — ${escapeHtml(item.blockedOnReason)}` : ""
+      }</td></tr>
+            <tr><td>Days since last movement</td><td class="num">${days === null ? "—" : days}</td></tr>
+            <tr><td>From</td><td>${escapeHtml(item.from || "")}</td></tr>
+            <tr><td>Subject</td><td>${escapeHtml(item.subject || "")}</td></tr>
+            <tr><td>Last email</td><td>${item.lastEmailDate ? escapeHtml(formatDateTime(item.lastEmailDate)) : "—"}</td></tr>
+          </tbody>
+        </table>
+      </div>`;
+    })
+    .join("");
+  return `<div class="escalation-cards">${cards}</div>${linkSuffix}`;
+}
+
+const PARTNER_INSIGHTS_COLUMNS = 6; // Partner, Bug Score, Feature Score, Support Score, Vitally, Escalation
 
 // Column headers are clickable to sort - see `renderPartnerInsights`'s
 // `<th data-sort-key>` and the click handler below. Defaults to Partner
@@ -2166,7 +2276,24 @@ const PARTNER_INSIGHTS_SORT_COLUMNS = [
   { key: "featureScore", label: "Feature Score" },
   { key: "supportScore", label: "Support Score" },
   { key: "vitallyHealthScore", label: "Vitally" },
+  { key: "escalationSeverity", label: "Escalation" },
 ];
+
+// Higher = more urgent - used both to rank a partner's *worst* active item
+// for the main-table badge/sort (see `worstEscalationSeverity`) and to
+// order items within the expanded row (most urgent first), matching the
+// triage prompt's "Rank by urgency, not by date" instruction.
+const ESCALATION_SEVERITY_RANK = { LIVE_FIRE: 3, SMOLDERING: 2, WATCH: 1 };
+
+function worstEscalationSeverity(escalations) {
+  const items = (escalations && escalations.items) || [];
+  if (!items.length) return null;
+  return items.reduce(
+    (worst, item) =>
+      (ESCALATION_SEVERITY_RANK[item.severity] || 0) > (ESCALATION_SEVERITY_RANK[worst] || 0) ? item.severity : worst,
+    items[0].severity
+  );
+}
 
 function partnerInsightsSortValue(partner, key) {
   if (key === "name") return partner.name || "";
@@ -2174,6 +2301,7 @@ function partnerInsightsSortValue(partner, key) {
   if (key === "featureScore") return partner.product ? partner.product.featureScore : null;
   if (key === "supportScore") return partner.support ? partner.support.supportScore : null;
   if (key === "vitallyHealthScore") return partner.vitallyHealthScore ?? null;
+  if (key === "escalationSeverity") return ESCALATION_SEVERITY_RANK[worstEscalationSeverity(partner.escalations)] || 0;
   return null;
 }
 
@@ -2286,6 +2414,10 @@ function renderPartnerInsightsExpandedRow(partner) {
             ${supportBlock}
           </div>
         </div>
+        <div style="margin-top: 16px;">
+          <h4 class="block-subtitle">Escalations</h4>
+          ${renderEscalationsBlock(partner, partnerInsightsData && partnerInsightsData.escalationsConfigured)}
+        </div>
       </td>
     </tr>`;
 }
@@ -2317,6 +2449,7 @@ function renderPartnerInsights(data) {
         <td class="num">${renderScoreCell(featureScore, "not linked")}</td>
         <td class="num">${renderScoreCell(supportScore, "no data yet")}</td>
         <td class="num">${renderVitallyHealthCell(p.vitallyHealthScore, data.vitallyConfigured !== false)}</td>
+        <td class="num">${renderEscalationCell(p.escalations, data.escalationsConfigured !== false)}</td>
       </tr>`;
       return isActive ? mainRow + renderPartnerInsightsExpandedRow(p) : mainRow;
     })
@@ -2338,7 +2471,13 @@ function renderPartnerInsights(data) {
     data.vitallyConfigured === false
       ? " Vitally isn't configured yet (VITALLY_ACCESS_TOKEN missing) - see README."
       : ""
-  }
+  } Escalation flags a partner's recent human-written emails (synced via Vitally) that Claude's triage
+        flagged as a live or brewing risk - only re-analyzed on a forced Update, and only the newest
+        email each time.${
+          data.escalationsConfigured === false
+            ? " Escalation triage isn't configured yet (needs ANTHROPIC_API_KEY and VITALLY_ACCESS_TOKEN) - see README."
+            : ""
+        }
         Click a partner for the full breakdown.
       </p>
       <table class="data-table partner-insights-table">

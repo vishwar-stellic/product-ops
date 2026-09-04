@@ -83,6 +83,17 @@ same pattern as `claudeConfigured` below).
 See `partner_identity.build_partner_registry` - Intercom companies and
 Linear customers that couldn't be cross-referenced are still shown (with
 whichever score is available), not dropped.
+
+## Escalations (Vitally emails + Claude triage, incremental, forced-refresh only)
+A fourth, independent signal - see `escalation_report.py`'s module
+docstring for the full design. In short: partner-authored, human-written
+emails synced into Vitally from Gmail/Outlook (not Intercom, which the
+Support score above already covers) are triaged by Claude against a fixed
+risk framework into LIVE_FIRE/SMOLDERING/WATCH items, cached and updated
+incrementally (only new email since the last run is ever re-analyzed).
+Unlike Bug/Feature/Support score, this never runs on a passive/cache-age
+refresh - only an explicit "Update" button click triggers new Claude
+calls, since it's the most expensive of the four to compute.
 """
 
 import json
@@ -96,6 +107,7 @@ from typing import Any, Dict, List, Optional
 import requests
 
 from . import cache
+from .escalation_report import escalations_configured, refresh_partner_escalations, vitally_app_account_url
 from .intercom_client import IntercomClient
 from .linear_client import LinearClient
 from .partner_identity import build_company_map, build_partner_registry, partner_name
@@ -108,7 +120,7 @@ PARTNER_INSIGHTS_CACHE_KEY = "dashboard-partner-insights"
 # Bump whenever this module's output shape or underlying metric logic
 # changes - see `milestones_report.py:MILESTONES_REPORT_CACHE_VERSION` for
 # why (the cache backend has no schema of its own).
-PARTNER_INSIGHTS_CACHE_VERSION = 5
+PARTNER_INSIGHTS_CACHE_VERSION = 6
 
 # Separate raw key (accumulating log, not aged/versioned like the main
 # report - see `cache.read_raw`) for Claude-scored conversations. Never
@@ -633,11 +645,31 @@ def build_partner_insights_report(force: bool = False) -> Dict[str, Any]:
 
     support_scores = compute_support_scores(_get_support_log())
 
+    # Escalations: the only one of the four signals that never runs on a
+    # passive cache-age refresh, only an explicit `force` - see
+    # `escalation_report.py`'s module docstring and this module's own
+    # docstring's "Escalations" section.
+    escalation_state = (
+        refresh_partner_escalations(registry, vitally_client, force=force) if vitally_client else {}
+    )
+
+    def _escalations_for(partner: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        account_id = partner.get("vitallyAccountId")
+        if not account_id:
+            return None
+        entry = escalation_state.get(partner["partnerId"]) or {"items": [], "checkedAt": None}
+        return {
+            "items": entry.get("items") or [],
+            "checkedAt": entry.get("checkedAt"),
+            "vitallyAccountUrl": vitally_app_account_url(account_id),
+        }
+
     partners = [
         {
             **partner,
             "product": product_scores.get(partner["partnerId"]),
             "support": support_scores.get(partner["partnerId"]),
+            "escalations": _escalations_for(partner),
         }
         for partner in registry
     ]
@@ -646,6 +678,7 @@ def build_partner_insights_report(force: bool = False) -> Dict[str, Any]:
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "claudeConfigured": _anthropic_configured(),
         "vitallyConfigured": vitally_configured(),
+        "escalationsConfigured": escalations_configured(),
         "supportScoreWindowDays": SUPPORT_SCORE_WINDOW_DAYS,
         "partners": partners,
     }

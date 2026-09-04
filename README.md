@@ -312,16 +312,50 @@ the site into separate capabilities, each its own tab:
     just shows "not configured" for everyone, same graceful-degradation
     pattern as `ANTHROPIC_API_KEY` above. A partner matched to Intercom/
     Linear but not to any Vitally account shows "not in Vitally" instead.
+  - **Escalation** (Vitally emails, triaged by Claude) — flags a partner's
+    recent *human-written* emails (synced into Vitally from Gmail/Outlook —
+    a separate channel from the Intercom conversations the Support score
+    above covers) that look like a live or brewing escalation, using a fixed
+    risk-triage prompt (see `product_status/escalation_report.py`'s module
+    docstring for the exact prompt and design). The main-table cell shows
+    just the worst active item's badge (**Live fire** / **Smoldering** /
+    **Watch**, plus a count if there's more than one) — `clear` if none, or
+    `not in Vitally`/`not configured` same as the Vitally column.
+    - Needs *both* `VITALLY_ACCESS_TOKEN` (the email source) and
+      `ANTHROPIC_API_KEY` (the triage) — either missing shows "not
+      configured" for everyone.
+    - Before anything reaches Claude, calendar invites/responses and
+      out-of-office auto-replies are dropped mechanically (these dominate
+      Vitally's Gmail-synced conversation volume) — subtler auto-generated
+      content (newsletters, marketing, recruiting, system alerts) is left to
+      Claude's own judgment per the prompt's SCOPE section.
+    - **Incremental, and only on a forced refresh** — unlike the other three
+      signals, this never runs on a passive 24h cache-age refresh, only the
+      **Update** button. Each run only fetches emails newer than the last
+      run's newest processed email (capped at a 3-day lookback), hands them
+      to Claude *alongside* the currently-tracked items, and asks it to
+      adjust (add/update/drop) rather than re-derive the list from scratch —
+      a partner with no new eligible email since last time costs nothing.
+      "Days since last movement" is computed live on every page load from
+      each item's `lastMovementAt`, not a number that goes stale between
+      runs.
+    - Click a partner to see every tracked item's full breakdown: headline,
+      severity + why, 1-2 quoted evidence lines with sender/date, who's
+      blocked on whom, days since last movement, and the triggering email's
+      from/subject/date — plus a best-effort "Open account in Vitally" link
+      when `VITALLY_APP_SUBDOMAIN` is set (Vitally's API doesn't expose a
+      direct link back to the original thread, only the account page).
   - Click a partner row to expand it in place (an extra row directly below
     that partner, not a separate panel at the bottom of the table) with the
-    full breakdown — the Bug/Feature metrics, plus the Support metrics and a
-    list of individually-scored conversations with Claude's one-sentence
-    rationale and a link back to Intercom. (Vitally doesn't get its own
-    drilldown block yet — just the main-table dot.)
+    full breakdown — the Bug/Feature metrics, the Support metrics with a
+    list of individually-scored conversations, and the Escalations block
+    above. (Vitally's health score doesn't get its own drilldown block —
+    just the main-table dot.)
   - Cached the same way as the other tabs (24h, own **Update** button to
     force a refresh) — a forced refresh also bypasses the ~20h minimum gap
-    between Claude scoring batches, so it's slow (Linear pull + Intercom
-    pull + Vitally pull + a Claude call per newly-closed conversation).
+    between Claude scoring batches and re-runs escalation triage, so it's
+    slow (Linear pull + Intercom pull + Vitally pull + a Claude call per
+    newly-closed conversation + a Claude call per partner with new email).
 
 #### Partner Insights access
 
@@ -779,8 +813,9 @@ product_status/
   intercom_client.py     # raw Intercom REST API client (auth, retries, search pagination)
   support_report.py      # live Intercom SLA "5 metrics" per squad for the Support Report tab
   partner_identity.py    # shared Intercom<->Linear<->Vitally partner resolution (support_report.py + partner_insights.py)
-  partner_insights.py    # per-partner Product (Linear) + Support (Claude-scored Intercom) + Vitally health scores for the Partner Insights tab
-  vitally_client.py      # raw Vitally REST API client (Basic Auth, cursor pagination) for the Vitally health score column
+  partner_insights.py    # per-partner Product (Linear) + Support (Claude-scored Intercom) + Vitally health + Escalations for the Partner Insights tab
+  vitally_client.py      # raw Vitally REST API client (Basic Auth, cursor pagination) for the Vitally health score column + escalation_report.py's email source
+  escalation_report.py   # Vitally-synced partner emails, triaged by Claude, for Partner Insights' Escalations column
   cache.py             # JSON cache keyed by age (used by the dashboard, 24h default) - on disk, or...
   blob_cache.py         # ...Vercel Blob-backed, when BLOB_READ_WRITE_TOKEN is set (persists on serverless hosts)
   notion_client.py      # raw Notion REST API client (auth, retries, nested block creation)

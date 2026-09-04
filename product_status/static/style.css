@@ -1447,3 +1447,69 @@ body {
   color: var(--text-faint);
   margin: 0 0 8px;
 }
+
+/* Escalations (Partner Insights) */
+
+.escalation-badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.escalation-badge-live-fire {
+  background: rgba(241, 101, 101, 0.18);
+  color: var(--red);
+}
+
+.escalation-badge-smoldering {
+  background: rgba(230, 145, 56, 0.18);
+  color: #e69138;
+}
+
+.escalation-badge-watch {
+  background: rgba(122, 130, 144, 0.2);
+  color: var(--gray);
+}
+
+.escalation-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.escalation-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  background: var(--surface);
+}
+
+.escalation-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.escalation-card-reason {
+  margin: 0 0 6px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.escalation-evidence {
+  margin: 0 0 6px;
+  padding-left: 18px;
+  color: var(--text-dim);
+  font-size: 13px;
+  font-style: italic;
+}
+
+.escalation-evidence li {
+  margin-bottom: 4px;
+}
