@@ -1424,6 +1424,13 @@ body {
   background: var(--surface-2);
   padding: 16px 18px;
   box-shadow: inset 3px 0 0 var(--accent);
+  /* Resets the outer table's `.partner-insights-table td { text-align:
+     center }` (a couple rules up) back to left - `text-align` inherits,
+     so without this every nested table/paragraph inside the expanded row
+     (Product block, Escalations findings table, etc.) would otherwise
+     inherit "center" from here rather than each nested `.data-table`'s
+     own normal left/right alignment. */
+  text-align: left;
 }
 
 .block-subtitle {
@@ -1463,24 +1470,21 @@ body {
   color: var(--gray);
 }
 
-.escalation-cards {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+/* Escalation findings table - a row expands in-place into the row right
+   below it on click (see `renderEscalationsBlock`/the delegated click
+   handler), same pattern as the outer partner table's own row expansion. */
+.escalation-findings-table tr.escalation-finding-row {
+  cursor: pointer;
 }
 
-.escalation-card {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 10px 12px;
-  background: var(--surface);
+.escalation-findings-table tr.escalation-finding-row.active-row td {
+  background: var(--surface-2);
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
-.escalation-card-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 4px;
+.escalation-findings-table tr.escalation-finding-detail-row td {
+  background: var(--surface-2);
+  padding-top: 12px;
 }
 
 .escalation-card-reason {

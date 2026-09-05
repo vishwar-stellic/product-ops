@@ -2117,6 +2117,13 @@ if (els.supportReportUpdateBtn) {
 
 let partnerInsightsData = null;
 let partnerInsightsActivePartnerId = null;
+// Which escalation finding rows are expanded in-place (see
+// `renderEscalationsBlock`) - keyed `${partnerId}:${index}` rather than
+// just index, so switching to a different partner's expanded row doesn't
+// carry over some other partner's expanded finding by coincidence of
+// index. A Set (not a single value) so more than one finding can be open
+// at once, unlike the single-active-partner row above.
+const partnerInsightsExpandedEscalations = new Set();
 
 function scoreBand(score) {
   if (score === null || score === undefined) return "";
@@ -2194,13 +2201,14 @@ function daysSince(isoDate) {
 
 const BLOCKED_ON_LABEL = { us: "Us", them: "Them", unclear: "Unclear" };
 
-// The expanded row's Escalations block: a compact findings table (mirrors
-// the "LLM triage findings" table from the ad-hoc canvas analysis this was
-// modeled on), one detail card per tracked item below it, and - unlike the
-// canvas's one-off snapshot - a "Recent emails" section sourced from
-// `escalations.recentEmails` (see `escalation_report.py`'s module
-// docstring) so the raw source material stays visible between updates,
-// not just whatever was on hand during a single ad-hoc check.
+// The expanded row's Escalations block: a findings table where each row
+// expands in-place to its full detail (evidence, blocked-on reason, etc.)
+// on click - same "row expands into the row right below it" pattern as
+// the outer partner table itself, rather than a separate summary table
+// plus a fully-separate list of detail cards repeating the same items -
+// and, unlike a one-off ad-hoc check, a "Recent emails" section sourced
+// from `escalations.recentEmails` (see `escalation_report.py`'s module
+// docstring) so the raw source material stays visible between updates.
 function renderEscalationsBlock(partner, escalationsConfigured) {
   const escalations = partner.escalations;
   if (!escalations) {
@@ -2225,21 +2233,25 @@ function renderEscalationsBlock(partner, escalationsConfigured) {
       escalations.checkedAt ? ` - last checked ${formatRelativeTime(new Date(escalations.checkedAt).getTime() / 1000)}` : ""
     }.</p>`;
   } else {
-    const findingsRows = items
-      .map((item) => {
+    const rows = items
+      .map((item, index) => {
         const days = daysSince(item.lastMovementAt);
-        return `
-      <tr>
+        // Keyed by partner + index (not just index) so a different
+        // partner's expanded row never coincidentally inherits this one's
+        // expand state - see `partnerInsightsExpandedEscalations`.
+        const key = `${partner.partnerId}:${index}`;
+        const isOpen = partnerInsightsExpandedEscalations.has(key);
+        const summaryRow = `
+      <tr class="clickable-row escalation-finding-row${isOpen ? " active-row" : ""}" data-escalation-key="${escapeHtml(
+          key
+        )}">
         <td>${renderEscalationBadge(item.severity)}</td>
         <td>${escapeHtml(item.headline)}</td>
         <td>${escapeHtml(BLOCKED_ON_LABEL[item.blockedOn] || item.blockedOn)}</td>
         <td class="num">${days === null ? "—" : `${days}d ago`}</td>
       </tr>`;
-      })
-      .join("");
-    const cards = items
-      .map((item) => {
-        const days = daysSince(item.lastMovementAt);
+        if (!isOpen) return summaryRow;
+
         const evidenceRows = (item.evidence || [])
           .map(
             (e) =>
@@ -2248,36 +2260,34 @@ function renderEscalationsBlock(partner, escalationsConfigured) {
               }</li>`
           )
           .join("");
-        return `
-      <div class="escalation-card">
-        <div class="escalation-card-header">
-          ${renderEscalationBadge(item.severity)}
-          <strong>${escapeHtml(item.headline)}</strong>
-        </div>
-        <p class="escalation-card-reason">${escapeHtml(item.severityReason || "")}</p>
-        ${evidenceRows ? `<ul class="escalation-evidence">${evidenceRows}</ul>` : ""}
-        <table class="data-table" style="margin-top: 8px;">
-          <tbody>
-            <tr><td>Blocked on</td><td>${escapeHtml(BLOCKED_ON_LABEL[item.blockedOn] || item.blockedOn)}${
+        const detailRow = `
+      <tr class="escalation-finding-detail-row">
+        <td colspan="4">
+          <p class="escalation-card-reason">${escapeHtml(item.severityReason || "")}</p>
+          ${evidenceRows ? `<ul class="escalation-evidence">${evidenceRows}</ul>` : ""}
+          <table class="data-table" style="margin-top: 8px;">
+            <tbody>
+              <tr><td>Blocked on</td><td>${escapeHtml(BLOCKED_ON_LABEL[item.blockedOn] || item.blockedOn)}${
           item.blockedOnReason ? ` — ${escapeHtml(item.blockedOnReason)}` : ""
         }</td></tr>
-            <tr><td>Days since last movement</td><td class="num">${days === null ? "—" : days}</td></tr>
-            <tr><td>From</td><td>${escapeHtml(item.from || "")}</td></tr>
-            <tr><td>Subject</td><td>${escapeHtml(item.subject || "")}</td></tr>
-            <tr><td>Last email</td><td>${item.lastEmailDate ? escapeHtml(formatDateTime(item.lastEmailDate)) : "—"}</td></tr>
-          </tbody>
-        </table>
-      </div>`;
+              <tr><td>Days since last movement</td><td class="num">${days === null ? "—" : days}</td></tr>
+              <tr><td>From</td><td>${escapeHtml(item.from || "")}</td></tr>
+              <tr><td>Subject</td><td>${escapeHtml(item.subject || "")}</td></tr>
+              <tr><td>Last email</td><td>${item.lastEmailDate ? escapeHtml(formatDateTime(item.lastEmailDate)) : "—"}</td></tr>
+            </tbody>
+          </table>
+        </td>
+      </tr>`;
+        return summaryRow + detailRow;
       })
       .join("");
     findingsHtml = `
-      <table class="data-table" style="margin-bottom: 12px;">
+      <table class="data-table escalation-findings-table" style="margin-bottom: 12px;">
         <thead>
           <tr><th>Severity</th><th>Headline</th><th>Blocked on</th><th class="num">Last movement</th></tr>
         </thead>
-        <tbody>${findingsRows}</tbody>
-      </table>
-      <div class="escalation-cards">${cards}</div>${linkSuffix}`;
+        <tbody>${rows}</tbody>
+      </table>${linkSuffix}`;
   }
 
   const emails = (escalations.recentEmails || [])
@@ -2481,6 +2491,18 @@ if (els.partnerInsightsContainer) {
       // start fresh at ascending.
       partnerInsightsSort.dir = partnerInsightsSort.key === key && partnerInsightsSort.dir === "asc" ? "desc" : "asc";
       partnerInsightsSort.key = key;
+      renderPartnerInsights(partnerInsightsData);
+      return;
+    }
+
+    const findingRow = event.target.closest("tr.escalation-finding-row");
+    if (findingRow) {
+      const key = findingRow.dataset.escalationKey;
+      if (partnerInsightsExpandedEscalations.has(key)) {
+        partnerInsightsExpandedEscalations.delete(key);
+      } else {
+        partnerInsightsExpandedEscalations.add(key);
+      }
       renderPartnerInsights(partnerInsightsData);
       return;
     }
