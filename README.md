@@ -239,25 +239,24 @@ the site into separate capabilities, each its own tab:
   docstring section), so the chart fills in gradually over time rather than
   needing a backfill; it shows a placeholder until at least two points
   exist.
-- **Partner Insights** — one row per partner institution with a **Bug
-  score**, a **Feature score** (out of 100 each), and **Live Fire** /
-  **Smoldering** escalation counts. Unlike every other tab, this one is
-  hidden from the tab bar entirely unless the signed-in user's email is on
+- **Partner Insights** — one row per partner institution *matched to a
+  Vitally account* (see the "Partners" bullet below) with a **Bug score**,
+  a **Feature score** (out of 100 each), and **Live Fire** / **Smoldering**
+  escalation counts. Unlike every other tab, this one is hidden from the
+  tab bar entirely unless the signed-in user's email is on
   `PARTNER_INSIGHTS_ALLOWED_EMAILS` (see "Partner Insights access" below) —
   most of the team doesn't need per-partner scoring visible.
   - **Partners** come from `product_status/partner_identity.py`'s
-    `build_partner_registry`: every Intercom company cross-referenced
-    against Linear's `Customer`/`CustomerNeed` objects ("Customer
-    Requests") and (optionally) Vitally's `Account` objects, each matched
-    primarily by that other side's short code (Linear's `externalIds`,
-    Vitally's `externalId`) matching the same short `company_id` code
-    Intercom uses (e.g. `fsu`), falling back to a normalized name match.
-    Either side missing a match is still shown (Product-only, or no
-    matched Vitally account) rather than dropped, flagged with a small ⚠
-    next to the name for the Linear/Intercom case. The Vitally match isn't
-    shown as its own column, but it's what the Live Fire/Smoldering
-    columns key off of — a partner with no matched Vitally account shows
-    "not in Vitally" there instead of a count.
+    `build_partner_registry` (every Intercom company cross-referenced
+    against Linear's `Customer`/`CustomerNeed` objects and, optionally,
+    Vitally's `Account` objects — see that module's docstring for the
+    matching logic), but `build_partner_insights_report` then filters that
+    list down to **only partners with a matched Vitally account** before
+    it ever reaches the table — every remaining column (Bug/Feature score,
+    Live Fire/Smoldering) is Linear- or Vitally-sourced, so a partner
+    Vitally doesn't know about would only ever show empty cells. A ⚠ next
+    to the name still flags a partner with no matched Linear customer
+    (Escalations-only, "not linked" for Bug/Feature score).
   - **Bug score** and **Feature score** (Linear only, recomputed on every
     refresh, no LLM) — every Linear issue linked to a partner via a
     `CustomerNeed` is split into Bug-labeled vs. feature request/other, each
@@ -337,12 +336,12 @@ the site into separate capabilities, each its own tab:
   - Cached the same way as the other tabs (24h, own **Update** button to
     force a refresh) — a forced refresh also re-runs escalation triage
     for every partner with new eligible email, so it's slow (Linear pull +
-    Vitally pull + an LLM call per partner with new email). The backend
-    also still runs its daily Intercom conversation-scoring batch
-    (`compute_support_scores` in `partner_insights.py`) even though this
-    tab no longer surfaces a Support score column — left running rather
-    than torn out, in case that column comes back; it's just not part of
-    the current report.
+    Vitally pull + an LLM call per partner with new email).
+  - An earlier version of this tab also had a Support score column,
+    scoring Intercom conversations with an LLM via a daily batch job. That
+    was removed entirely (not just hidden) when it was dropped in favor of
+    Escalations — see git history (`compute_support_scores` et al. in
+    `partner_insights.py`) if it's ever needed again.
 
 #### Partner Insights access
 
@@ -800,7 +799,7 @@ product_status/
   intercom_client.py     # raw Intercom REST API client (auth, retries, search pagination)
   support_report.py      # live Intercom SLA "5 metrics" per squad for the Support Report tab
   partner_identity.py    # shared Intercom<->Linear<->Vitally partner resolution (support_report.py + partner_insights.py)
-  partner_insights.py    # per-partner Product (Linear) + Support (LLM-scored Intercom, not currently shown) + Escalations for the Partner Insights tab
+  partner_insights.py    # per-partner Product (Linear) + Escalations for the Partner Insights tab (filtered to Vitally-matched partners)
   vitally_client.py      # raw Vitally REST API client (Basic Auth, cursor pagination) - escalation_report.py's email source + partner_identity.py's account matching
   escalation_report.py   # Vitally-synced partner emails, triaged by an LLM, for Partner Insights' Live Fire/Smoldering columns
   openai_client.py       # thin OpenAI Chat Completions wrapper shared by partner_insights.py + escalation_report.py

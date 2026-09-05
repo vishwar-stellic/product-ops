@@ -716,7 +716,7 @@ def _get_partner_insights(force: bool) -> Dict[str, Any]:
 
 @app.get("/api/partner-insights")
 def partner_insights(request: Request):
-    """Per-partner Product + Support scores (see partner_insights.py).
+    """Per-partner Product score + Escalations (see partner_insights.py).
     Allowlist-gated - see `_require_partner_insights_access`. Cached the
     same way as /api/dashboard - refetched at most once per 24h unless
     forced via the POST endpoint below."""
@@ -731,8 +731,8 @@ def partner_insights(request: Request):
 
 @app.post("/api/partner-insights/refresh")
 def partner_insights_refresh(request: Request):
-    """Force a fresh pull (Linear + Intercom, plus an LLM scoring batch
-    for the last day's closed conversations), regardless of cache age -
+    """Force a fresh pull (Linear + Vitally, plus an LLM escalation-triage
+    call per partner with new eligible email), regardless of cache age -
     slow, see partner_insights.py. Same allowlist gate as the GET above."""
     _require_partner_insights_access(request)
     try:

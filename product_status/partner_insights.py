@@ -45,26 +45,15 @@ opened and already closed within the same month still counts as new
 incoming work). Weights/definitions live as named constants below so
 they're easy to retune later.
 
-## Support score (Intercom + an LLM, incremental - one small batch/day)
-Scoring full conversation transcripts via an LLM on every refresh would be
-slow and needlessly re-scores the same history repeatedly. Instead, once
-roughly every `_BATCH_MIN_INTERVAL_SECONDS` (~20h, so it lines up with the
-normal once-a-day cache refresh), `_run_daily_scoring_batch` pulls
-conversations closed in roughly the last 24h, resolves each to a partner
-via `partner_identity.partner_name`, and scores the support team's side of
-each with OpenAI (`openai_client.py` - professionalism / helpfulness / how
-"canned" the replies read) - see `_score_conversation`. Every scored
-conversation is appended *once* to a small accumulating log
-(`cache.read_raw`/`write_raw`, same pattern as
-`support_report.py`'s trend history) and never rescored - the log only
-ever grows. `compute_support_scores` reads that log and averages every
-partner's entries within a trailing window (`SUPPORT_SCORE_WINDOW_DAYS`)
-into one composite score.
-
-Net effect: a partner's Support score starts as "no data yet" and fills in
-day by day as the daily batch runs - there's no backfill of history from
-before this tab existed, by explicit design (this was scoped as
-incremental-only, not a one-time bulk score of everything).
+## (Removed) Support score
+An earlier version of this tab also scored Intercom conversations with an
+LLM (professionalism/helpfulness/"canned"-ness) into a Support score
+column, via a small daily batch (`_run_daily_scoring_batch`) appending to
+an accumulating log. That column was dropped in favor of the
+Escalations signal below (a stronger, more actionable read on partner
+health), and the daily batch was removed entirely rather than left running
+unused - see git history (`_run_daily_scoring_batch`/`compute_support_scores`/
+`_score_conversation`) if it's ever needed again.
 
 ## Vitally health score (Vitally only, no computation - recomputed on
 ## every refresh)
@@ -72,44 +61,42 @@ Vitally (a customer-success platform, separate from both Linear and
 Intercom) already computes its own per-account `healthScore` - in this
 workspace it's a direct 0/5/10 encoding of a manually-set Red/Yellow/Green
 "pulse" trait imported from a CSV upload (confirmed against live data:
-Red -> 0, Yellow -> 5, Green -> 10 with no exceptions), so it's shown as-is
-rather than recomputed - this tab doesn't try to second-guess a human
-judgment call that already exists elsewhere. `None` when the partner has
-no matching Vitally account (`vitally_client.py`) or `VITALLY_ACCESS_TOKEN`
-isn't configured (`vitallyConfigured` in the report - graceful degradation,
-same pattern as `llmConfigured` below).
+Red -> 0, Yellow -> 5, Green -> 10 with no exceptions). `partner_identity.py`
+still attaches it to every registry entry (`vitallyHealthScore`), but this
+tab doesn't currently render it as its own column - it's not being
+recomputed here, just left in the data in case it comes back.
 
 ## Partners this tab shows
-See `partner_identity.build_partner_registry` - Intercom companies and
-Linear customers that couldn't be cross-referenced are still shown (with
-whichever score is available), not dropped.
+Registry comes from `partner_identity.build_partner_registry`, but this
+tab then filters that down to *only* partners with a matched Vitally
+account (`vitallyAccountId`) - see `build_partner_insights_report`. Every
+column left in the table (Bug/Feature score, Live Fire/Smoldering) is
+either Linear- or Vitally-sourced, so a partner Vitally doesn't know about
+would only ever show empty cells; filtering them out keeps the table to
+partners this tab can actually say something about, rather than a long
+tail of "not linked"/"not in Vitally" rows.
 
 ## Escalations (Vitally emails + LLM triage, incremental, forced-refresh only)
-A fourth, independent signal - see `escalation_report.py`'s module
-docstring for the full design. In short: partner-authored, human-written
-emails synced into Vitally from Gmail/Outlook (not Intercom, which the
-Support score above already covers) are triaged by OpenAI against a fixed
-risk framework into LIVE_FIRE/SMOLDERING/WATCH items, cached and updated
+A second, independent signal alongside Bug/Feature score - see
+`escalation_report.py`'s module docstring for the full design. In short:
+partner-authored, human-written emails synced into Vitally from
+Gmail/Outlook (not Intercom) are triaged by OpenAI against a fixed risk
+framework into LIVE_FIRE/SMOLDERING/WATCH items, cached and updated
 incrementally (only new email since the last run is ever re-analyzed).
-Unlike Bug/Feature/Support score, this never runs on a passive/cache-age
-refresh - only an explicit "Update" button click triggers new LLM calls,
-since it's the most expensive of the four to compute.
+Unlike Bug/Feature score, this never runs on a passive/cache-age refresh -
+only an explicit "Update" button click triggers new LLM calls, since it's
+the more expensive of the two to compute.
 """
 
-import json
 import re
-import time
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from . import cache, openai_client
 from .escalation_report import escalations_configured, refresh_partner_escalations, vitally_app_account_url
 from .intercom_client import IntercomClient
 from .linear_client import LinearClient
-from .partner_identity import build_company_map, build_partner_registry, partner_name
+from .partner_identity import build_partner_registry
 from .quality import BUG_LABEL, _month_bounds
-from .support_report import INTERCOM_INBOX_PREFIX
 from .vitally_client import VitallyClient
 from .vitally_client import is_configured as vitally_configured
 
@@ -117,23 +104,8 @@ PARTNER_INSIGHTS_CACHE_KEY = "dashboard-partner-insights"
 # Bump whenever this module's output shape or underlying metric logic
 # changes - see `milestones_report.py:MILESTONES_REPORT_CACHE_VERSION` for
 # why (the cache backend has no schema of its own).
-PARTNER_INSIGHTS_CACHE_VERSION = 8
+PARTNER_INSIGHTS_CACHE_VERSION = 9
 
-# Separate raw key (accumulating log, not aged/versioned like the main
-# report - see `cache.read_raw`) for LLM-scored conversations. Never
-# rewritten for old entries, only appended to - see module docstring.
-PARTNER_INSIGHTS_SUPPORT_LOG_KEY = "partner-insights-support-scores"
-# Generous cap on total logged conversations across every partner combined
-# (mirrors `support_report.SUPPORT_REPORT_HISTORY_MAX_POINTS`'s reasoning) -
-# oldest entries drop off once exceeded.
-PARTNER_INSIGHTS_SUPPORT_LOG_MAX_ENTRIES = 20000
-# Gates the daily scoring batch to roughly once/day regardless of how often
-# the outer 24h cache happens to get invalidated (a cache-version bump, or
-# repeated manual "Update" clicks) - see module docstring.
-_BATCH_MIN_INTERVAL_SECONDS = 20 * 60 * 60
-# How far back the *support* score looks once conversations start
-# accumulating in the log - see module docstring.
-SUPPORT_SCORE_WINDOW_DAYS = 30
 # A still-open feature request older than this with no resolution counts
 # against `featureScore` - see module docstring.
 FEATURE_STALE_DAYS = 90
@@ -376,215 +348,6 @@ def compute_product_scores(
 
 
 # ---------------------------------------------------------------------------
-# Support score (Intercom conversations, scored by an LLM - see openai_client.py)
-# ---------------------------------------------------------------------------
-
-
-def _strip_html(value: Optional[str]) -> str:
-    """Same as `support_report.py:_strip_html` - duplicated locally rather
-    than imported since it's a generic 2-line helper, not partner-identity
-    logic."""
-    if not value:
-        return ""
-    return re.sub(r"<[^>]+>", " ", value).strip()
-
-
-def _conversation_transcript(full_conversation: Dict[str, Any]) -> str:
-    """A plain-text `[Support]`/`[Customer]` transcript for the LLM to
-    grade - built from the conversation's opening message plus every
-    customer-facing part (internal notes excluded, since those were never
-    seen by the customer and shouldn't count toward "how we responded")."""
-    lines: List[str] = []
-
-    source = full_conversation.get("source") or {}
-    opening_body = _strip_html(source.get("body"))
-    if opening_body:
-        author_type = (source.get("author") or {}).get("type", "user")
-        speaker = "Support" if author_type in ("admin", "bot") else "Customer"
-        lines.append(f"[{speaker}] {opening_body}")
-
-    parts = ((full_conversation.get("conversation_parts") or {}).get("conversation_parts")) or []
-    for part in parts:
-        if part.get("part_type") == "note":
-            continue
-        body = _strip_html(part.get("body"))
-        if not body:
-            continue
-        author_type = (part.get("author") or {}).get("type", "user")
-        speaker = "Support" if author_type in ("admin", "bot") else "Customer"
-        lines.append(f"[{speaker}] {body}")
-
-    return "\n".join(lines)
-
-
-_SCORE_PROMPT_TEMPLATE = """You are grading how well OUR SUPPORT TEAM handled a customer support \
-conversation. The transcript below is tagged [Support] for our team's messages and [Customer] for \
-the customer's messages - grade ONLY the [Support] side.
-
-Score on these three dimensions, each 0-100:
-- "professionalism": tone, courtesy, clarity, and care in how our team wrote (not whether the \
-underlying issue was fixable).
-- "helpfulness": did our team's replies actually engage with and address the customer's specific \
-problem, with a concrete answer or next step (as opposed to deflecting or ignoring the ask)?
-- "cannedResponsePenalty": how much our team's replies read like generic, copy-pasted boilerplate \
-that doesn't engage with this specific customer's specific issue. 0 = fully personalized and \
-specific to this conversation, 100 = entirely generic/unhelpful stock phrasing.
-
-Respond with ONLY a single JSON object and nothing else, no markdown fences, in this exact shape:
-{{"professionalism": <integer 0-100>, "helpfulness": <integer 0-100>, "cannedResponsePenalty": <integer 0-100>, "rationale": "<one short sentence>"}}
-
-Transcript:
-{transcript}
-"""
-
-
-def _extract_json_object(text: str) -> str:
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    return match.group(0) if match else text
-
-
-def _clamp_score(value: Any) -> int:
-    try:
-        return max(0, min(100, int(round(float(value)))))
-    except (TypeError, ValueError):
-        return 0
-
-
-def _score_conversation(transcript: str) -> Optional[Dict[str, Any]]:
-    """One LLM call scoring `transcript` (`openai_client.chat_completion`)
-    - `None` on any failure (a bad response, a timeout, malformed JSON) so
-    one flaky conversation never takes down the whole daily batch (see
-    `_run_daily_scoring_batch`)."""
-    try:
-        text = openai_client.chat_completion(
-            _SCORE_PROMPT_TEMPLATE.format(transcript=transcript[:12000]),
-            max_completion_tokens=1000,
-        )
-        parsed = json.loads(_extract_json_object(text))
-        return {
-            "professionalism": _clamp_score(parsed.get("professionalism")),
-            "helpfulness": _clamp_score(parsed.get("helpfulness")),
-            "cannedResponsePenalty": _clamp_score(parsed.get("cannedResponsePenalty")),
-            "rationale": str(parsed.get("rationale") or "")[:500],
-        }
-    except Exception as exc:  # noqa: BLE001 - one bad conversation shouldn't break the batch
-        print(f"[partner_insights] LLM scoring failed for a conversation: {exc}")
-        return None
-
-
-def _epoch_to_iso(value: Optional[float]) -> Optional[str]:
-    return datetime.fromtimestamp(value, timezone.utc).isoformat() if value else None
-
-
-def _run_daily_scoring_batch(
-    intercom_client: IntercomClient,
-    registry: List[Dict[str, Any]],
-    since: float,
-) -> List[Dict[str, Any]]:
-    """Scores every closed conversation attributable to a registered
-    partner since `since`, once each - see module docstring. Returns the
-    new log entries to append (does not itself touch the log - see
-    `_append_support_log`)."""
-    closed = list(
-        intercom_client.search_conversations(
-            {"field": "statistics.first_close_at", "operator": ">", "value": int(since)}
-        )
-    )
-    if not closed:
-        return []
-
-    company_map = build_company_map(intercom_client)
-    partner_id_by_name = {p["name"]: p["partnerId"] for p in registry}
-
-    def _score_one(conversation: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        name = partner_name(conversation, company_map)
-        partner_id = partner_id_by_name.get(name)
-        if not partner_id:
-            return None  # unresolvable/unregistered partner - mirrors support_report's "(unknown)"
-
-        full = intercom_client.get_conversation(conversation["id"])
-        transcript = _conversation_transcript(full)
-        if "[Support]" not in transcript:
-            return None  # nothing our team actually said yet - nothing to grade
-
-        scores = _score_conversation(transcript)
-        if scores is None:
-            return None
-
-        return {
-            "conversationId": conversation["id"],
-            "url": f"https://app.intercom.com/a/inbox/{INTERCOM_INBOX_PREFIX}/inbox/shared/all/conversation/{conversation['id']}",
-            "partnerId": partner_id,
-            "scoredAt": datetime.now(timezone.utc).isoformat(),
-            "closedAt": _epoch_to_iso((conversation.get("statistics") or {}).get("first_close_at")),
-            **scores,
-        }
-
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        results = list(pool.map(_score_one, closed))
-    return [r for r in results if r is not None]
-
-
-def _get_support_log() -> Dict[str, Any]:
-    return cache.read_raw(PARTNER_INSIGHTS_SUPPORT_LOG_KEY) or {"lastRunAt": None, "entries": []}
-
-
-def _append_support_log(new_entries: List[Dict[str, Any]], run_at: float) -> None:
-    """Best-effort append - a storage hiccup here should never fail the
-    report itself (mirrors `support_report.py:_record_history`)."""
-    try:
-        existing = _get_support_log()
-        entries = (existing.get("entries") or []) + new_entries
-        entries = entries[-PARTNER_INSIGHTS_SUPPORT_LOG_MAX_ENTRIES:]
-        cache.write_raw(PARTNER_INSIGHTS_SUPPORT_LOG_KEY, {"lastRunAt": run_at, "entries": entries})
-    except Exception as exc:  # noqa: BLE001
-        print(f"[partner_insights] failed to record support scoring batch: {exc}")
-
-
-def _should_run_batch(force: bool) -> bool:
-    if not openai_client.is_configured():
-        return False  # graceful degradation - see module docstring
-    if force:
-        return True
-    last_run_at = _get_support_log().get("lastRunAt")
-    return not last_run_at or (time.time() - last_run_at) > _BATCH_MIN_INTERVAL_SECONDS
-
-
-def compute_support_scores(
-    log: Dict[str, Any],
-    window_days: int = SUPPORT_SCORE_WINDOW_DAYS,
-) -> Dict[str, Dict[str, Any]]:
-    """`partnerId -> support metrics dict` (aggregated over the trailing
-    `window_days`), for every partner with at least one scored conversation
-    in that window - partners with none are simply absent from the result
-    (the caller/frontend shows "no data yet" for those)."""
-    cutoff_iso = (datetime.now(timezone.utc) - timedelta(days=window_days)).isoformat()
-    by_partner: Dict[str, List[Dict[str, Any]]] = {}
-    for entry in log.get("entries") or []:
-        if entry.get("scoredAt", "") < cutoff_iso:
-            continue
-        by_partner.setdefault(entry["partnerId"], []).append(entry)
-
-    scores: Dict[str, Dict[str, Any]] = {}
-    for partner_id, entries in by_partner.items():
-        entries.sort(key=lambda e: e.get("scoredAt", ""), reverse=True)
-        professionalism = sum(e["professionalism"] for e in entries) / len(entries)
-        helpfulness = sum(e["helpfulness"] for e in entries) / len(entries)
-        canned_penalty = sum(e["cannedResponsePenalty"] for e in entries) / len(entries)
-        composite = (professionalism + helpfulness + (100 - canned_penalty)) / 3
-        scores[partner_id] = {
-            "conversationsScored": len(entries),
-            "professionalism": round(professionalism),
-            "helpfulness": round(helpfulness),
-            "cannedResponsePenalty": round(canned_penalty),
-            "supportScore": round(composite),
-            "windowDays": window_days,
-            "conversations": entries,
-        }
-    return scores
-
-
-# ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
 
@@ -593,22 +356,20 @@ def build_partner_insights_report(force: bool = False) -> Dict[str, Any]:
     intercom_client = IntercomClient()
     linear_client = LinearClient()
     # `None` (not an empty client) when unconfigured - `build_partner_registry`
-    # treats that as "skip Vitally matching entirely" rather than erroring,
-    # same graceful-degradation shape as LLM scoring below.
+    # treats that as "skip Vitally matching entirely" rather than erroring.
     vitally_client = VitallyClient() if vitally_configured() else None
 
     registry = build_partner_registry(intercom_client, linear_client, vitally_client)
+    # This tab only shows partners Vitally knows about - see module
+    # docstring's "Partners this tab shows". Filtered here (not inside
+    # `build_partner_registry` itself, which stays a general-purpose
+    # registry) so every downstream computation below only runs for
+    # partners that'll actually appear in the report.
+    registry = [p for p in registry if p.get("vitallyAccountId")]
     product_scores = compute_product_scores(registry, linear_client=linear_client)
 
-    if _should_run_batch(force):
-        since = time.time() - 24 * 60 * 60
-        new_entries = _run_daily_scoring_batch(intercom_client, registry, since)
-        _append_support_log(new_entries, run_at=time.time())
-
-    support_scores = compute_support_scores(_get_support_log())
-
-    # Escalations: the only one of the four signals that never runs on a
-    # passive cache-age refresh, only an explicit `force` - see
+    # Escalations: the one signal here that never runs on a passive
+    # cache-age refresh, only an explicit `force` - see
     # `escalation_report.py`'s module docstring and this module's own
     # docstring's "Escalations" section.
     escalation_state = (
@@ -635,7 +396,6 @@ def build_partner_insights_report(force: bool = False) -> Dict[str, Any]:
         {
             **partner,
             "product": product_scores.get(partner["partnerId"]),
-            "support": support_scores.get(partner["partnerId"]),
             "escalations": _escalations_for(partner),
         }
         for partner in registry
@@ -643,9 +403,7 @@ def build_partner_insights_report(force: bool = False) -> Dict[str, Any]:
 
     return {
         "generatedAt": datetime.now(timezone.utc).isoformat(),
-        "llmConfigured": openai_client.is_configured(),
         "vitallyConfigured": vitally_configured(),
         "escalationsConfigured": escalations_configured(),
-        "supportScoreWindowDays": SUPPORT_SCORE_WINDOW_DAYS,
         "partners": partners,
     }

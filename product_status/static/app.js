@@ -2436,11 +2436,12 @@ function renderPartnerInsights(data) {
   els.partnerInsightsContainer.innerHTML = `
     <div class="squad-block">
       <p class="quality-definitions" style="list-style: none; padding-left: 0;">
-        Bug score reflects bug-SLA responsiveness; Feature score reflects how many of a partner's feature
-        requests/other asks have gone stale (open 90+ days, unresolved) - both from that partner's Linear
-        customer requests, 100 = clean. Live Fire and Smoldering are counts of that partner's currently-tracked
-        escalation items at each severity, from an LLM triage of that partner's recent human-written emails
-        (synced via Vitally) - only re-analyzed on a forced Update, and only the newest email each time.${
+        Only partners matched to a Vitally account are listed here. Bug score reflects bug-SLA
+        responsiveness; Feature score reflects how many of a partner's feature requests/other asks have
+        gone stale (open 90+ days, unresolved) - both from that partner's Linear customer requests, 100 =
+        clean. Live Fire and Smoldering are counts of that partner's currently-tracked escalation items at
+        each severity, from an LLM triage of that partner's recent human-written emails (synced via
+        Vitally) - only re-analyzed on a forced Update, and only the newest email each time.${
           data.escalationsConfigured === false
             ? " Escalation triage isn't configured yet (needs OPENAI_API_KEY and VITALLY_ACCESS_TOKEN) - see README."
             : ""
@@ -2452,7 +2453,12 @@ function renderPartnerInsights(data) {
           <tr>${renderPartnerInsightsHeaderCells()}</tr>
         </thead>
         <tbody>${
-          rows || `<tr><td colspan="${PARTNER_INSIGHTS_COLUMNS}"><p class="empty-note">No partners found.</p></td></tr>`
+          rows ||
+          `<tr><td colspan="${PARTNER_INSIGHTS_COLUMNS}"><p class="empty-note">${
+            data.vitallyConfigured === false
+              ? "No partners found - VITALLY_ACCESS_TOKEN isn't configured, and this tab only shows partners matched to a Vitally account. See README."
+              : "No partners matched to a Vitally account found."
+          }</p></td></tr>`
         }</tbody>
       </table>
     </div>`;
