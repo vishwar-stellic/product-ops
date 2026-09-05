@@ -2322,7 +2322,12 @@ function renderEscalationsBlock(partner, escalationsConfigured) {
   return findingsHtml + emailsHtml;
 }
 
-const PARTNER_INSIGHTS_COLUMNS = 6; // Partner, Bug Score, Feature Score, Live Fire, Smoldering, Update
+const PARTNER_INSIGHTS_COLUMNS = 5; // Partner, Bug Score, Live Fire, Smoldering, Update
+// Feature Score is hidden from this main table (still shown in the
+// expanded row's Product breakdown below) - kept out of
+// `PARTNER_INSIGHTS_SORT_COLUMNS`/`partnerInsightsSortValue` entirely
+// rather than just skipped when rendering, so there's no dead sort state
+// a user could get stuck on.
 
 // Column headers are clickable to sort - see `renderPartnerInsights`'s
 // `<th data-sort-key>` and the click handler below. Defaults to Partner
@@ -2332,7 +2337,6 @@ const partnerInsightsSort = { key: "name", dir: "asc" };
 const PARTNER_INSIGHTS_SORT_COLUMNS = [
   { key: "name", label: "Partner" },
   { key: "bugScore", label: "Bug Score" },
-  { key: "featureScore", label: "Feature Score" },
   { key: "liveFireCount", label: "Live Fire" },
   { key: "smolderingCount", label: "Smoldering" },
 ];
@@ -2345,7 +2349,6 @@ const ESCALATION_SEVERITY_RANK = { LIVE_FIRE: 3, SMOLDERING: 2, WATCH: 1 };
 function partnerInsightsSortValue(partner, key) {
   if (key === "name") return partner.name || "";
   if (key === "bugScore") return partner.product ? partner.product.bugScore : null;
-  if (key === "featureScore") return partner.product ? partner.product.featureScore : null;
   if (key === "liveFireCount") return escalationSeverityCount(partner.escalations, "LIVE_FIRE");
   if (key === "smolderingCount") return escalationSeverityCount(partner.escalations, "SMOLDERING");
   return null;
@@ -2438,7 +2441,6 @@ function renderPartnerInsights(data) {
   const rows = partners
     .map((p) => {
       const bugScore = p.product ? p.product.bugScore : null;
-      const featureScore = p.product ? p.product.featureScore : null;
       const isActive = p.partnerId === partnerInsightsActivePartnerId;
       const isUpdating = p.partnerId === partnerInsightsUpdatingId;
       const updateBtn = `<button type="button" class="partner-update-btn" data-partner-id="${escapeHtml(
@@ -2450,7 +2452,6 @@ function renderPartnerInsights(data) {
       <tr class="clickable-row${isActive ? " active-row" : ""}" data-partner-id="${escapeHtml(p.partnerId)}">
         <td>${escapeHtml(p.name)}${!p.matched ? ' <span class="unmatched-flag" title="Couldn\'t be matched between Linear and Intercom">⚠</span>' : ""}</td>
         <td class="num">${renderScoreCell(bugScore, "not linked")}</td>
-        <td class="num">${renderScoreCell(featureScore, "not linked")}</td>
         <td class="num">${renderEscalationCountCell(p.escalations, data.escalationsConfigured !== false, "LIVE_FIRE")}</td>
         <td class="num">${renderEscalationCountCell(p.escalations, data.escalationsConfigured !== false, "SMOLDERING")}</td>
         <td class="num">${updateBtn}</td>
@@ -2463,16 +2464,17 @@ function renderPartnerInsights(data) {
     <div class="squad-block">
       <p class="quality-definitions" style="list-style: none; padding-left: 0;">
         Only partners matched to a Vitally account are listed here. Bug score reflects bug-SLA
-        responsiveness; Feature score reflects how many of a partner's feature requests/other asks have
-        gone stale (open 90+ days, unresolved) - both from that partner's Linear customer requests, 100 =
-        clean. Live Fire and Smoldering are counts of that partner's currently-tracked escalation items at
-        each severity, from an LLM triage of that partner's recent human-written emails (synced via
-        Vitally) - only re-analyzed on a forced Update, and only the newest email each time.${
+        responsiveness (100 = clean), from that partner's Linear customer requests. Live Fire and
+        Smoldering are counts of that partner's currently-tracked escalation items at each severity,
+        from an LLM triage of that partner's recent human-written emails and Intercom conversations
+        (synced via Vitally) - only re-analyzed on a forced Update, and only the newest messages each
+        time.${
           data.escalationsConfigured === false
             ? " Escalation triage isn't configured yet (needs OPENAI_API_KEY and VITALLY_ACCESS_TOKEN) - see README."
             : ""
         }
-        Click a partner for the full breakdown, including Watch-severity items and the source emails themselves.
+        Click a partner for the full breakdown, including Feature score, Watch-severity items, and the
+        source emails/conversations themselves.
       </p>
       <table class="data-table partner-insights-table">
         <thead>

@@ -240,10 +240,14 @@ the site into separate capabilities, each its own tab:
   needing a backfill; it shows a placeholder until at least two points
   exist.
 - **Partner Insights** — one row per partner institution *matched to a
-  Vitally account* (see the "Partners" bullet below) with a **Bug score**,
-  a **Feature score** (out of 100 each), and **Live Fire** / **Smoldering**
-  escalation counts. Unlike every other tab, this one is hidden from the
-  tab bar entirely unless the signed-in user's email is on
+  Vitally account* (see the "Partners" bullet below) with a **Bug score**
+  (out of 100) and **Live Fire** / **Smoldering** escalation counts.
+  **Feature score** is computed the same as Bug score but hidden from
+  this main table — it's still shown in each partner's expanded-row
+  breakdown (see below); only `PARTNER_INSIGHTS_SORT_COLUMNS`/the main
+  `<tr>` in `app.js` needed to change to hide it, `partner_insights.py`
+  still computes and returns it. Unlike every other tab, this one is
+  hidden from the tab bar entirely unless the signed-in user's email is on
   `PARTNER_INSIGHTS_ALLOWED_EMAILS` (see "Partner Insights access" below) —
   most of the team doesn't need per-partner scoring visible.
   - **Partners** come from `product_status/partner_identity.py`'s
