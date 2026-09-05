@@ -76,16 +76,16 @@ would only ever show empty cells; filtering them out keeps the table to
 partners this tab can actually say something about, rather than a long
 tail of "not linked"/"not in Vitally" rows.
 
-## Escalations (Vitally emails + LLM triage, incremental, forced-refresh only)
+## Escalations (Vitally conversations + LLM triage, incremental, forced-refresh only)
 A second, independent signal alongside Bug/Feature score - see
 `escalation_report.py`'s module docstring for the full design. In short:
-partner-authored, human-written emails synced into Vitally from
-Gmail/Outlook (not Intercom) are triaged by OpenAI against a fixed risk
-framework into LIVE_FIRE/SMOLDERING/WATCH items, cached and updated
-incrementally (only new email since the last run is ever re-analyzed).
-Unlike Bug/Feature score, this never runs on a passive/cache-age refresh -
-only an explicit "Update" button click triggers new LLM calls, since it's
-the more expensive of the two to compute.
+partner-authored, human-written email (Gmail/Outlook) and Intercom
+conversations, both mirrored into Vitally, are triaged by OpenAI against
+a fixed risk framework into LIVE_FIRE/SMOLDERING/WATCH items, cached and
+updated incrementally (only new messages since the last run are ever
+re-analyzed). Unlike Bug/Feature score, this never runs on a passive/
+cache-age refresh - only an explicit "Update" button click triggers new
+LLM calls, since it's the more expensive of the two to compute.
 """
 
 import re

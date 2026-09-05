@@ -1,24 +1,51 @@
 """Partner Insights' "Escalations" column/drilldown - flags partner emails
-(synced into Vitally from Gmail/Outlook, not Intercom) that look like a
-live or brewing escalation, using an LLM (OpenAI - see `openai_client.py`)
-against a fixed triage prompt supplied by the product team (kept close to
-verbatim in `_TRIAGE_SYSTEM_PROMPT` below).
+and Intercom conversations (both mirrored into Vitally - see
+`vitally_client.py`) that look like a live or brewing escalation, using an
+LLM (OpenAI - see `openai_client.py`) against a fixed triage prompt
+supplied by the product team (kept close to verbatim in
+`_TRIAGE_SYSTEM_PROMPT` below).
 
 ## Scope narrowing before anything reaches the LLM
-Vitally's `source: "google"` conversations (see `vitally_client.py`) are
+Only `source in ("google", "intercom")` conversations are considered -
+Vitally also mirrors other channels (e.g. Slack) this feature has never
+been asked to cover. `source: "google"` (Gmail/Outlook-synced email) is
 almost entirely calendar invites/updates and OOO auto-replies once you
-look at real data (a single account can have 1000+ of these) -
-`Message.type == "inbound"` already narrows to "sent by the partner side,
-not Stellic" (mirrors `partner_insights.py`'s Support score using `type`
-similarly), but that alone still lets all of that calendar/auto-reply
-noise through. `_looks_auto_generated` mechanically drops the
-highest-volume, unambiguous cases (calendar invite/response subjects, OOO
-auto-reply subjects, a couple of body-text tells) before anything is sent
-to the LLM - both to keep the token bill sane and because these are never
-going to be a "live-fire" candidate anyway. Anything subtler (newsletters,
-vendor marketing, recruiting spam, automated system alerts) is left to
-the LLM's own judgment per the prompt's SCOPE section, since that needs to
-read the actual content to decide.
+look at real data (a single account can have 1000+ of these), so
+`_is_partner_authored` (see below) narrows to "sent by the partner side,
+not Stellic" before anything else runs, but that alone still lets all of
+that calendar/auto-reply noise through. `_looks_auto_generated`
+mechanically drops the highest-volume, unambiguous cases (calendar
+invite/response subjects, OOO auto-reply subjects, a couple of body-text
+tells) before anything is sent to the LLM - both to keep the token bill
+sane and because these are never going to be a "live-fire" candidate
+anyway. Anything subtler (newsletters, vendor marketing, recruiting spam,
+automated system alerts) is left to the LLM's own judgment per the
+prompt's SCOPE section, since that needs to read the actual content to
+decide.
+
+`source: "intercom"` conversations were added after the standalone
+Intercom conversation-scoring feature (this module's `partner_insights.py`
+sibling, "Support score") was removed entirely - without this, genuine
+partner-reported bugs/issues raised only through Intercom (not email)
+would go completely unanalyzed by anything in this app. Confirmed against
+live data (University of Wisconsin-Stout, Sep 2026): a partner's bug
+report thread existed as an Intercom conversation with correctly-typed
+`inbound`/`outbound` messages *and* as three separate Gmail-mirrored
+copies of the same thread - but every message in those Gmail copies was
+tagged `type: "outbound"` by Vitally regardless of actual author (one
+even resolved `from.id` to the partner contact's own user record despite
+being marked outbound). That's why `_is_partner_authored` below doesn't
+trust `type` alone.
+
+## Authorship: `type` field isn't fully reliable
+`Message.type == "inbound"` is Vitally's own signal for "sent by the
+partner side, not Stellic" (mirrors the removed Support score's use of
+`type` similarly) and is right the overwhelming majority of the time -
+but per the live counter-example above, `_is_partner_authored` also
+treats a message as partner-authored when its `from.id` matches one of
+the conversation's own `users` (external contacts), regardless of what
+`type` says, to catch the cases where Vitally's own sync mislabels an
+unambiguous reply.
 
 ## Incremental caching - "only look at the last email"
 Re-running the full triage prompt over 3 days of email on every refresh
@@ -56,8 +83,8 @@ just "what did the most recent check actually look at".
 ## Where the "link to the thread" bit of the prompt's evidence format
 comes from
 Vitally's REST API doesn't expose a clickable URL back to the original
-Gmail/Outlook thread (`Conversation.externalUrl` is `None` for
-Gmail-sourced conversations in this workspace, confirmed against live
+thread (`Conversation.externalUrl` is `None` for both Gmail/Outlook- and
+Intercom-sourced conversations in this workspace, confirmed against live
 data) - so evidence links to that partner's Account page in the Vitally
 web app instead (`VITALLY_APP_SUBDOMAIN`, optional - see `.env.example`),
 which does surface the same conversation under its "Conversations" tab,
@@ -177,6 +204,11 @@ def _looks_auto_generated(subject: str, body_text: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+# Vitally conversation sources this feature looks at - see module
+# docstring's "Scope narrowing" section for why each is included.
+_ELIGIBLE_SOURCES = ("google", "intercom")
+
+
 def _resolve_sender(message: Dict[str, Any], full_conversation: Dict[str, Any]) -> str:
     """Best-effort human-readable sender for a message's `from` Participant
     - looked up against the parent conversation's own `users` list (each
@@ -189,25 +221,41 @@ def _resolve_sender(message: Dict[str, Any], full_conversation: Dict[str, Any]) 
     return sender_id or "(unknown)"
 
 
+def _is_partner_authored(message: Dict[str, Any], full_conversation: Dict[str, Any]) -> bool:
+    """A message counts as partner-authored either when Vitally's own
+    `type` field says `"inbound"` (the normal, reliable case), or - since
+    that field turns out to mislabel some genuinely partner-authored
+    messages as `"outbound"` (confirmed against live data, see module
+    docstring's "Authorship" section) - when the message's `from.id`
+    matches one of the conversation's own `users` (its external
+    contacts), regardless of what `type` says."""
+    if message.get("type") == "inbound":
+        return True
+    sender_id = (message.get("from") or {}).get("id")
+    if not sender_id:
+        return False
+    return any(user.get("id") == sender_id for user in full_conversation.get("users") or [])
+
+
 def _collect_new_human_emails(
     vitally_client: VitallyClient,
     account_id: str,
     since_iso: str,
 ) -> List[Dict[str, Any]]:
-    """Every partner-authored (`type == "inbound"`), non-auto-generated
-    email (`source == "google"`) for one account, strictly newer than
-    `since_iso`, oldest first (so the LLM reads them in chronological
-    order). Conversations arrive sorted by `updatedAt` desc, so this stops
-    walking them as soon as it hits one that's entirely too old to
-    matter - see `_MAX_CONVERSATIONS_PER_ACCOUNT` for the other (rarer)
-    stopping condition."""
+    """Every partner-authored (`_is_partner_authored`), non-auto-generated
+    message (`source` in `_ELIGIBLE_SOURCES`) for one account, strictly
+    newer than `since_iso`, oldest first (so the LLM reads them in
+    chronological order). Conversations arrive sorted by `updatedAt` desc,
+    so this stops walking them as soon as it hits one that's entirely too
+    old to matter - see `_MAX_CONVERSATIONS_PER_ACCOUNT` for the other
+    (rarer) stopping condition."""
     candidates: List[Dict[str, Any]] = []
     checked = 0
     for summary in vitally_client.list_account_conversations(account_id, page_size=25):
         checked += 1
         if checked > _MAX_CONVERSATIONS_PER_ACCOUNT:
             break
-        if summary.get("source") != "google":
+        if summary.get("source") not in _ELIGIBLE_SOURCES:
             continue
         updated_at = summary.get("updatedAt") or ""
         if updated_at and updated_at < since_iso:
@@ -215,7 +263,7 @@ def _collect_new_human_emails(
         full = vitally_client.get_conversation(summary["id"])
         subject = full.get("subject") or "(no subject)"
         for message in full.get("messages") or []:
-            if message.get("type") != "inbound":
+            if not _is_partner_authored(message, full):
                 continue
             timestamp = message.get("timestamp") or message.get("createdAt") or ""
             if not timestamp or timestamp <= since_iso:

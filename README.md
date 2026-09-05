@@ -288,17 +288,19 @@ the site into separate capabilities, each its own tab:
       issues together"). Zero-count cells aren't clickable. "Total" counts/
       links are open-state-only (matching the score denominators above);
       "new this month" counts/links intentionally include every status.
-  - **Live Fire** / **Smoldering** (Vitally emails, triaged by an LLM) —
+  - **Live Fire** / **Smoldering** (Vitally conversations, triaged by an LLM) —
     counts of that partner's currently-tracked escalation items at each
-    severity, from triaging that partner's recent *human-written* emails
-    (synced into Vitally from Gmail/Outlook, not Intercom) against a fixed
-    risk-triage prompt (see `product_status/escalation_report.py`'s module
-    docstring for the exact prompt and design). A plain `-` for a genuine
-    zero at that severity, or `not in Vitally`/`not configured` when
-    there's no escalation data at all for that partner. A third severity,
-    **Watch**, doesn't get its own column (lower signal) but is still
-    visible in the expanded row.
-    - Needs *both* `VITALLY_ACCESS_TOKEN` (the email source) and
+    severity, from triaging that partner's recent *human-written* email
+    (Gmail/Outlook) and Intercom conversations — both mirrored into Vitally,
+    see `product_status/vitally_client.py` — against a fixed risk-triage
+    prompt (see `product_status/escalation_report.py`'s module docstring for
+    the exact prompt and design, including why Intercom conversations are
+    included despite the removed Support score also having used Intercom).
+    A plain `-` for a genuine zero at that severity, or `not in Vitally`/
+    `not configured` when there's no escalation data at all for that
+    partner. A third severity, **Watch**, doesn't get its own column (lower
+    signal) but is still visible in the expanded row.
+    - Needs *both* `VITALLY_ACCESS_TOKEN` (the conversation source) and
       `OPENAI_API_KEY` (the triage, via `product_status/openai_client.py`
       — OpenAI's `us.api.openai.com` regional/US-data-residency endpoint by
       default) — either missing shows "not configured" for everyone.
@@ -307,6 +309,12 @@ the site into separate capabilities, each its own tab:
       Vitally's Gmail-synced conversation volume) — subtler auto-generated
       content (newsletters, marketing, recruiting, system alerts) is left to
       the LLM's own judgment per the prompt's SCOPE section.
+    - A message counts as partner-authored either when Vitally's own
+      `type` field says so, or when its sender resolves to one of that
+      conversation's own external contacts — Vitally's `type` field turns
+      out to mislabel some genuinely partner-authored Gmail-synced replies
+      as "outbound" (confirmed against live data), so it isn't trusted
+      alone. See `escalation_report.py`'s `_is_partner_authored`.
     - **Incremental, and only on a forced refresh** — unlike Bug/Feature
       score, this never runs on a passive 24h cache-age refresh, only the
       **Update** button. Each run only fetches emails newer than the last
