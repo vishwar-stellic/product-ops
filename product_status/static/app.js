@@ -2117,6 +2117,12 @@ if (els.supportReportUpdateBtn) {
 
 let partnerInsightsData = null;
 let partnerInsightsActivePartnerId = null;
+// Which single partner's per-row Update button (see `updateSinglePartner`)
+// is currently in flight, if any - `null` the rest of the time. Only one
+// at a time (a second click while one's in flight is a no-op) to keep the
+// UI simple; the whole-roster Update button above the table is unaffected
+// and can still run concurrently with this.
+let partnerInsightsUpdatingId = null;
 // Which escalation finding rows are expanded in-place (see
 // `renderEscalationsBlock`) - keyed `${partnerId}:${index}` rather than
 // just index, so switching to a different partner's expanded row doesn't
@@ -2316,7 +2322,7 @@ function renderEscalationsBlock(partner, escalationsConfigured) {
   return findingsHtml + emailsHtml;
 }
 
-const PARTNER_INSIGHTS_COLUMNS = 5; // Partner, Bug Score, Feature Score, Live Fire, Smoldering
+const PARTNER_INSIGHTS_COLUMNS = 6; // Partner, Bug Score, Feature Score, Live Fire, Smoldering, Update
 
 // Column headers are clickable to sort - see `renderPartnerInsights`'s
 // `<th data-sort-key>` and the click handler below. Defaults to Partner
@@ -2413,12 +2419,15 @@ function renderPartnerInsightsExpandedRow(partner) {
 }
 
 function renderPartnerInsightsHeaderCells() {
-  return PARTNER_INSIGHTS_SORT_COLUMNS.map(({ key, label }) => {
+  const sortHeaders = PARTNER_INSIGHTS_SORT_COLUMNS.map(({ key, label }) => {
     const isActive = partnerInsightsSort.key === key;
     const arrow = isActive ? (partnerInsightsSort.dir === "asc" ? " ▲" : " ▼") : "";
     const numClass = key === "name" ? "" : " num";
     return `<th class="sortable-header${numClass}" data-sort-key="${key}">${escapeHtml(label)}${arrow}</th>`;
   }).join("");
+  // Not part of `PARTNER_INSIGHTS_SORT_COLUMNS` - the per-partner Update
+  // button (see `renderPartnerInsights`) isn't sortable data.
+  return sortHeaders + `<th class="num"></th>`;
 }
 
 function renderPartnerInsights(data) {
@@ -2431,6 +2440,12 @@ function renderPartnerInsights(data) {
       const bugScore = p.product ? p.product.bugScore : null;
       const featureScore = p.product ? p.product.featureScore : null;
       const isActive = p.partnerId === partnerInsightsActivePartnerId;
+      const isUpdating = p.partnerId === partnerInsightsUpdatingId;
+      const updateBtn = `<button type="button" class="partner-update-btn" data-partner-id="${escapeHtml(
+        p.partnerId
+      )}" ${isUpdating ? "disabled" : ""} title="Refresh just ${escapeHtml(p.name)} (Linear + Vitally + LLM)">${
+        isUpdating ? '<span class="spinner"></span>' : "⟳"
+      }</button>`;
       const mainRow = `
       <tr class="clickable-row${isActive ? " active-row" : ""}" data-partner-id="${escapeHtml(p.partnerId)}">
         <td>${escapeHtml(p.name)}${!p.matched ? ' <span class="unmatched-flag" title="Couldn\'t be matched between Linear and Intercom">⚠</span>' : ""}</td>
@@ -2438,6 +2453,7 @@ function renderPartnerInsights(data) {
         <td class="num">${renderScoreCell(featureScore, "not linked")}</td>
         <td class="num">${renderEscalationCountCell(p.escalations, data.escalationsConfigured !== false, "LIVE_FIRE")}</td>
         <td class="num">${renderEscalationCountCell(p.escalations, data.escalationsConfigured !== false, "SMOLDERING")}</td>
+        <td class="num">${updateBtn}</td>
       </tr>`;
       return isActive ? mainRow + renderPartnerInsightsExpandedRow(p) : mainRow;
     })
@@ -2483,6 +2499,15 @@ function renderPartnerInsights(data) {
 if (els.partnerInsightsContainer) {
   els.partnerInsightsContainer.addEventListener("click", (event) => {
     if (!partnerInsightsData) return;
+
+    const updateBtn = event.target.closest("button.partner-update-btn");
+    if (updateBtn) {
+      // Stop this from also bubbling into the "row clicked -> toggle
+      // expanded state" handler below.
+      event.stopPropagation();
+      updateSinglePartner(updateBtn.dataset.partnerId);
+      return;
+    }
 
     const header = event.target.closest("th.sortable-header");
     if (header) {
@@ -2558,6 +2583,40 @@ async function refreshPartnerInsights() {
 
 if (els.partnerInsightsUpdateBtn) {
   els.partnerInsightsUpdateBtn.addEventListener("click", refreshPartnerInsights);
+}
+
+// Per-row Update button (⟳ next to each partner) - refreshes just that
+// one partner's Product score + escalation triage instead of the whole
+// roster (see `refreshPartnerInsights` above and the server-side
+// `POST /api/partner-insights/refresh/{partner_id}`). Much faster since
+// it's at most one LLM call instead of one per partner with new email.
+async function updateSinglePartner(partnerId) {
+  if (partnerInsightsUpdatingId) return; // one at a time is enough
+  const partner = ((partnerInsightsData && partnerInsightsData.partners) || []).find(
+    (p) => p.partnerId === partnerId
+  );
+  partnerInsightsUpdatingId = partnerId;
+  renderPartnerInsights(partnerInsightsData);
+  try {
+    const res = await fetch(`/api/partner-insights/refresh/${encodeURIComponent(partnerId)}`, { method: "POST" });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail || `Request failed (${res.status})`);
+    }
+    const updated = await res.json();
+    const partners = (partnerInsightsData && partnerInsightsData.partners) || [];
+    const idx = partners.findIndex((p) => p.partnerId === partnerId);
+    if (idx >= 0) {
+      partners[idx] = updated;
+    } else {
+      partners.push(updated);
+    }
+  } catch (err) {
+    showError(`Couldn't update ${partner ? partner.name : partnerId}: ${err.message}`);
+  } finally {
+    partnerInsightsUpdatingId = null;
+    renderPartnerInsights(partnerInsightsData);
+  }
 }
 
 // ---- Tabs ----

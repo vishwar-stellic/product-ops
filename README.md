@@ -337,6 +337,15 @@ the site into separate capabilities, each its own tab:
     force a refresh) — a forced refresh also re-runs escalation triage
     for every partner with new eligible email, so it's slow (Linear pull +
     Vitally pull + an LLM call per partner with new email).
+  - Each row also has its own small ⟳ **Update** button (rightmost
+    column) to force a refresh for *just that partner* —
+    `POST /api/partner-insights/refresh/{partner_id}` /
+    `partner_insights.refresh_single_partner` — instead of the whole
+    roster: one Linear pull plus at most one LLM triage call, versus one
+    LLM call per partner with new email for the top-of-tab Update button.
+    It patches the already-cached full report in place (`cache.peek` /
+    `cache.write_raw` on `PARTNER_INSIGHTS_CACHE_KEY`) so the change is
+    visible on a normal page load too, not just the tab that triggered it.
   - An earlier version of this tab also had a Support score column,
     scoring Intercom conversations with an LLM via a daily batch job. That
     was removed entirely (not just hidden) when it was dropped in favor of

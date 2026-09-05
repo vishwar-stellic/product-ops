@@ -140,6 +140,7 @@ from .partner_insights import (
     PARTNER_INSIGHTS_CACHE_KEY,
     PARTNER_INSIGHTS_CACHE_VERSION,
     build_partner_insights_report,
+    refresh_single_partner,
 )
 from .projects import DEFAULT_SUMMIT_LABEL, build_dashboard_projects_report, build_summit_projects_report
 from .report import build_current_sprint, build_full_report, build_previous_sprint
@@ -737,6 +738,28 @@ def partner_insights_refresh(request: Request):
     _require_partner_insights_access(request)
     try:
         return _get_partner_insights(force=True)
+    except LinearGraphQLError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/partner-insights/refresh/{partner_id}")
+def partner_insights_refresh_one(partner_id: str, request: Request):
+    """Force a fresh pull for exactly one partner (the Partner Insights
+    table's per-partner Update button) - one Linear pull plus at most one
+    LLM escalation-triage call, versus the whole-roster POST above which
+    re-triages every Vitally-matched partner with new eligible email.
+    Returns just that partner's row (`build_partner_insights_report`'s
+    `partners[i]` shape) rather than the whole report - see
+    `partner_insights.refresh_single_partner`, which also patches the
+    already-cached full report in place so a normal page load reflects
+    this too. Same allowlist gate as the endpoints above."""
+    _require_partner_insights_access(request)
+    try:
+        return refresh_single_partner(partner_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
     except LinearGraphQLError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     except RuntimeError as exc:

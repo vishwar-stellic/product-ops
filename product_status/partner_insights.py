@@ -92,6 +92,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+from . import cache
 from .escalation_report import escalations_configured, refresh_partner_escalations, vitally_app_account_url
 from .intercom_client import IntercomClient
 from .linear_client import LinearClient
@@ -352,6 +353,28 @@ def compute_product_scores(
 # ---------------------------------------------------------------------------
 
 
+def _escalation_view(partner: Dict[str, Any], escalation_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The `escalations` sub-object for one partner's row, given the raw
+    `escalation_report.py` state dict (`partnerId -> {"items": [...], ...}`)
+    - shared by `build_partner_insights_report` (the whole roster) and
+    `refresh_single_partner` (one partner) so both produce identically-
+    shaped rows."""
+    account_id = partner.get("vitallyAccountId")
+    if not account_id:
+        return None
+    entry = escalation_state.get(partner["partnerId"]) or {"items": [], "checkedAt": None}
+    return {
+        "items": entry.get("items") or [],
+        "checkedAt": entry.get("checkedAt"),
+        "vitallyAccountUrl": vitally_app_account_url(account_id),
+        # Raw source emails from the latest triage batch - see
+        # `escalation_report.py`'s module docstring's `recentEmails`
+        # section. Empty until the first forced refresh after a
+        # partner has new eligible email.
+        "recentEmails": entry.get("recentEmails") or [],
+    }
+
+
 def build_partner_insights_report(force: bool = False) -> Dict[str, Any]:
     intercom_client = IntercomClient()
     linear_client = LinearClient()
@@ -376,27 +399,11 @@ def build_partner_insights_report(force: bool = False) -> Dict[str, Any]:
         refresh_partner_escalations(registry, vitally_client, force=force) if vitally_client else {}
     )
 
-    def _escalations_for(partner: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        account_id = partner.get("vitallyAccountId")
-        if not account_id:
-            return None
-        entry = escalation_state.get(partner["partnerId"]) or {"items": [], "checkedAt": None}
-        return {
-            "items": entry.get("items") or [],
-            "checkedAt": entry.get("checkedAt"),
-            "vitallyAccountUrl": vitally_app_account_url(account_id),
-            # Raw source emails from the latest triage batch - see
-            # `escalation_report.py`'s module docstring's `recentEmails`
-            # section. Empty until the first forced refresh after a
-            # partner has new eligible email.
-            "recentEmails": entry.get("recentEmails") or [],
-        }
-
     partners = [
         {
             **partner,
             "product": product_scores.get(partner["partnerId"]),
-            "escalations": _escalations_for(partner),
+            "escalations": _escalation_view(partner, escalation_state),
         }
         for partner in registry
     ]
@@ -407,3 +414,54 @@ def build_partner_insights_report(force: bool = False) -> Dict[str, Any]:
         "escalationsConfigured": escalations_configured(),
         "partners": partners,
     }
+
+
+def refresh_single_partner(partner_id: str) -> Dict[str, Any]:
+    """Force-refresh exactly one partner's row (Product score + escalation
+    triage) - the Partner Insights table's per-partner Update button.
+    Much cheaper than `build_partner_insights_report(force=True)` when a
+    reviewer only cares about one partner's latest email: that endpoint
+    re-triages *every* Vitally-matched partner with new eligible email
+    (one LLM call each), while this only ever makes at most one.
+
+    Also patches the already-cached full report in place (if one exists -
+    `PARTNER_INSIGHTS_CACHE_KEY`, see `cache.peek`/`cache.write_raw`) so a
+    normal page load immediately reflects this partner's update too, not
+    just the browser tab that triggered it - otherwise this'd be
+    invisible to everyone (including a fresh load in the same tab) until
+    the next full refresh or the outer cache's 24h TTL expires."""
+    intercom_client = IntercomClient()
+    linear_client = LinearClient()
+    vitally_client = VitallyClient() if vitally_configured() else None
+
+    registry = build_partner_registry(intercom_client, linear_client, vitally_client)
+    partner = next((p for p in registry if p["partnerId"] == partner_id), None)
+    if partner is None or not partner.get("vitallyAccountId"):
+        # Same "only Vitally-matched partners exist in this tab" rule as
+        # `build_partner_insights_report` - see module docstring.
+        raise ValueError(f"No Vitally-matched partner found for id {partner_id!r}")
+
+    product_scores = compute_product_scores([partner], linear_client=linear_client)
+    escalation_state = (
+        refresh_partner_escalations([partner], vitally_client, force=True) if vitally_client else {}
+    )
+
+    updated_partner = {
+        **partner,
+        "product": product_scores.get(partner["partnerId"]),
+        "escalations": _escalation_view(partner, escalation_state),
+    }
+
+    cached = cache.peek(PARTNER_INSIGHTS_CACHE_KEY)
+    if cached and isinstance(cached.get("data"), dict):
+        partners = cached["data"].get("partners")
+        if isinstance(partners, list):
+            for i, existing in enumerate(partners):
+                if existing.get("partnerId") == partner_id:
+                    partners[i] = updated_partner
+                    break
+            else:
+                partners.append(updated_partner)
+            cache.write_raw(PARTNER_INSIGHTS_CACHE_KEY, cached)
+
+    return updated_partner
