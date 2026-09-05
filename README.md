@@ -240,9 +240,9 @@ the site into separate capabilities, each its own tab:
   needing a backfill; it shows a placeholder until at least two points
   exist.
 - **Partner Insights** — one row per partner institution with a **Bug
-  score**, a **Feature score**, a **Support score** (out of 100 each), and
-  a **Vitally** health score. Unlike every other tab, this one is hidden
-  from the tab bar entirely unless the signed-in user's email is on
+  score**, a **Feature score** (out of 100 each), and **Live Fire** /
+  **Smoldering** escalation counts. Unlike every other tab, this one is
+  hidden from the tab bar entirely unless the signed-in user's email is on
   `PARTNER_INSIGHTS_ALLOWED_EMAILS` (see "Partner Insights access" below) —
   most of the team doesn't need per-partner scoring visible.
   - **Partners** come from `product_status/partner_identity.py`'s
@@ -252,9 +252,12 @@ the site into separate capabilities, each its own tab:
     primarily by that other side's short code (Linear's `externalIds`,
     Vitally's `externalId`) matching the same short `company_id` code
     Intercom uses (e.g. `fsu`), falling back to a normalized name match.
-    Either side missing a match is still shown (Product-only or
-    Support-only, and/or no Vitally health score) rather than dropped,
-    flagged with a small ⚠ next to the name for the Linear/Intercom case.
+    Either side missing a match is still shown (Product-only, or no
+    matched Vitally account) rather than dropped, flagged with a small ⚠
+    next to the name for the Linear/Intercom case. The Vitally match isn't
+    shown as its own column, but it's what the Live Fire/Smoldering
+    columns key off of — a partner with no matched Vitally account shows
+    "not in Vitally" there instead of a count.
   - **Bug score** and **Feature score** (Linear only, recomputed on every
     refresh, no LLM) — every Linear issue linked to a partner via a
     `CustomerNeed` is split into Bug-labeled vs. feature request/other, each
@@ -286,52 +289,27 @@ the site into separate capabilities, each its own tab:
       issues together"). Zero-count cells aren't clickable. "Total" counts/
       links are open-state-only (matching the score denominators above);
       "new this month" counts/links intentionally include every status.
-  - **Support score** (Intercom conversations, graded by an LLM) —
-    incremental, not live: roughly once a day, every conversation closed in
-    the last ~24h is resolved to a partner and scored by OpenAI
-    (`OPENAI_API_KEY`, see `product_status/openai_client.py`) on
-    professionalism, helpfulness, and how "canned"/generic the reply was —
-    each conversation is scored exactly once and permanently appended to a
-    small log (`cache.write_raw`, same pattern as the Support Report's trend
-    history), never rescored. The displayed score averages a partner's log
-    entries over a trailing 30-day window. A partner with no scored
-    conversations yet in that window shows "no data yet" — there's no
-    backfill, so this fills in gradually starting from whenever
-    `OPENAI_API_KEY` was first configured, not from the tab's full history.
-    Leaving `OPENAI_API_KEY` unset keeps the rest of the tab (Bug/Feature
-    scores, registry) fully working, with every Support score left as "no
-    data yet".
-  - **Vitally** — shown as a plain red/yellow/green dot (hover for the
-    exact number), same visual convention as the other three scores. This
-    is *not* computed by this app: Vitally already computes its own
-    per-account `healthScore`, which in this workspace is a direct 0/5/10
-    encoding of a manually-set Red/Yellow/Green "pulse" trait imported from
-    a CSV upload — it's shown as-is rather than recomputed, since this tab
-    isn't trying to second-guess a human judgment call that already exists
-    elsewhere. Requires `VITALLY_ACCESS_TOKEN` (see `.env.example` and
-    `product_status/vitally_client.py`) — leave it unset and the column
-    just shows "not configured" for everyone, same graceful-degradation
-    pattern as `OPENAI_API_KEY` above. A partner matched to Intercom/
-    Linear but not to any Vitally account shows "not in Vitally" instead.
-  - **Escalation** (Vitally emails, triaged by an LLM) — flags a partner's
-    recent *human-written* emails (synced into Vitally from Gmail/Outlook —
-    a separate channel from the Intercom conversations the Support score
-    above covers) that look like a live or brewing escalation, using a fixed
+  - **Live Fire** / **Smoldering** (Vitally emails, triaged by an LLM) —
+    counts of that partner's currently-tracked escalation items at each
+    severity, from triaging that partner's recent *human-written* emails
+    (synced into Vitally from Gmail/Outlook, not Intercom) against a fixed
     risk-triage prompt (see `product_status/escalation_report.py`'s module
-    docstring for the exact prompt and design). The main-table cell shows
-    just the worst active item's badge (**Live fire** / **Smoldering** /
-    **Watch**, plus a count if there's more than one) — `clear` if none, or
-    `not in Vitally`/`not configured` same as the Vitally column.
+    docstring for the exact prompt and design). A plain `-` for a genuine
+    zero at that severity, or `not in Vitally`/`not configured` when
+    there's no escalation data at all for that partner. A third severity,
+    **Watch**, doesn't get its own column (lower signal) but is still
+    visible in the expanded row.
     - Needs *both* `VITALLY_ACCESS_TOKEN` (the email source) and
-      `OPENAI_API_KEY` (the triage) — either missing shows "not
-      configured" for everyone.
+      `OPENAI_API_KEY` (the triage, via `product_status/openai_client.py`
+      — OpenAI's `us.api.openai.com` regional/US-data-residency endpoint by
+      default) — either missing shows "not configured" for everyone.
     - Before anything reaches the LLM, calendar invites/responses and
       out-of-office auto-replies are dropped mechanically (these dominate
       Vitally's Gmail-synced conversation volume) — subtler auto-generated
       content (newsletters, marketing, recruiting, system alerts) is left to
       the LLM's own judgment per the prompt's SCOPE section.
-    - **Incremental, and only on a forced refresh** — unlike the other three
-      signals, this never runs on a passive 24h cache-age refresh, only the
+    - **Incremental, and only on a forced refresh** — unlike Bug/Feature
+      score, this never runs on a passive 24h cache-age refresh, only the
       **Update** button. Each run only fetches emails newer than the last
       run's newest processed email (capped at a 3-day lookback), hands them
       to the LLM *alongside* the currently-tracked items, and asks it to
@@ -340,25 +318,31 @@ the site into separate capabilities, each its own tab:
       "Days since last movement" is computed live on every page load from
       each item's `lastMovementAt`, not a number that goes stale between
       runs.
-    - Click a partner to see every tracked item's full breakdown: headline,
-      severity + why, 1-2 quoted evidence lines with sender/date, who's
-      blocked on whom, days since last movement, and the triggering email's
-      from/subject/date — plus a best-effort "Open account in Vitally" link
-      when `VITALLY_APP_SUBDOMAIN` is set (Vitally's API doesn't expose a
-      direct link back to the original thread, only the account page).
+    - Click a partner to see every tracked item's full breakdown (a
+      findings table plus one detail card per item — headline, severity +
+      why, 1-2 quoted evidence lines with sender/date, who's blocked on
+      whom, days since last movement, and the triggering email's
+      from/subject/date), plus a best-effort "Open account in Vitally"
+      link when `VITALLY_APP_SUBDOMAIN` is set (Vitally's API doesn't
+      expose a direct link back to the original thread, only the account
+      page) — **and** a "Recent emails analyzed" section listing the raw
+      source emails (subject/from/date, expand for the full body) the
+      latest batch actually looked at, from `escalations.recentEmails`
+      (see `escalation_report.py`'s module docstring) — not just the 1-2
+      quotes per item the triage prompt happens to pull out.
   - Click a partner row to expand it in place (an extra row directly below
     that partner, not a separate panel at the bottom of the table) with the
-    full breakdown — the Bug/Feature metrics, the Support metrics with a
-    list of individually-scored conversations, and the Escalations block
-    above. (Vitally's health score doesn't get its own drilldown block —
-    just the main-table dot.)
+    full breakdown — the Bug/Feature metrics and the Escalations block
+    above.
   - Cached the same way as the other tabs (24h, own **Update** button to
-    force a refresh) — a forced refresh also bypasses the ~20h minimum gap
-    between Support scoring batches and re-runs escalation triage, so it's
-    slow (Linear pull + Intercom pull + Vitally pull + an LLM call per
-    newly-closed conversation + an LLM call per partner with new email).
-    LLM calls go to OpenAI's `us.api.openai.com` regional endpoint by
-    default (US data residency) — see `product_status/openai_client.py`.
+    force a refresh) — a forced refresh also re-runs escalation triage
+    for every partner with new eligible email, so it's slow (Linear pull +
+    Vitally pull + an LLM call per partner with new email). The backend
+    also still runs its daily Intercom conversation-scoring batch
+    (`compute_support_scores` in `partner_insights.py`) even though this
+    tab no longer surfaces a Support score column — left running rather
+    than torn out, in case that column comes back; it's just not part of
+    the current report.
 
 #### Partner Insights access
 
@@ -816,9 +800,9 @@ product_status/
   intercom_client.py     # raw Intercom REST API client (auth, retries, search pagination)
   support_report.py      # live Intercom SLA "5 metrics" per squad for the Support Report tab
   partner_identity.py    # shared Intercom<->Linear<->Vitally partner resolution (support_report.py + partner_insights.py)
-  partner_insights.py    # per-partner Product (Linear) + Support (LLM-scored Intercom) + Vitally health + Escalations for the Partner Insights tab
-  vitally_client.py      # raw Vitally REST API client (Basic Auth, cursor pagination) for the Vitally health score column + escalation_report.py's email source
-  escalation_report.py   # Vitally-synced partner emails, triaged by an LLM, for Partner Insights' Escalations column
+  partner_insights.py    # per-partner Product (Linear) + Support (LLM-scored Intercom, not currently shown) + Escalations for the Partner Insights tab
+  vitally_client.py      # raw Vitally REST API client (Basic Auth, cursor pagination) - escalation_report.py's email source + partner_identity.py's account matching
+  escalation_report.py   # Vitally-synced partner emails, triaged by an LLM, for Partner Insights' Live Fire/Smoldering columns
   openai_client.py       # thin OpenAI Chat Completions wrapper shared by partner_insights.py + escalation_report.py
   cache.py             # JSON cache keyed by age (used by the dashboard, 24h default) - on disk, or...
   blob_cache.py         # ...Vercel Blob-backed, when BLOB_READ_WRITE_TOKEN is set (persists on serverless hosts)

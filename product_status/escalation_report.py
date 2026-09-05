@@ -43,6 +43,16 @@ Only runs on an explicit forced refresh (the Partner Insights tab's
 Support Report. See `partner_insights.py:build_partner_insights_report`'s
 `force` plumbing.
 
+## `recentEmails` - showing the source emails, not just extracted quotes
+Alongside `items`, each partner's cached state also carries `recentEmails`
+- the raw (subject/from/date/body) emails that the *latest* batch actually
+fed to the LLM (capped at `_RECENT_EMAILS_MAX`), so the Partner Insights
+drilldown can show the actual source material next to the LLM's
+extracted evidence quotes, rather than only the 1-2 quotes per item the
+triage prompt happens to pull out. This overwrites on each run (same "only
+the newest" framing as `items`) - it is not an accumulating email archive,
+just "what did the most recent check actually look at".
+
 ## Where the "link to the thread" bit of the prompt's evidence format
 comes from
 Vitally's REST API doesn't expose a clickable URL back to the original
@@ -80,6 +90,15 @@ ESCALATION_LOOKBACK_DAYS = 3
 # for accounts with an unusually high update rate, not the normal stopping
 # condition (that's the lookback-window cutoff below).
 _MAX_CONVERSATIONS_PER_ACCOUNT = 60
+
+# Cap on how many raw emails from the latest triage batch are kept in state
+# per partner (see `refresh_partner_escalations`'s `recentEmails`) - shown
+# alongside the LLM's findings in the Partner Insights drilldown so a
+# reviewer can read the actual source emails, not just the extracted
+# evidence quotes. Each body is already capped at 4000 chars (see
+# `_collect_new_human_emails`), so this bounds total cache size, not per-
+# email size.
+_RECENT_EMAILS_MAX = 25
 
 
 def escalations_configured() -> bool:
@@ -428,6 +447,12 @@ def refresh_partner_escalations(
             "items": updated_items,
             "lastMessageAt": newest_seen,
             "checkedAt": now_iso,
+            # The raw emails this batch actually analyzed - see
+            # `_RECENT_EMAILS_MAX`. Overwrites (not appends to) the prior
+            # batch's list, same "only the newest" framing as `items`
+            # itself - this is "what did we just look at", not an
+            # accumulating email archive.
+            "recentEmails": new_emails[-_RECENT_EMAILS_MAX:],
         }
 
     with ThreadPoolExecutor(max_workers=8) as pool:

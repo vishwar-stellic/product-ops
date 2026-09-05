@@ -117,7 +117,7 @@ PARTNER_INSIGHTS_CACHE_KEY = "dashboard-partner-insights"
 # Bump whenever this module's output shape or underlying metric logic
 # changes - see `milestones_report.py:MILESTONES_REPORT_CACHE_VERSION` for
 # why (the cache backend has no schema of its own).
-PARTNER_INSIGHTS_CACHE_VERSION = 7
+PARTNER_INSIGHTS_CACHE_VERSION = 8
 
 # Separate raw key (accumulating log, not aged/versioned like the main
 # report - see `cache.read_raw`) for LLM-scored conversations. Never
@@ -624,6 +624,11 @@ def build_partner_insights_report(force: bool = False) -> Dict[str, Any]:
             "items": entry.get("items") or [],
             "checkedAt": entry.get("checkedAt"),
             "vitallyAccountUrl": vitally_app_account_url(account_id),
+            # Raw source emails from the latest triage batch - see
+            # `escalation_report.py`'s module docstring's `recentEmails`
+            # section. Empty until the first forced refresh after a
+            # partner has new eligible email.
+            "recentEmails": entry.get("recentEmails") or [],
         }
 
     partners = [

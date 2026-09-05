@@ -1426,19 +1426,6 @@ body {
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
-.partner-insights-drilldown-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 20px;
-  align-items: start;
-}
-
-@media (max-width: 900px) {
-  .partner-insights-drilldown-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
 .block-subtitle {
   font-size: 11px;
   font-weight: 700;
@@ -1512,4 +1499,89 @@ body {
 
 .escalation-evidence li {
   margin-bottom: 4px;
+}
+
+/* Main-table Live Fire / Smoldering count cells - reuses the badge's
+   severity colors so the count itself reads as "this many of that
+   severity" rather than a plain neutral number. */
+.escalation-count-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.escalation-count-badge.escalation-badge-live-fire {
+  background: rgba(241, 101, 101, 0.18);
+  color: var(--red);
+}
+
+.escalation-count-badge.escalation-badge-smoldering {
+  background: rgba(230, 145, 56, 0.18);
+  color: #e69138;
+}
+
+/* Recent emails list (expanded row) - collapsed by default via native
+   <details>/<summary> since bodies can be long; no custom JS state needed
+   to track which email is open. */
+.escalation-emails {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.escalation-email-item {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.escalation-email-item summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  list-style: none;
+}
+
+.escalation-email-item summary::-webkit-details-marker {
+  display: none;
+}
+
+.escalation-email-item[open] summary {
+  border-bottom: 1px solid var(--border);
+}
+
+.escalation-email-date {
+  color: var(--text-faint);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.escalation-email-from {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.escalation-email-subject {
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.escalation-email-body {
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  font-size: 13px;
+  color: var(--text-dim);
+  max-height: 320px;
+  overflow-y: auto;
 }

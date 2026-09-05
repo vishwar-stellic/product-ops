@@ -2135,24 +2135,6 @@ function renderScoreCell(score, emptyLabel) {
   return `<span class="partner-score-dot ${scoreBand(score)}" title="Score: ${score}/100"></span>`;
 }
 
-// Vitally's `healthScore` is a 0-10 scale in this workspace (a direct
-// encoding of a manual Red/Yellow/Green "pulse" trait - see
-// partner_insights.py's module docstring: 0/5/10 map exactly to
-// Red/Yellow/Green), not the 0-100 scale `scoreBand` above expects.
-function vitallyHealthBand(score) {
-  if (score === null || score === undefined) return "";
-  if (score >= 8) return "score-ok"; // green
-  if (score <= 3) return "score-over"; // red
-  return "score-warn"; // yellow
-}
-
-function renderVitallyHealthCell(score, vitallyConfigured) {
-  if (score === null || score === undefined) {
-    return `<span class="empty-note-inline">${vitallyConfigured ? "not in Vitally" : "not configured"}</span>`;
-  }
-  return `<span class="partner-score-dot ${vitallyHealthBand(score)}" title="Vitally health score: ${score}/10"></span>`;
-}
-
 // Escalation severity badges - a small colored pill (not a dot, unlike the
 // score columns above) since the label itself ("LIVE FIRE") carries
 // meaning that's worth showing at a glance, not just hidden in a tooltip.
@@ -2174,20 +2156,30 @@ function renderEscalationBadge(severity) {
   )}</span>`;
 }
 
-// Main-table cell: just the worst active item's badge (or a quiet "clear"/
-// "not in Vitally"/"not configured"), plus an item count when there's more
-// than one - full detail lives in the expanded row (`renderEscalationsBlock`).
-function renderEscalationCell(escalations, escalationsConfigured) {
-  if (!escalations) {
+// Shared by the main-table Live Fire/Smoldering columns and their sort
+// values - how many of a partner's currently-tracked items are at exactly
+// this severity. `null` (not 0) when there's no escalation data at all for
+// this partner, so "not in Vitally"/"not configured" can sort/render
+// distinctly from a genuine zero.
+function escalationSeverityCount(escalations, severity) {
+  if (!escalations) return null;
+  return (escalations.items || []).filter((item) => item.severity === severity).length;
+}
+
+// Main-table cell for one severity's count (the "Live Fire" / "Smoldering"
+// columns) - a quiet "-" for a genuine zero, or "not in Vitally"/"not
+// configured" when there's no escalation data at all for this partner.
+// Watch-severity items don't get their own column (lower signal) but are
+// still visible in the expanded row.
+function renderEscalationCountCell(escalations, escalationsConfigured, severity) {
+  const count = escalationSeverityCount(escalations, severity);
+  if (count === null) {
     return `<span class="empty-note-inline">${escalationsConfigured ? "not in Vitally" : "not configured"}</span>`;
   }
-  const items = escalations.items || [];
-  if (!items.length) {
-    return `<span class="empty-note-inline">clear</span>`;
+  if (!count) {
+    return `<span class="empty-note-inline">-</span>`;
   }
-  const worst = worstEscalationSeverity(escalations);
-  const countSuffix = items.length > 1 ? ` <span class="label-badge">${items.length}</span>` : "";
-  return renderEscalationBadge(worst) + countSuffix;
+  return `<span class="escalation-count-badge ${ESCALATION_SEVERITY_CLASS[severity] || ""}">${count}</span>`;
 }
 
 // Computed live from `lastMovementAt` on every render rather than a number
@@ -2202,9 +2194,13 @@ function daysSince(isoDate) {
 
 const BLOCKED_ON_LABEL = { us: "Us", them: "Them", unclear: "Unclear" };
 
-// The expanded row's third block (alongside Product/Support) - one card
-// per tracked item, most urgent first (per the triage prompt's "Rank by
-// urgency, not by date"), each an OUTPUT-shaped 1-6 breakdown.
+// The expanded row's Escalations block: a compact findings table (mirrors
+// the "LLM triage findings" table from the ad-hoc canvas analysis this was
+// modeled on), one detail card per tracked item below it, and - unlike the
+// canvas's one-off snapshot - a "Recent emails" section sourced from
+// `escalations.recentEmails` (see `escalation_report.py`'s module
+// docstring) so the raw source material stays visible between updates,
+// not just whatever was on hand during a single ad-hoc check.
 function renderEscalationsBlock(partner, escalationsConfigured) {
   const escalations = partner.escalations;
   if (!escalations) {
@@ -2217,28 +2213,42 @@ function renderEscalationsBlock(partner, escalationsConfigured) {
   const items = (escalations.items || [])
     .slice()
     .sort((a, b) => (ESCALATION_SEVERITY_RANK[b.severity] || 0) - (ESCALATION_SEVERITY_RANK[a.severity] || 0));
-  if (!items.length) {
-    return `<p class="empty-note">No live or brewing escalations found in this partner's recent email${
-      escalations.checkedAt ? ` - last checked ${formatRelativeTime(new Date(escalations.checkedAt).getTime() / 1000)}` : ""
-    }.</p>`;
-  }
   const linkSuffix = escalations.vitallyAccountUrl
     ? ` <a href="${escapeHtml(
         escalations.vitallyAccountUrl
       )}" target="_blank" rel="noopener" class="count-link">Open account in Vitally</a>`
     : "";
-  const cards = items
-    .map((item) => {
-      const days = daysSince(item.lastMovementAt);
-      const evidenceRows = (item.evidence || [])
-        .map(
-          (e) =>
-            `<li>"${escapeHtml(e.quote)}" — ${escapeHtml(e.sender || "")}${
-              e.date ? `, ${escapeHtml(formatDateTime(e.date))}` : ""
-            }</li>`
-        )
-        .join("");
-      return `
+
+  let findingsHtml;
+  if (!items.length) {
+    findingsHtml = `<p class="empty-note">No live or brewing escalations found in this partner's recent email${
+      escalations.checkedAt ? ` - last checked ${formatRelativeTime(new Date(escalations.checkedAt).getTime() / 1000)}` : ""
+    }.</p>`;
+  } else {
+    const findingsRows = items
+      .map((item) => {
+        const days = daysSince(item.lastMovementAt);
+        return `
+      <tr>
+        <td>${renderEscalationBadge(item.severity)}</td>
+        <td>${escapeHtml(item.headline)}</td>
+        <td>${escapeHtml(BLOCKED_ON_LABEL[item.blockedOn] || item.blockedOn)}</td>
+        <td class="num">${days === null ? "—" : `${days}d ago`}</td>
+      </tr>`;
+      })
+      .join("");
+    const cards = items
+      .map((item) => {
+        const days = daysSince(item.lastMovementAt);
+        const evidenceRows = (item.evidence || [])
+          .map(
+            (e) =>
+              `<li>"${escapeHtml(e.quote)}" — ${escapeHtml(e.sender || "")}${
+                e.date ? `, ${escapeHtml(formatDateTime(e.date))}` : ""
+              }</li>`
+          )
+          .join("");
+        return `
       <div class="escalation-card">
         <div class="escalation-card-header">
           ${renderEscalationBadge(item.severity)}
@@ -2249,8 +2259,8 @@ function renderEscalationsBlock(partner, escalationsConfigured) {
         <table class="data-table" style="margin-top: 8px;">
           <tbody>
             <tr><td>Blocked on</td><td>${escapeHtml(BLOCKED_ON_LABEL[item.blockedOn] || item.blockedOn)}${
-        item.blockedOnReason ? ` — ${escapeHtml(item.blockedOnReason)}` : ""
-      }</td></tr>
+          item.blockedOnReason ? ` — ${escapeHtml(item.blockedOnReason)}` : ""
+        }</td></tr>
             <tr><td>Days since last movement</td><td class="num">${days === null ? "—" : days}</td></tr>
             <tr><td>From</td><td>${escapeHtml(item.from || "")}</td></tr>
             <tr><td>Subject</td><td>${escapeHtml(item.subject || "")}</td></tr>
@@ -2258,12 +2268,45 @@ function renderEscalationsBlock(partner, escalationsConfigured) {
           </tbody>
         </table>
       </div>`;
-    })
-    .join("");
-  return `<div class="escalation-cards">${cards}</div>${linkSuffix}`;
+      })
+      .join("");
+    findingsHtml = `
+      <table class="data-table" style="margin-bottom: 12px;">
+        <thead>
+          <tr><th>Severity</th><th>Headline</th><th>Blocked on</th><th class="num">Last movement</th></tr>
+        </thead>
+        <tbody>${findingsRows}</tbody>
+      </table>
+      <div class="escalation-cards">${cards}</div>${linkSuffix}`;
+  }
+
+  const emails = (escalations.recentEmails || [])
+    .slice()
+    .sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  const emailsHtml = !emails.length
+    ? ""
+    : `
+      <h4 class="block-subtitle" style="margin-top: 16px;">Recent emails analyzed (${emails.length})</h4>
+      <div class="escalation-emails">
+        ${emails
+          .map(
+            (e) => `
+        <details class="escalation-email-item">
+          <summary>
+            <span class="escalation-email-date">${escapeHtml(formatDateTime(e.date))}</span>
+            <span class="escalation-email-from">${escapeHtml(e.from || "")}</span>
+            <span class="escalation-email-subject">${escapeHtml(e.subject || "")}</span>
+          </summary>
+          <div class="escalation-email-body">${escapeHtml(e.body || "")}</div>
+        </details>`
+          )
+          .join("")}
+      </div>`;
+
+  return findingsHtml + emailsHtml;
 }
 
-const PARTNER_INSIGHTS_COLUMNS = 6; // Partner, Bug Score, Feature Score, Support Score, Vitally, Escalation
+const PARTNER_INSIGHTS_COLUMNS = 5; // Partner, Bug Score, Feature Score, Live Fire, Smoldering
 
 // Column headers are clickable to sort - see `renderPartnerInsights`'s
 // `<th data-sort-key>` and the click handler below. Defaults to Partner
@@ -2274,34 +2317,21 @@ const PARTNER_INSIGHTS_SORT_COLUMNS = [
   { key: "name", label: "Partner" },
   { key: "bugScore", label: "Bug Score" },
   { key: "featureScore", label: "Feature Score" },
-  { key: "supportScore", label: "Support Score" },
-  { key: "vitallyHealthScore", label: "Vitally" },
-  { key: "escalationSeverity", label: "Escalation" },
+  { key: "liveFireCount", label: "Live Fire" },
+  { key: "smolderingCount", label: "Smoldering" },
 ];
 
-// Higher = more urgent - used both to rank a partner's *worst* active item
-// for the main-table badge/sort (see `worstEscalationSeverity`) and to
-// order items within the expanded row (most urgent first), matching the
-// triage prompt's "Rank by urgency, not by date" instruction.
+// Higher = more urgent - used to order items within the expanded row
+// (most urgent first), matching the triage prompt's "Rank by urgency, not
+// by date" instruction.
 const ESCALATION_SEVERITY_RANK = { LIVE_FIRE: 3, SMOLDERING: 2, WATCH: 1 };
-
-function worstEscalationSeverity(escalations) {
-  const items = (escalations && escalations.items) || [];
-  if (!items.length) return null;
-  return items.reduce(
-    (worst, item) =>
-      (ESCALATION_SEVERITY_RANK[item.severity] || 0) > (ESCALATION_SEVERITY_RANK[worst] || 0) ? item.severity : worst,
-    items[0].severity
-  );
-}
 
 function partnerInsightsSortValue(partner, key) {
   if (key === "name") return partner.name || "";
   if (key === "bugScore") return partner.product ? partner.product.bugScore : null;
   if (key === "featureScore") return partner.product ? partner.product.featureScore : null;
-  if (key === "supportScore") return partner.support ? partner.support.supportScore : null;
-  if (key === "vitallyHealthScore") return partner.vitallyHealthScore ?? null;
-  if (key === "escalationSeverity") return ESCALATION_SEVERITY_RANK[worstEscalationSeverity(partner.escalations)] || 0;
+  if (key === "liveFireCount") return escalationSeverityCount(partner.escalations, "LIVE_FIRE");
+  if (key === "smolderingCount") return escalationSeverityCount(partner.escalations, "SMOLDERING");
   return null;
 }
 
@@ -2340,7 +2370,6 @@ function renderCountLink(count, url) {
 // to and other rows don't shift around unexpectedly.
 function renderPartnerInsightsExpandedRow(partner) {
   const product = partner.product;
-  const support = partner.support;
 
   const productBlock = !product
     ? `<p class="empty-note">Not linked to a Linear customer yet - no Product scores available.</p>`
@@ -2358,61 +2387,12 @@ function renderPartnerInsightsExpandedRow(partner) {
         </tbody>
       </table>`;
 
-  const conversationRows = !support
-    ? ""
-    : support.conversations
-        .map(
-          (c) => `
-      <tr>
-        <td>${formatDateTime(c.closedAt)}</td>
-        <td class="num">${c.professionalism}</td>
-        <td class="num">${c.helpfulness}</td>
-        <td class="num">${c.cannedResponsePenalty}</td>
-        <td>${escapeHtml(c.rationale || "")}</td>
-        <td><a href="${escapeHtml(c.url)}" target="_blank" rel="noopener">Open</a></td>
-      </tr>`
-        )
-        .join("");
-
-  const supportBlock = !support
-    ? `<p class="empty-note">No conversations scored in the last ${
-        (partnerInsightsData && partnerInsightsData.supportScoreWindowDays) || 30
-      } days yet${
-        partnerInsightsData && partnerInsightsData.llmConfigured === false
-          ? " (OPENAI_API_KEY isn't configured yet - see README)"
-          : " - this fills in day by day as new conversations close"
-      }.</p>`
-    : `
-      <table class="data-table">
-        <tbody>
-          <tr><td>Conversations scored (${support.windowDays}d)</td><td class="num">${support.conversationsScored}</td></tr>
-          <tr><td>Professionalism</td><td class="num">${support.professionalism}</td></tr>
-          <tr><td>Helpfulness</td><td class="num">${support.helpfulness}</td></tr>
-          <tr><td>Canned-response penalty</td><td class="num">${support.cannedResponsePenalty}</td></tr>
-        </tbody>
-      </table>
-      <table class="data-table" style="margin-top: 12px;">
-        <thead>
-          <tr>
-            <th>Closed</th><th class="num">Professionalism</th><th class="num">Helpfulness</th>
-            <th class="num">Canned</th><th>Rationale</th><th></th>
-          </tr>
-        </thead>
-        <tbody>${conversationRows}</tbody>
-      </table>`;
-
   return `
     <tr class="partner-insights-expanded-row">
       <td colspan="${PARTNER_INSIGHTS_COLUMNS}">
-        <div class="partner-insights-drilldown-grid">
-          <div>
-            <h4 class="block-subtitle">Product</h4>
-            ${productBlock}
-          </div>
-          <div>
-            <h4 class="block-subtitle">Support</h4>
-            ${supportBlock}
-          </div>
+        <div>
+          <h4 class="block-subtitle">Product</h4>
+          ${productBlock}
         </div>
         <div style="margin-top: 16px;">
           <h4 class="block-subtitle">Escalations</h4>
@@ -2440,16 +2420,14 @@ function renderPartnerInsights(data) {
     .map((p) => {
       const bugScore = p.product ? p.product.bugScore : null;
       const featureScore = p.product ? p.product.featureScore : null;
-      const supportScore = p.support ? p.support.supportScore : null;
       const isActive = p.partnerId === partnerInsightsActivePartnerId;
       const mainRow = `
       <tr class="clickable-row${isActive ? " active-row" : ""}" data-partner-id="${escapeHtml(p.partnerId)}">
         <td>${escapeHtml(p.name)}${!p.matched ? ' <span class="unmatched-flag" title="Couldn\'t be matched between Linear and Intercom">⚠</span>' : ""}</td>
         <td class="num">${renderScoreCell(bugScore, "not linked")}</td>
         <td class="num">${renderScoreCell(featureScore, "not linked")}</td>
-        <td class="num">${renderScoreCell(supportScore, "no data yet")}</td>
-        <td class="num">${renderVitallyHealthCell(p.vitallyHealthScore, data.vitallyConfigured !== false)}</td>
-        <td class="num">${renderEscalationCell(p.escalations, data.escalationsConfigured !== false)}</td>
+        <td class="num">${renderEscalationCountCell(p.escalations, data.escalationsConfigured !== false, "LIVE_FIRE")}</td>
+        <td class="num">${renderEscalationCountCell(p.escalations, data.escalationsConfigured !== false, "SMOLDERING")}</td>
       </tr>`;
       return isActive ? mainRow + renderPartnerInsightsExpandedRow(p) : mainRow;
     })
@@ -2460,25 +2438,14 @@ function renderPartnerInsights(data) {
       <p class="quality-definitions" style="list-style: none; padding-left: 0;">
         Bug score reflects bug-SLA responsiveness; Feature score reflects how many of a partner's feature
         requests/other asks have gone stale (open 90+ days, unresolved) - both from that partner's Linear
-        customer requests, 100 = clean. Support score is the LLM's read of professionalism/helpfulness/
-        genuineness across that partner's Intercom conversations closed in the last ${
-          data.supportScoreWindowDays || 30
-        } days - scored incrementally once/day, so it starts empty and fills in over time.${
-    data.llmConfigured === false
-      ? " Support scoring isn't configured yet (OPENAI_API_KEY missing) - see README."
-      : ""
-  } Vitally is that partner's own health score from Vitally (already red/yellow/green there, shown as-is).${
-    data.vitallyConfigured === false
-      ? " Vitally isn't configured yet (VITALLY_ACCESS_TOKEN missing) - see README."
-      : ""
-  } Escalation flags a partner's recent human-written emails (synced via Vitally) that the LLM's triage
-        flagged as a live or brewing risk - only re-analyzed on a forced Update, and only the newest
-        email each time.${
+        customer requests, 100 = clean. Live Fire and Smoldering are counts of that partner's currently-tracked
+        escalation items at each severity, from an LLM triage of that partner's recent human-written emails
+        (synced via Vitally) - only re-analyzed on a forced Update, and only the newest email each time.${
           data.escalationsConfigured === false
             ? " Escalation triage isn't configured yet (needs OPENAI_API_KEY and VITALLY_ACCESS_TOKEN) - see README."
             : ""
         }
-        Click a partner for the full breakdown.
+        Click a partner for the full breakdown, including Watch-severity items and the source emails themselves.
       </p>
       <table class="data-table partner-insights-table">
         <thead>
@@ -2542,7 +2509,7 @@ async function refreshPartnerInsights() {
   const btn = els.partnerInsightsUpdateBtn;
   if (btn) {
     btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span><span class="btn-label">Updating… (Linear + Intercom + LLM, can be slow)</span>';
+    btn.innerHTML = '<span class="spinner"></span><span class="btn-label">Updating… (Linear + Intercom + Vitally + LLM, can be slow)</span>';
   }
   try {
     const res = await fetch("/api/partner-insights/refresh", { method: "POST" });
