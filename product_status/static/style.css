@@ -1424,13 +1424,30 @@ body {
   background: var(--surface-2);
   padding: 16px 18px;
   box-shadow: inset 3px 0 0 var(--accent);
-  /* Resets the outer table's `.partner-insights-table td { text-align:
-     center }` (a couple rules up) back to left - `text-align` inherits,
-     so without this every nested table/paragraph inside the expanded row
-     (Product block, Escalations findings table, etc.) would otherwise
-     inherit "center" from here rather than each nested `.data-table`'s
-     own normal left/right alignment. */
+  /* Resets non-table content (headings, paragraphs) back to left via
+     inheritance - see the `.data-table th/td` override right below for
+     why table cells specifically need their own rule instead. */
   text-align: left;
+}
+
+/* `.partner-insights-table th, .partner-insights-table td` (a couple
+   rules up) is a descendant (not child) selector, so it directly matches
+   - and, since it's declared later in this file, wins over - every
+   th/td belonging to any table nested inside the expanded row too (the
+   Product block's table, the Escalations findings table, etc.), not just
+   the outer table's own cells. `text-align` being inherited doesn't help
+   here since these elements are directly targeted, not just inheriting
+   from an ancestor. Bumping specificity (two classes, not one) restores
+   each nested `.data-table`'s normal left/right alignment regardless of
+   source order. */
+.partner-insights-expanded-row .data-table th,
+.partner-insights-expanded-row .data-table td {
+  text-align: left;
+}
+
+.partner-insights-expanded-row .data-table th.num,
+.partner-insights-expanded-row .data-table td.num {
+  text-align: right;
 }
 
 .block-subtitle {
