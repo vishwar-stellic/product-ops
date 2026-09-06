@@ -823,10 +823,14 @@ for a partner that actually has new eligible email since the last check,
 not on every run. Whenever that turns up an item that's newly Live Fire
 or Smoldering (brand new, or escalated up from Watch/Smoldering - see
 escalation_report.py's `_notable_severity_changes`), it sends one Slack
-DM summarizing everything newly flagged in that run
+message summarizing everything newly flagged in that run
 (`product_status/slack_client.py`) - configured via `SLACK_BOT_TOKEN` +
-`SLACK_ALERT_USER_ID` in `.env.example`; leave either unset and
-everything else works, the Slack step is just skipped. This alerting
+`SLACK_ALERT_TARGET` in `.env.example`; leave either unset and
+everything else works, the Slack step is just skipped.
+`SLACK_ALERT_TARGET` can be either a person's Slack member ID (DMs them)
+or a channel ID (posts there instead, once the bot's invited to that
+channel) - same env var either way, see `slack_client.py`'s module
+docstring. This alerting
 fires the same way regardless of which of the three trigger paths
 (this cron, the whole-roster Update button, or a per-partner Update
 button) caused the refresh - see escalation_report.py's module docstring.

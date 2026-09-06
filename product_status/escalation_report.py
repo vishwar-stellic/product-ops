@@ -78,7 +78,7 @@ Whenever a run's LLM triage produces an item that's newly LIVE_FIRE or
 SMOLDERING - either a brand-new item, or an existing tracked item that
 just got escalated up from a lower severity (e.g. WATCH -> SMOLDERING) -
 `_notable_severity_changes` flags it, and `refresh_partner_escalations`
-sends one Slack DM (`slack_client.send_dm`) summarizing every such item
+sends one Slack message (`slack_client.send_message`) summarizing every such item
 across every partner processed in that run, best-effort (a Slack failure
 never breaks the refresh itself - see the try/except around that call).
 An item that stays at the same severity run-over-run (already-known
@@ -94,7 +94,10 @@ This fires regardless of which of the three trigger paths above caused
 the refresh (cron or either Update button) - deliberately, since the
 point is "tell me the moment this happens," not "only tell me if the
 scheduled job happens to be the one that notices." No-op entirely when
-`SLACK_BOT_TOKEN`/`SLACK_ALERT_USER_ID` aren't set (see `.env.example`).
+`SLACK_BOT_TOKEN`/`SLACK_ALERT_TARGET` aren't set (see `.env.example`) -
+the latter can be either a person's Slack member ID (DM) or a channel ID
+(posts to that channel instead) - see `slack_client.py`'s module
+docstring for the difference in setup.
 
 ## `recentEmails` - showing the source emails, not just extracted quotes
 Alongside `items`, each partner's cached state also carries `recentEmails`
@@ -520,7 +523,7 @@ def _notify_slack(notable_changes: List[Dict[str, Any]]) -> None:
     if not notable_changes or not slack_client.is_configured():
         return
     try:
-        slack_client.send_dm(_format_slack_summary(notable_changes))
+        slack_client.send_message(_format_slack_summary(notable_changes))
     except Exception as exc:  # noqa: BLE001
         print(f"[escalation_report] Slack notification failed: {exc}")
 
