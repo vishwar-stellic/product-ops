@@ -65,10 +65,36 @@ not a number the LLM writes once and which then goes stale - each item
 carries a `lastMovementAt` timestamp, and the frontend computes the day
 count live on every page load.
 
-Only runs on an explicit forced refresh (the Partner Insights tab's
-"Update" button) - there's no separate nightly cron for this, unlike the
-Support Report. See `partner_insights.py:build_partner_insights_report`'s
-`force` plumbing.
+Only runs on an explicit forced refresh - either a person clicking the
+Partner Insights tab's whole-roster or per-partner "Update" button, or
+`GET /api/cron/refresh-escalations` (Vercel Cron, every 2 hours during
+business hours - see server.py's `_in_escalation_run_window` and
+`vercel.json`). All three ultimately call this same function with
+`force=True`; see `partner_insights.py:build_partner_insights_report`'s
+`force` plumbing for the button paths.
+
+## Slack alerting on newly-flagged escalations
+Whenever a run's LLM triage produces an item that's newly LIVE_FIRE or
+SMOLDERING - either a brand-new item, or an existing tracked item that
+just got escalated up from a lower severity (e.g. WATCH -> SMOLDERING) -
+`_notable_severity_changes` flags it, and `refresh_partner_escalations`
+sends one Slack DM (`slack_client.send_dm`) summarizing every such item
+across every partner processed in that run, best-effort (a Slack failure
+never breaks the refresh itself - see the try/except around that call).
+An item that stays at the same severity run-over-run (already-known
+Smoldering, still Smoldering) never re-alerts - only the moment it first
+crosses into Fire/Smoldering territory does. "Matching" a new item back
+to a prior one uses an exact `headline` match (items have no separate
+stable ID) - a reasonable proxy given the triage prompt's own
+INCREMENTAL UPDATE instructions keep an existing item's headline
+unchanged when updating it in place, only ever writing a new headline
+for a genuinely new item.
+
+This fires regardless of which of the three trigger paths above caused
+the refresh (cron or either Update button) - deliberately, since the
+point is "tell me the moment this happens," not "only tell me if the
+scheduled job happens to be the one that notices." No-op entirely when
+`SLACK_BOT_TOKEN`/`SLACK_ALERT_USER_ID` aren't set (see `.env.example`).
 
 ## `recentEmails` - showing the source emails, not just extracted quotes
 Alongside `items`, each partner's cached state also carries `recentEmails`
@@ -100,7 +126,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import cache, openai_client
+from . import cache, openai_client, slack_client
 from .vitally_client import VitallyClient
 
 ESCALATION_STATE_CACHE_KEY = "partner-insights-escalations"
@@ -437,6 +463,67 @@ def _update_escalations(
 # Orchestration
 # ---------------------------------------------------------------------------
 
+_NOTABLE_SEVERITIES = {"LIVE_FIRE", "SMOLDERING"}
+
+
+def _notable_severity_changes(
+    prior_items: List[Dict[str, Any]],
+    updated_items: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Items in `updated_items` that just became LIVE_FIRE/SMOLDERING this
+    run - either brand new (no prior item with the same `headline`), or an
+    existing item that just got escalated up from a lower severity (e.g.
+    WATCH -> SMOLDERING, SMOLDERING -> LIVE_FIRE) - for the Slack alert
+    (see module docstring's "Slack alerting" section). An item that was
+    already at the same severity last run is never included, so a
+    long-running Fire/Smoldering item doesn't re-alert on every 2-hour
+    check."""
+    prior_by_headline = {item.get("headline"): item for item in prior_items}
+    notable = []
+    for item in updated_items:
+        if item.get("severity") not in _NOTABLE_SEVERITIES:
+            continue
+        prior_match = prior_by_headline.get(item.get("headline"))
+        if prior_match is None or prior_match.get("severity") != item.get("severity"):
+            notable.append(item)
+    return notable
+
+
+_SEVERITY_SLACK_LABEL = {"LIVE_FIRE": "Live Fire", "SMOLDERING": "Smoldering"}
+
+
+def _format_slack_summary(notable_changes: List[Dict[str, Any]]) -> str:
+    """Slack mrkdwn text for one or more newly-notable items, grouped in
+    the order they were processed (partners run concurrently, so this
+    isn't a meaningful ranking - just stable enough to read). See module
+    docstring's "Slack alerting" section for what counts as "newly
+    notable"."""
+    noun = "escalation" if len(notable_changes) == 1 else "escalations"
+    lines = [f"*{len(notable_changes)} new {noun} flagged* (Partner Insights, automatic Vitally check):"]
+    for item in notable_changes:
+        label = _SEVERITY_SLACK_LABEL.get(item.get("severity"), item.get("severity"))
+        header = f"\u2022 *{label}* \u2014 *{item.get('partnerName')}*: {item.get('headline')}"
+        link = item.get("vitallyAccountUrl")
+        if link:
+            header += f" (<{link}|open in Vitally>)"
+        lines.append(header)
+        evidence = item.get("evidence") or []
+        if evidence:
+            lines.append(f"    > {evidence[0].get('quote')}")
+    return "\n".join(lines)
+
+
+def _notify_slack(notable_changes: List[Dict[str, Any]]) -> None:
+    """Best-effort - a Slack failure should never break the escalation
+    refresh itself (mirrors this module's other "one bad thing shouldn't
+    break the batch" try/excepts)."""
+    if not notable_changes or not slack_client.is_configured():
+        return
+    try:
+        slack_client.send_dm(_format_slack_summary(notable_changes))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[escalation_report] Slack notification failed: {exc}")
+
 
 def _get_state() -> Dict[str, Any]:
     return cache.read_raw(ESCALATION_STATE_CACHE_KEY) or {}
@@ -456,9 +543,14 @@ def refresh_partner_escalations(
 ) -> Dict[str, Any]:
     """`partnerId -> {"items": [...], "checkedAt": <iso>}` for every
     partner with a matched Vitally account. Only does real work (fetching
-    new emails, calling the LLM) when `force=True` - the Partner Insights
-    tab's "Update" button - see module docstring; a passive/cached read
-    just serves whatever's already in `cache.read_raw` untouched."""
+    new emails, calling the LLM) when `force=True` - a person clicking
+    either Update button, or the Vercel Cron hitting
+    `/api/cron/refresh-escalations` - see module docstring; a passive/
+    cached read just serves whatever's already in `cache.read_raw`
+    untouched. Also sends a Slack DM for any newly-flagged Fire/Smoldering
+    item across this run (see module docstring's "Slack alerting"
+    section) - a side effect, not reflected in this function's return
+    value, so no caller needs to change to pick this up."""
     state = _get_state()
     if not force or not escalations_configured():
         return state
@@ -467,9 +559,10 @@ def refresh_partner_escalations(
     lookback_cutoff_iso = (datetime.now(timezone.utc) - timedelta(days=ESCALATION_LOOKBACK_DAYS)).isoformat()
     partners_with_vitally = [p for p in registry if p.get("vitallyAccountId")]
 
-    def _process(partner: Dict[str, Any]) -> Optional[Tuple[str, Dict[str, Any]]]:
+    def _process(partner: Dict[str, Any]) -> Optional[Tuple[str, Dict[str, Any], List[Dict[str, Any]]]]:
         account_id = partner["vitallyAccountId"]
         prior = state.get(partner["partnerId"]) or {}
+        prior_items = prior.get("items") or []
         # Never look back further than the lookback window even if it's
         # been a while since the last forced refresh (see module
         # docstring) - but never re-fetch anything already incorporated
@@ -481,17 +574,18 @@ def refresh_partner_escalations(
             print(f"[escalation_report] fetch failed for {partner['name']}: {exc}")
             return None
         if not new_emails:
-            return partner["partnerId"], prior or {"items": [], "lastMessageAt": None, "checkedAt": now_iso}
+            payload = prior or {"items": [], "lastMessageAt": None, "checkedAt": now_iso}
+            return partner["partnerId"], payload, []
 
-        updated_items = _update_escalations(prior.get("items") or [], new_emails)
+        updated_items = _update_escalations(prior_items, new_emails)
         if updated_items is None:
             # The LLM call failed - keep the prior items rather than silently
             # dropping them, but don't advance `lastMessageAt` so these
             # emails get retried next time.
-            return partner["partnerId"], {**prior, "checkedAt": now_iso}
+            return partner["partnerId"], {**prior, "checkedAt": now_iso}, []
 
         newest_seen = max(e["date"] for e in new_emails)
-        return partner["partnerId"], {
+        payload = {
             "items": updated_items,
             "lastMessageAt": newest_seen,
             "checkedAt": now_iso,
@@ -502,14 +596,22 @@ def refresh_partner_escalations(
             # accumulating email archive.
             "recentEmails": new_emails[-_RECENT_EMAILS_MAX:],
         }
+        notable = [
+            {**item, "partnerName": partner["name"], "vitallyAccountUrl": vitally_app_account_url(account_id)}
+            for item in _notable_severity_changes(prior_items, updated_items)
+        ]
+        return partner["partnerId"], payload, notable
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         results = list(pool.map(_process, partners_with_vitally))
 
+    notable_changes: List[Dict[str, Any]] = []
     for result in results:
         if result is not None:
-            partner_id, payload = result
+            partner_id, payload, notable = result
             state[partner_id] = payload
+            notable_changes.extend(notable)
 
     _save_state(state)
+    _notify_slack(notable_changes)
     return state

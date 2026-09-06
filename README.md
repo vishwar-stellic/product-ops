@@ -803,6 +803,37 @@ may invoke anywhere within that hour rather than exactly on the minute -
 see [Vercel's Cron Jobs docs](https://vercel.com/docs/cron-jobs) for
 current plan limits.
 
+**Escalations cron + Slack alerting (Vercel Cron, needs a plan above
+Hobby):** `vercel.json` also registers a cron job that hits
+`GET /api/cron/refresh-escalations` once an hour, every day
+(`"schedule": "0 * * * *"`). It's deliberately a superset schedule - the
+endpoint itself (`server.py`'s `_in_escalation_run_window`) checks the
+*real* America/New_York local time on every invocation and no-ops
+(cheaply - no Vitally/LLM calls) unless it's currently one of 6 slots
+(8am/10am/12pm/2pm/4pm/6pm) on a weekday, which is how "every 2 hours,
+8am-6pm Eastern, Monday-Friday" stays correct across the DST switch
+without a seasonal schedule change (a fixed-UTC-offset cron, like the
+Support Report one above, would drift by an hour twice a year). Inside
+that window it forces the same whole-roster escalation refresh as the
+Partner Insights tab's Update button
+(`build_partner_insights_report(force=True)` ->
+`escalation_report.refresh_partner_escalations`) - which, per that
+module's "Only look at the last email" design, only ever calls the LLM
+for a partner that actually has new eligible email since the last check,
+not on every run. Whenever that turns up an item that's newly Live Fire
+or Smoldering (brand new, or escalated up from Watch/Smoldering - see
+escalation_report.py's `_notable_severity_changes`), it sends one Slack
+DM summarizing everything newly flagged in that run
+(`product_status/slack_client.py`) - configured via `SLACK_BOT_TOKEN` +
+`SLACK_ALERT_USER_ID` in `.env.example`; leave either unset and
+everything else works, the Slack step is just skipped. This alerting
+fires the same way regardless of which of the three trigger paths
+(this cron, the whole-roster Update button, or a per-partner Update
+button) caused the refresh - see escalation_report.py's module docstring.
+Same `CRON_SECRET` gate as the Support Report cron. Needs a Vercel plan
+above Hobby, since Hobby caps cron jobs at once/day (see above) and this
+one needs to fire hourly to do its own internal gating correctly.
+
 ## Project layout
 
 ```
@@ -824,6 +855,7 @@ product_status/
   vitally_client.py      # raw Vitally REST API client (Basic Auth, cursor pagination) - escalation_report.py's email source + partner_identity.py's account matching
   escalation_report.py   # Vitally-synced partner emails, triaged by an LLM, for Partner Insights' Live Fire/Smoldering columns
   openai_client.py       # thin OpenAI Chat Completions wrapper shared by partner_insights.py + escalation_report.py
+  slack_client.py        # minimal Slack Web API client (DM via chat.postMessage) - escalation_report.py's new-Fire/Smoldering alert
   cache.py             # JSON cache keyed by age (used by the dashboard, 24h default) - on disk, or...
   blob_cache.py         # ...Vercel Blob-backed, when BLOB_READ_WRITE_TOKEN is set (persists on serverless hosts)
   notion_client.py      # raw Notion REST API client (auth, retries, nested block creation)

@@ -8,6 +8,10 @@
     {
       "path": "/api/cron/refresh-support-report",
       "schedule": "0 7 * * *"
+    },
+    {
+      "path": "/api/cron/refresh-escalations",
+      "schedule": "0 * * * *"
     }
   ]
 }

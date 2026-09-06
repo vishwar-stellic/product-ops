@@ -81,6 +81,26 @@ Endpoints:
                                           Intercom, plus an LLM scoring
                                           batch), bypassing the 24h cache -
                                           slow, same allowlist gate
+    POST /api/partner-insights/refresh/{partner_id} -> force a fresh pull
+                                          for exactly one partner - see
+                                          partner_insights.refresh_single_partner
+    GET  /api/cron/refresh-escalations -> Vercel Cron hits this hourly (see
+                                          vercel.json); a no-op outside
+                                          Mon-Fri 8am-6pm America/New_York
+                                          (checked in real local time, so it
+                                          stays correct across DST - see
+                                          `_in_escalation_run_window`),
+                                          otherwise force-refreshes every
+                                          partner's escalation state (same
+                                          as the whole-roster Update
+                                          button) - see
+                                          escalation_report.py's "Slack
+                                          alerting" docstring section for
+                                          what happens when that finds
+                                          something new. Same
+                                          `Authorization: Bearer
+                                          <CRON_SECRET>` gate as the
+                                          Support Report cron above.
     GET  /api/notion/status       -> whether Notion is connected (OAuth) and
                                       to which workspace, plus
                                       defaultParentPageUrl
@@ -105,10 +125,12 @@ Endpoints:
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from html import escape
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -172,6 +194,7 @@ _AUTH_PUBLIC_PATHS = {
     # pattern as `_require_partner_insights_access` gating its own routes
     # independently of this Google-login middleware.
     "/api/cron/refresh-support-report",
+    "/api/cron/refresh-escalations",
 }
 
 
@@ -688,6 +711,48 @@ def cron_refresh_support_report(request: Request):
         return _get_support_report(force=True)
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+# Local hours (America/New_York, real clock time - not a fixed UTC offset,
+# so this stays correct across the DST switch) during which
+# /api/cron/refresh-escalations actually does anything. "Every 2 hours,
+# 8am-6pm, Mon-Fri" -> exactly these 6 slots.
+_ESCALATION_RUN_HOURS = {8, 10, 12, 14, 16, 18}
+_ESCALATION_TIMEZONE = ZoneInfo("America/New_York")
+
+
+def _in_escalation_run_window(now: Optional[datetime] = None) -> bool:
+    """Whether *right now*, in real America/New_York local time, falls on
+    one of the 2-hour business-hours slots above. The Vercel Cron entry
+    itself just fires hourly, every day (see vercel.json) - encoding
+    "every 2 hours, 8am-6pm Eastern, weekdays only" directly as a UTC cron
+    schedule would need manual adjustment twice a year for DST, so that
+    schedule is deliberately a superset and this function does the actual
+    gating in real local time instead. `now` is only ever overridden by
+    tests."""
+    local = (now or datetime.now(_ESCALATION_TIMEZONE)).astimezone(_ESCALATION_TIMEZONE)
+    return local.weekday() < 5 and local.hour in _ESCALATION_RUN_HOURS
+
+
+@app.get("/api/cron/refresh-escalations")
+def cron_refresh_escalations(request: Request):
+    """Meant to be invoked by Vercel Cron hourly, every day (see
+    vercel.json) - not by a person. A cheap no-op outside business hours
+    (see `_in_escalation_run_window`); otherwise forces the same
+    whole-roster escalation refresh as the Partner Insights tab's Update
+    button (`build_partner_insights_report(force=True)`), which - as a
+    side effect - sends a Slack DM for any newly-flagged Fire/Smoldering
+    item (see escalation_report.py's "Slack alerting" docstring section)."""
+    _require_cron_secret(request)
+    if not _in_escalation_run_window():
+        return {"skipped": True, "reason": "outside Mon-Fri 8am-6pm America/New_York"}
+    try:
+        report = _get_partner_insights(force=True)
+    except LinearGraphQLError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"skipped": False, "fetchedAt": report.get("fetchedAt")}
 
 
 def _require_partner_insights_access(request: Request) -> None:
