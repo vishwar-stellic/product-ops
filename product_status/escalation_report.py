@@ -109,17 +109,15 @@ triage prompt happens to pull out. This overwrites on each run (same "only
 the newest" framing as `items`) - it is not an accumulating email archive,
 just "what did the most recent check actually look at".
 
-## Where the "link to the thread" bit of the prompt's evidence format
-comes from
-Vitally's REST API doesn't expose a clickable URL back to the original
-thread (`Conversation.externalUrl` is `None` for both Gmail/Outlook- and
-Intercom-sourced conversations in this workspace, confirmed against live
-data) - so evidence links to that partner's Account page in the Vitally
-web app instead (`VITALLY_APP_SUBDOMAIN`, optional - see `.env.example`),
-which does surface the same conversation under its "Conversations" tab,
-just not deep-linked to the exact thread. Left `None` (not shown as a
-link at all) when `VITALLY_APP_SUBDOMAIN` isn't set, rather than guessing
-at a subdomain.
+## Slack `(source)` links back to the Vitally conversation
+Vitally's REST API doesn't return a web URL (`Conversation.externalUrl`
+is `None` here), but the app deep-links conversations at
+`https://<subdomain>.vitally.io/conversations/active/<conversationId>`
+(see `vitally_app_conversation_url`). Each Slack alert uses the Vitally
+conversation UUID we matched from the triaged email batch
+(`vitallyConversationId` on the finding). Requires
+`VITALLY_APP_SUBDOMAIN` (see `.env.example`); falls back to the partner's
+Vitally account page only when no conversation id was matched.
 """
 
 import json
@@ -167,6 +165,11 @@ def escalations_configured() -> bool:
     return openai_client.is_configured() and vitally_configured()
 
 
+def _vitally_app_subdomain() -> Optional[str]:
+    subdomain = os.environ.get("VITALLY_APP_SUBDOMAIN")
+    return subdomain or None
+
+
 def vitally_app_account_url(account_id: str) -> Optional[str]:
     """`None` when `VITALLY_APP_SUBDOMAIN` isn't set - see module
     docstring's "link to the thread" section. Used by
@@ -174,10 +177,21 @@ def vitally_app_account_url(account_id: str) -> Optional[str]:
     best-effort "open in Vitally" link (the account's Conversations tab,
     not the exact thread - Vitally's REST API doesn't expose a deep link
     to that)."""
-    subdomain = os.environ.get("VITALLY_APP_SUBDOMAIN")
+    subdomain = _vitally_app_subdomain()
     if not subdomain:
         return None
     return f"https://{subdomain}.vitally.io/accounts/{account_id}"
+
+
+def vitally_app_conversation_url(conversation_id: str) -> Optional[str]:
+    """Deep link to one Vitally conversation in the web app
+    (`/conversations/active/<id>`). Same subdomain requirement as
+    `vitally_app_account_url`. Not returned by Vitally's REST API - built
+    from the conversation id we already have from `get_conversation`."""
+    subdomain = _vitally_app_subdomain()
+    if not subdomain or not conversation_id:
+        return None
+    return f"https://{subdomain}.vitally.io/conversations/active/{conversation_id}"
 
 
 # ---------------------------------------------------------------------------
@@ -289,7 +303,8 @@ def _collect_new_human_emails(
         updated_at = summary.get("updatedAt") or ""
         if updated_at and updated_at < since_iso:
             break  # sorted desc - nothing further back can be newer than since_iso either
-        full = vitally_client.get_conversation(summary["id"])
+        conversation_id = summary["id"]
+        full = vitally_client.get_conversation(conversation_id)
         subject = full.get("subject") or "(no subject)"
         for message in full.get("messages") or []:
             if not _is_partner_authored(message, full):
@@ -306,6 +321,7 @@ def _collect_new_human_emails(
                     "subject": subject,
                     "date": timestamp,
                     "body": body_text[:4000],
+                    "vitallyConversationId": conversation_id,
                 }
             )
     candidates.sort(key=lambda c: c["date"])
@@ -561,7 +577,82 @@ def _sanitize_item(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "from": str(raw.get("from") or "")[:200],
         "subject": str(raw.get("subject") or "")[:300],
         "lastEmailDate": str(raw.get("lastEmailDate") or "") or None,
+        "vitallyConversationId": str(raw.get("vitallyConversationId") or "") or None,
     }
+
+
+def _normalize_subject_for_match(subject: str) -> str:
+    """Case/prefix-insensitive subject key for matching LLM items back to
+    Vitally threads (Re:/Fwd: chains often differ slightly in casing)."""
+    normalized = re.sub(r"\s+", " ", (subject or "").strip().lower())
+    while True:
+        stripped = re.sub(r"^(re|fw|fwd):\s*", "", normalized)
+        if stripped == normalized:
+            break
+        normalized = stripped
+    return normalized
+
+
+def _match_conversation_id(item: Dict[str, Any], source_emails: List[Dict[str, Any]]) -> Optional[str]:
+    """Best-effort link from an LLM item back to the Vitally conversation
+    that supplied its source messages - matched on subject/from/date
+    against the batch that was just analyzed."""
+    if not source_emails:
+        return None
+    subject = (item.get("subject") or "").strip()
+    subject_key = _normalize_subject_for_match(subject)
+    last_date = item.get("lastEmailDate") or item.get("lastMovementAt")
+    sender = (item.get("from") or "").strip()
+
+    candidates = source_emails
+    if subject_key:
+        by_subject = [
+            e
+            for e in source_emails
+            if _normalize_subject_for_match(e.get("subject") or "") == subject_key
+        ]
+        if by_subject:
+            candidates = by_subject
+
+    if last_date:
+        for email in candidates:
+            if email.get("date") == last_date and email.get("vitallyConversationId"):
+                return email["vitallyConversationId"]
+
+    if sender:
+        for email in candidates:
+            if email.get("from") == sender and email.get("vitallyConversationId"):
+                return email["vitallyConversationId"]
+
+    if len(candidates) == 1 and candidates[0].get("vitallyConversationId"):
+        return candidates[0]["vitallyConversationId"]
+
+    dated = [e for e in candidates if e.get("vitallyConversationId")]
+    if dated:
+        return max(dated, key=lambda e: e.get("date") or "")["vitallyConversationId"]
+    return None
+
+
+def _enrich_items_with_source_conversations(
+    items: List[Dict[str, Any]],
+    source_emails: List[Dict[str, Any]],
+    prior_items: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Attach `vitallyConversationId` to each tracked item so Slack alerts
+    and future runs can deep-link back to the Vitally thread."""
+    prior_by_headline = {item.get("headline"): item for item in prior_items}
+    enriched: List[Dict[str, Any]] = []
+    for item in items:
+        row = dict(item)
+        conversation_id = _match_conversation_id(row, source_emails)
+        if not conversation_id:
+            prior = prior_by_headline.get(row.get("headline"))
+            if prior:
+                conversation_id = prior.get("vitallyConversationId")
+        if conversation_id:
+            row["vitallyConversationId"] = conversation_id
+        enriched.append(row)
+    return enriched
 
 
 def _update_escalations(
@@ -631,9 +722,11 @@ def _format_slack_summary(notable_changes: List[Dict[str, Any]]) -> str:
     for item in notable_changes:
         label = _SEVERITY_SLACK_LABEL.get(item.get("severity"), item.get("severity"))
         header = f"\u2022 *{label}* \u2014 *{item.get('partnerName')}*: {item.get('headline')}"
-        link = item.get("vitallyAccountUrl")
-        if link:
-            header += f" (<{link}|open in Vitally>)"
+        source_url = vitally_app_conversation_url(item.get("vitallyConversationId") or "")
+        if not source_url:
+            source_url = item.get("vitallyAccountUrl")
+        if source_url:
+            header += f" (<{source_url}|source>)"
         lines.append(header)
         evidence = item.get("evidence") or []
         if evidence:
@@ -702,7 +795,17 @@ def refresh_partner_escalations(
             print(f"[escalation_report] fetch failed for {partner['name']}: {exc}")
             return None
         if not new_emails:
-            payload = prior or {"items": [], "lastMessageAt": None, "checkedAt": now_iso}
+            prior_items = prior.get("items") or []
+            if any(not item.get("vitallyConversationId") for item in prior_items):
+                backfill_emails = _collect_new_human_emails(
+                    vitally_client, account_id, lookback_cutoff_iso
+                )
+                enriched_items = _enrich_items_with_source_conversations(
+                    prior_items, backfill_emails, prior_items
+                )
+                payload = {**prior, "items": enriched_items, "checkedAt": now_iso}
+            else:
+                payload = prior or {"items": [], "lastMessageAt": None, "checkedAt": now_iso}
             return partner["partnerId"], payload, []
 
         updated_items = _update_escalations(prior_items, new_emails)
@@ -711,6 +814,16 @@ def refresh_partner_escalations(
             # dropping them, but don't advance `lastMessageAt` so these
             # emails get retried next time.
             return partner["partnerId"], {**prior, "checkedAt": now_iso}, []
+
+        updated_items = _enrich_items_with_source_conversations(updated_items, new_emails, prior_items)
+        if any(not item.get("vitallyConversationId") for item in updated_items):
+            # Items can predate conversation-id capture, or subjects can
+            # drift across incremental runs - widen to the full lookback
+            # window and try again before giving up on Slack source links.
+            backfill_emails = _collect_new_human_emails(vitally_client, account_id, lookback_cutoff_iso)
+            updated_items = _enrich_items_with_source_conversations(
+                updated_items, backfill_emails, updated_items
+            )
 
         newest_seen = max(e["date"] for e in new_emails)
         payload = {
