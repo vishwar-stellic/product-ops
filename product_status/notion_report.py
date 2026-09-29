@@ -260,9 +260,9 @@ def refresh_section_callout(refresh_url: str) -> Dict[str, Any]:
     return callout(
         "🔄",
         [
-            rich_text("Refresh this section from Linear — "),
-            rich_text("click here", link=refresh_url, bold=True),
-            rich_text(". Updates generated content; manual notes may be overwritten."),
+            rich_text("Click "),
+            rich_text("here", link=refresh_url, bold=True),
+            rich_text(" to refresh this section from Linear. Manual updates will be overwritten."),
         ],
     )
 
