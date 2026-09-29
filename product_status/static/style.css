@@ -695,10 +695,10 @@ body {
 }
 
 .multi-select-option {
-  display: flex;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  column-gap: 8px;
   align-items: center;
-  justify-content: flex-start;
-  gap: 6px;
   width: 100%;
   box-sizing: border-box;
   padding: 4px 6px;
@@ -708,9 +708,9 @@ body {
   letter-spacing: 0;
   color: var(--text);
   text-align: left;
+  direction: ltr;
   border-radius: 4px;
   cursor: pointer;
-  white-space: nowrap;
 }
 
 .multi-select-option:hover {
@@ -720,6 +720,16 @@ body {
 .multi-select-option input[type="checkbox"] {
   margin: 0;
   accent-color: var(--accent);
+  justify-self: start;
+}
+
+.multi-select-option-label {
+  text-align: left;
+  justify-self: start;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .filter-table td a {

@@ -1552,7 +1552,7 @@ function renderSupportReportMultiSelect(filterKey, options, selected) {
       (option) => `
       <label class="multi-select-option">
         <input type="checkbox" value="${escapeHtml(option)}"${selectedSet.has(option) ? " checked" : ""}>
-        ${escapeHtml(option)}
+        <span class="multi-select-option-label">${escapeHtml(option)}</span>
       </label>`
     )
     .join("");
@@ -1563,6 +1563,62 @@ function renderSupportReportMultiSelect(filterKey, options, selected) {
       )}</button>
       <div class="multi-select-menu hidden">${checks}</div>
     </div>`;
+}
+
+function closeSupportReportMultiSelectMenu(menu) {
+  if (!menu) return;
+  menu.classList.add("hidden");
+  if (menu._multiSelectWrap) {
+    menu._multiSelectWrap.appendChild(menu);
+    delete menu._multiSelectWrap;
+  }
+  menu.style.position = "";
+  menu.style.left = "";
+  menu.style.top = "";
+  menu.style.minWidth = "";
+  menu.style.width = "";
+  menu.style.maxWidth = "";
+  menu.style.zIndex = "";
+}
+
+function closeAllSupportReportMultiSelectMenus() {
+  document.querySelectorAll(".multi-select-menu:not(.hidden)").forEach(closeSupportReportMultiSelectMenu);
+}
+
+function openSupportReportMultiSelectMenu(wrap) {
+  const menu = wrap.querySelector(".multi-select-menu");
+  const trigger = wrap.querySelector(".multi-select-trigger");
+  if (!menu || !trigger) return;
+  if (!menu.classList.contains("hidden")) {
+    closeSupportReportMultiSelectMenu(menu);
+    return;
+  }
+  closeAllSupportReportMultiSelectMenus();
+  menu._multiSelectWrap = wrap;
+  document.body.appendChild(menu);
+  menu.classList.remove("hidden");
+  const rect = trigger.getBoundingClientRect();
+  menu.style.position = "fixed";
+  menu.style.left = `${rect.left}px`;
+  menu.style.top = `${rect.bottom + 4}px`;
+  menu.style.minWidth = `${Math.max(rect.width, 220)}px`;
+  menu.style.width = "max-content";
+  menu.style.maxWidth = "320px";
+  menu.style.zIndex = "1000";
+}
+
+function handleSupportReportMultiSelectChange(checkbox) {
+  const menu = checkbox.closest(".multi-select-menu");
+  if (!menu) return;
+  const wrap = menu._multiSelectWrap || checkbox.closest(".multi-select-filter");
+  if (!wrap) return;
+  const filterKey = wrap.dataset.filter;
+  if (!filterKey || !Array.isArray(supportReportFilters[filterKey])) return;
+  supportReportFilters[filterKey] = [...menu.querySelectorAll('input[type="checkbox"]:checked')].map(
+    (input) => input.value
+  );
+  updateSupportReportMultiSelectTrigger(wrap);
+  updateSupportReportDrilldownRows();
 }
 
 function updateSupportReportMultiSelectTrigger(wrap) {
@@ -2006,6 +2062,7 @@ function renderSupportReportTrendChart() {
 
 function renderSupportReport(data) {
   if (!els.supportReportContainer) return;
+  closeAllSupportReportMultiSelectMenus();
   supportReportData = data;
   const areas = data.areas || [];
 
@@ -2078,24 +2135,12 @@ if (els.supportReportContainer) {
     if (multiSelectTrigger) {
       const wrap = multiSelectTrigger.closest(".multi-select-filter");
       if (!wrap) return;
-      const menu = wrap.querySelector(".multi-select-menu");
-      const willOpen = menu && menu.classList.contains("hidden");
-      els.supportReportContainer.querySelectorAll(".multi-select-menu").forEach((other) => {
-        other.classList.add("hidden");
-      });
-      if (menu && willOpen) menu.classList.remove("hidden");
+      openSupportReportMultiSelectMenu(wrap);
       event.stopPropagation();
       return;
     }
 
-    if (event.target.closest(".multi-select-menu")) {
-      event.stopPropagation();
-      return;
-    }
-
-    els.supportReportContainer.querySelectorAll(".multi-select-menu").forEach((menu) => {
-      menu.classList.add("hidden");
-    });
+    closeAllSupportReportMultiSelectMenus();
 
     const legendItem = event.target.closest(".trend-legend-item");
     if (legendItem) {
@@ -2134,28 +2179,21 @@ if (els.supportReportContainer) {
       selectSupportReportTrendColumn(event.target.value);
       return;
     }
-    const multiSelectWrap = event.target.closest(".multi-select-filter");
-    if (multiSelectWrap && event.target.type === "checkbox") {
-      const filterKey = multiSelectWrap.dataset.filter;
-      if (!filterKey || !Array.isArray(supportReportFilters[filterKey])) return;
-      supportReportFilters[filterKey] = [...multiSelectWrap.querySelectorAll('input[type="checkbox"]:checked')].map(
-        (checkbox) => checkbox.value
-      );
-      updateSupportReportMultiSelectTrigger(multiSelectWrap);
-      updateSupportReportDrilldownRows();
-      return;
-    }
     const filterKey = event.target.dataset.filter;
     if (!filterKey || event.target.tagName !== "SELECT") return;
     supportReportFilters[filterKey] = event.target.value;
     updateSupportReportDrilldownRows();
   });
 
-  document.addEventListener("click", () => {
-    if (!els.supportReportContainer) return;
-    els.supportReportContainer.querySelectorAll(".multi-select-menu").forEach((menu) => {
-      menu.classList.add("hidden");
-    });
+  document.addEventListener("click", (event) => {
+    if (event.target.closest(".multi-select-menu") || event.target.closest(".multi-select-trigger")) return;
+    closeAllSupportReportMultiSelectMenus();
+  });
+
+  document.addEventListener("change", (event) => {
+    if (event.target.type !== "checkbox") return;
+    if (!event.target.closest(".multi-select-menu")) return;
+    handleSupportReportMultiSelectChange(event.target);
   });
 }
 
