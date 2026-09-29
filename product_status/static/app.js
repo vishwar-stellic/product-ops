@@ -1601,6 +1601,20 @@ function syncSupportReportSquadFilterUI() {
   updateSupportReportMultiSelectTrigger(wrap);
 }
 
+function selectSupportReportTrendColumn(colKey) {
+  if (!colKey || supportReportTrendColumn === colKey) return;
+  supportReportTrendColumn = colKey;
+  syncTrendColumnSquadFilter();
+  const radio =
+    els.supportReportContainer &&
+    els.supportReportContainer.querySelector(`input[name="trend-column"][value="${CSS.escape(colKey)}"]`);
+  if (radio) radio.checked = true;
+  mountSupportReportTrendChart();
+  updateSupportReportColumnHighlight();
+  syncSupportReportSquadFilterUI();
+  updateSupportReportDrilldownRows();
+}
+
 function slaStatusClass(status) {
   if (status === "Met") return "status-completed";
   if (status === "Not Met") return "status-canceled";
@@ -2095,6 +2109,12 @@ if (els.supportReportContainer) {
       return;
     }
 
+    const colHeader = event.target.closest(".support-report-table thead th[data-col-key]");
+    if (colHeader) {
+      selectSupportReportTrendColumn(colHeader.dataset.colKey);
+      return;
+    }
+
     const row = event.target.closest("tr.clickable-row");
     if (!row || !supportReportData) return;
     const metric = row.dataset.metric;
@@ -2111,12 +2131,7 @@ if (els.supportReportContainer) {
 
   els.supportReportContainer.addEventListener("change", (event) => {
     if (event.target.name === "trend-column") {
-      supportReportTrendColumn = event.target.value;
-      syncTrendColumnSquadFilter();
-      mountSupportReportTrendChart();
-      updateSupportReportColumnHighlight();
-      syncSupportReportSquadFilterUI();
-      updateSupportReportDrilldownRows();
+      selectSupportReportTrendColumn(event.target.value);
       return;
     }
     const multiSelectWrap = event.target.closest(".multi-select-filter");

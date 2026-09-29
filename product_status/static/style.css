@@ -568,6 +568,19 @@ body {
 
 /* Support Report tab */
 
+.support-report-table thead th {
+  padding: 9px 10px;
+  vertical-align: middle;
+}
+
+.support-report-table thead th[data-col-key] {
+  cursor: pointer;
+}
+
+.support-report-table thead th[data-col-key]:hover {
+  background: var(--surface-2);
+}
+
 .support-report-table th.support-squad-col,
 .support-report-table td.support-squad-col {
   text-align: center;
@@ -610,6 +623,7 @@ body {
   padding-top: 6px;
   padding-bottom: 10px;
   border-bottom: 1px solid var(--border);
+  text-align: left;
 }
 
 .filter-table .filter-row input,
@@ -673,6 +687,7 @@ body {
   border-radius: 6px;
   background: var(--surface);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  text-align: left;
 }
 
 .multi-select-menu.hidden {
@@ -682,13 +697,17 @@ body {
 .multi-select-option {
   display: flex;
   align-items: center;
+  justify-content: flex-start;
   gap: 6px;
+  width: 100%;
+  box-sizing: border-box;
   padding: 4px 6px;
   font-size: 12px;
   font-weight: 400;
   text-transform: none;
   letter-spacing: 0;
   color: var(--text);
+  text-align: left;
   border-radius: 4px;
   cursor: pointer;
   white-space: nowrap;
