@@ -2348,21 +2348,19 @@ function renderEscalationBadge(severity) {
   )}</span>`;
 }
 
-// Shared by the main-table Live Fire/Smoldering columns and their sort
-// values - how many of a partner's currently-tracked items are at exactly
-// this severity. `null` (not 0) when there's no escalation data at all for
-// this partner, so "not in Vitally"/"not configured" can sort/render
-// distinctly from a genuine zero.
+// Shared by the main-table Live Fire/Smoldering/Watch columns and their
+// sort values - how many of a partner's currently-tracked items are at
+// exactly this severity. `null` (not 0) when there's no escalation data
+// at all for this partner, so "not in Vitally"/"not configured" can
+// sort/render distinctly from a genuine zero.
 function escalationSeverityCount(escalations, severity) {
   if (!escalations) return null;
   return (escalations.items || []).filter((item) => item.severity === severity).length;
 }
 
-// Main-table cell for one severity's count (the "Live Fire" / "Smoldering"
-// columns) - a quiet "-" for a genuine zero, or "not in Vitally"/"not
-// configured" when there's no escalation data at all for this partner.
-// Watch-severity items don't get their own column (lower signal) but are
-// still visible in the expanded row.
+// Main-table cell for one severity's count (Live Fire / Smoldering / Watch)
+// - a quiet "-" for a genuine zero, or "not in Vitally"/"not configured"
+// when there's no escalation data at all for this partner.
 function renderEscalationCountCell(escalations, escalationsConfigured, severity) {
   const count = escalationSeverityCount(escalations, severity);
   if (count === null) {
@@ -2501,7 +2499,7 @@ function renderEscalationsBlock(partner, escalationsConfigured) {
   return findingsHtml + emailsHtml;
 }
 
-const PARTNER_INSIGHTS_COLUMNS = 5; // Partner, Bug Score, Live Fire, Smoldering, Update
+const PARTNER_INSIGHTS_COLUMNS = 6; // Partner, Bug Score, Live Fire, Smoldering, Watch, Update
 // Feature Score is hidden from this main table (still shown in the
 // expanded row's Product breakdown below) - kept out of
 // `PARTNER_INSIGHTS_SORT_COLUMNS`/`partnerInsightsSortValue` entirely
@@ -2518,6 +2516,7 @@ const PARTNER_INSIGHTS_SORT_COLUMNS = [
   { key: "bugScore", label: "Bug Score" },
   { key: "liveFireCount", label: "Live Fire" },
   { key: "smolderingCount", label: "Smoldering" },
+  { key: "watchCount", label: "Watch" },
 ];
 
 // Higher = more urgent - used to order items within the expanded row
@@ -2530,6 +2529,7 @@ function partnerInsightsSortValue(partner, key) {
   if (key === "bugScore") return partner.product ? partner.product.bugScore : null;
   if (key === "liveFireCount") return escalationSeverityCount(partner.escalations, "LIVE_FIRE");
   if (key === "smolderingCount") return escalationSeverityCount(partner.escalations, "SMOLDERING");
+  if (key === "watchCount") return escalationSeverityCount(partner.escalations, "WATCH");
   return null;
 }
 
@@ -2633,6 +2633,7 @@ function renderPartnerInsights(data) {
         <td class="num">${renderScoreCell(bugScore, "not linked")}</td>
         <td class="num">${renderEscalationCountCell(p.escalations, data.escalationsConfigured !== false, "LIVE_FIRE")}</td>
         <td class="num">${renderEscalationCountCell(p.escalations, data.escalationsConfigured !== false, "SMOLDERING")}</td>
+        <td class="num">${renderEscalationCountCell(p.escalations, data.escalationsConfigured !== false, "WATCH")}</td>
         <td class="num">${updateBtn}</td>
       </tr>`;
       return isActive ? mainRow + renderPartnerInsightsExpandedRow(p) : mainRow;
@@ -2643,17 +2644,17 @@ function renderPartnerInsights(data) {
     <div class="squad-block">
       <p class="quality-definitions" style="list-style: none; padding-left: 0;">
         Only partners matched to a Vitally account are listed here. Bug score reflects bug-SLA
-        responsiveness (100 = clean), from that partner's Linear customer requests. Live Fire and
-        Smoldering are counts of that partner's currently-tracked escalation items at each severity,
-        from an LLM triage of that partner's recent human-written emails and Intercom conversations
-        (synced via Vitally) - only re-analyzed on a forced Update, and only the newest messages each
-        time.${
+        responsiveness (100 = clean), from that partner's Linear customer requests. Live Fire,
+        Smoldering, and Watch are counts of that partner's currently-tracked escalation items at each
+        severity, from an LLM triage of that partner's recent human-written emails and Intercom
+        conversations (synced via Vitally) - only re-analyzed on a forced Update, and only the newest
+        messages each time.${
           data.escalationsConfigured === false
             ? " Escalation triage isn't configured yet (needs OPENAI_API_KEY and VITALLY_ACCESS_TOKEN) - see README."
             : ""
         }
-        Click a partner for the full breakdown, including Feature score, Watch-severity items, and the
-        source emails/conversations themselves.
+        Click a partner for the full breakdown, including Feature score and the source
+        emails/conversations themselves.
       </p>
       <table class="data-table partner-insights-table">
         <thead>

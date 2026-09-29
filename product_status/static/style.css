@@ -1657,8 +1657,8 @@ body {
   margin-bottom: 4px;
 }
 
-/* Main-table Live Fire / Smoldering count cells - reuses the badge's
-   severity colors so the count itself reads as "this many of that
+/* Main-table Live Fire / Smoldering / Watch count cells - reuses the
+   badge's severity colors so the count itself reads as "this many of that
    severity" rather than a plain neutral number. */
 .escalation-count-badge {
   display: inline-flex;
@@ -1680,6 +1680,11 @@ body {
 .escalation-count-badge.escalation-badge-smoldering {
   background: rgba(230, 145, 56, 0.18);
   color: #e69138;
+}
+
+.escalation-count-badge.escalation-badge-watch {
+  background: rgba(122, 130, 144, 0.2);
+  color: var(--gray);
 }
 
 /* Recent emails list (expanded row) - collapsed by default via native
