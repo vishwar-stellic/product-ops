@@ -1471,16 +1471,17 @@ let supportReportData = null;
 let supportReportHistoryData = null;
 // Which metric row's ticket list is currently expanded below the table, or
 // null if none - toggled by clicking a row (`renderSupportReport`'s click
-// handler).
-let supportReportActiveMetric = null;
+// handler). Defaults to total open KU so the drill-down table is visible
+// on first load.
+let supportReportActiveMetric = "totalOpenKU";
 const supportReportFilters = {
-  squad: "",
+  squad: [],
   createdAt: "",
   firstResponseSLA: "",
   updatedAt: "",
-  userName: "",
-  partnerName: "",
-  priority: "",
+  userName: [],
+  partnerName: [],
+  priority: [],
   description: "",
 };
 
@@ -1519,19 +1520,85 @@ function supportReportTicketsForMetric(data, metricKey) {
   return openTickets; // totalOpenKU
 }
 
+function supportReportFilterLabel(value) {
+  return value || "(blank)";
+}
+
 function supportReportFilteredTickets(tickets) {
   const f = supportReportFilters;
   return tickets.filter((t) => {
-    if (f.squad && t.squadLabel !== f.squad) return false;
+    if (f.squad.length && !f.squad.includes(t.squadLabel)) return false;
     if (f.firstResponseSLA && t.firstResponseSLA !== f.firstResponseSLA) return false;
-    if (f.priority && t.priority !== f.priority) return false;
-    if (f.userName && !(t.userName || "").toLowerCase().includes(f.userName.toLowerCase())) return false;
-    if (f.partnerName && !(t.partnerName || "").toLowerCase().includes(f.partnerName.toLowerCase())) return false;
+    if (f.priority.length && !f.priority.includes(t.priority)) return false;
+    if (f.userName.length && !f.userName.includes(supportReportFilterLabel(t.userName))) return false;
+    if (f.partnerName.length && !f.partnerName.includes(supportReportFilterLabel(t.partnerName))) return false;
     if (f.description && !(t.description || "").toLowerCase().includes(f.description.toLowerCase())) return false;
     if (f.createdAt && !formatDateTime(t.createdAt).toLowerCase().includes(f.createdAt.toLowerCase())) return false;
     if (f.updatedAt && !formatDateTime(t.updatedAt).toLowerCase().includes(f.updatedAt.toLowerCase())) return false;
     return true;
   });
+}
+
+function supportReportMultiSelectTriggerLabel(selected) {
+  if (!selected.length) return "All";
+  if (selected.length === 1) return selected[0];
+  return `${selected.length} selected`;
+}
+
+function renderSupportReportMultiSelect(filterKey, options, selected) {
+  const selectedSet = new Set(selected);
+  const checks = options
+    .map(
+      (option) => `
+      <label class="multi-select-option">
+        <input type="checkbox" value="${escapeHtml(option)}"${selectedSet.has(option) ? " checked" : ""}>
+        ${escapeHtml(option)}
+      </label>`
+    )
+    .join("");
+  return `
+    <div class="multi-select-filter" data-filter="${escapeHtml(filterKey)}">
+      <button type="button" class="multi-select-trigger">${escapeHtml(
+        supportReportMultiSelectTriggerLabel(selected)
+      )}</button>
+      <div class="multi-select-menu hidden">${checks}</div>
+    </div>`;
+}
+
+function updateSupportReportMultiSelectTrigger(wrap) {
+  const filterKey = wrap.dataset.filter;
+  if (!filterKey || !Array.isArray(supportReportFilters[filterKey])) return;
+  const trigger = wrap.querySelector(".multi-select-trigger");
+  if (trigger) {
+    trigger.textContent = supportReportMultiSelectTriggerLabel(supportReportFilters[filterKey]);
+  }
+}
+
+function syncTrendColumnSquadFilter() {
+  if (supportReportTrendColumn === "TOTAL") {
+    supportReportFilters.squad = [];
+    return;
+  }
+  const areas = (supportReportData && supportReportData.areas) || [];
+  const area = areas.find((a) => a.squad === supportReportTrendColumn);
+  supportReportFilters.squad = area ? [area.label] : [];
+}
+
+function updateSupportReportColumnHighlight() {
+  if (!els.supportReportContainer) return;
+  els.supportReportContainer.querySelectorAll(".support-report-table [data-col-key]").forEach((cell) => {
+    cell.classList.toggle("support-col-highlight", cell.dataset.colKey === supportReportTrendColumn);
+  });
+}
+
+function syncSupportReportSquadFilterUI() {
+  const wrap = els.supportReportContainer && els.supportReportContainer.querySelector('.multi-select-filter[data-filter="squad"]');
+  if (!wrap) return;
+  const selected = new Set(supportReportFilters.squad);
+  wrap.querySelectorAll('input[type="checkbox"]').forEach((checkbox) => {
+    checkbox.checked = selected.has(checkbox.value);
+  });
+  updateSupportReportMultiSelectTrigger(wrap);
 }
 
 function slaStatusClass(status) {
@@ -1590,6 +1657,8 @@ function renderSupportReportDrilldown() {
   // set for this metric, not the currently-filtered one, so options never
   // disappear out from under the user while they're narrowing down.
   const squadOptions = [...new Set(allTickets.map((t) => t.squadLabel))].sort();
+  const userNameOptions = [...new Set(allTickets.map((t) => supportReportFilterLabel(t.userName)))].sort();
+  const partnerNameOptions = [...new Set(allTickets.map((t) => supportReportFilterLabel(t.partnerName)))].sort();
   const priorityOptions = [...new Set(allTickets.map((t) => t.priority))].sort(
     (a, b) => SUPPORT_REPORT_PRIORITY_ORDER.indexOf(a) - SUPPORT_REPORT_PRIORITY_ORDER.indexOf(b)
   );
@@ -1621,7 +1690,7 @@ function renderSupportReportDrilldown() {
             <th>Ticket Description</th>
           </tr>
           <tr class="filter-row">
-            <th><select data-filter="squad">${selectOptions(squadOptions, supportReportFilters.squad)}</select></th>
+            <th>${renderSupportReportMultiSelect("squad", squadOptions, supportReportFilters.squad)}</th>
             <th><input type="text" data-filter="createdAt" placeholder="Filter…" value="${escapeHtml(
               supportReportFilters.createdAt
             )}"></th>
@@ -1632,16 +1701,13 @@ function renderSupportReportDrilldown() {
             <th><input type="text" data-filter="updatedAt" placeholder="Filter…" value="${escapeHtml(
               supportReportFilters.updatedAt
             )}"></th>
-            <th><input type="text" data-filter="userName" placeholder="Filter…" value="${escapeHtml(
-              supportReportFilters.userName
-            )}"></th>
-            <th><input type="text" data-filter="partnerName" placeholder="Filter…" value="${escapeHtml(
+            <th>${renderSupportReportMultiSelect("userName", userNameOptions, supportReportFilters.userName)}</th>
+            <th>${renderSupportReportMultiSelect(
+              "partnerName",
+              partnerNameOptions,
               supportReportFilters.partnerName
-            )}"></th>
-            <th><select data-filter="priority">${selectOptions(
-              priorityOptions,
-              supportReportFilters.priority
-            )}</select></th>
+            )}</th>
+            <th>${renderSupportReportMultiSelect("priority", priorityOptions, supportReportFilters.priority)}</th>
             <th><input type="text" data-filter="description" placeholder="Filter…" value="${escapeHtml(
               supportReportFilters.description
             )}"></th>
@@ -1929,15 +1995,30 @@ function renderSupportReport(data) {
   supportReportData = data;
   const areas = data.areas || [];
 
+  const colHighlight = (key) => (key === supportReportTrendColumn ? " support-col-highlight" : "");
   const headerCells =
-    `<th class="support-squad-col support-total-col">Total</th>` +
-    areas.map((area) => `<th class="support-squad-col">${escapeHtml(area.label)}</th>`).join("");
+    `<th class="support-squad-col support-total-col${colHighlight("TOTAL")}" data-col-key="TOTAL">Total</th>` +
+    areas
+      .map(
+        (area) =>
+          `<th class="support-squad-col${colHighlight(area.squad)}" data-col-key="${escapeHtml(
+            area.squad
+          )}">${escapeHtml(area.label)}</th>`
+      )
+      .join("");
   const bodyRows = SUPPORT_REPORT_ROWS.map((row) => {
     const values = areas.map((area) => (area.metrics ? area.metrics[row.key] : null));
     const total = values.reduce((sum, v) => sum + (typeof v === "number" ? v : 0), 0);
     const cells =
-      `<td class="num support-squad-col support-total-col">${total}</td>` +
-      values.map((value) => `<td class="num support-squad-col">${value === null || value === undefined ? "—" : value}</td>`).join("");
+      `<td class="num support-squad-col support-total-col${colHighlight("TOTAL")}" data-col-key="TOTAL">${total}</td>` +
+      values
+        .map(
+          (value, idx) =>
+            `<td class="num support-squad-col${colHighlight(areas[idx].squad)}" data-col-key="${escapeHtml(
+              areas[idx].squad
+            )}">${value === null || value === undefined ? "—" : value}</td>`
+        )
+        .join("");
     const activeClass = row.key === supportReportActiveMetric ? " active-row" : "";
     return `<tr class="clickable-row${activeClass}" data-metric="${row.key}"><td>${escapeHtml(
       row.label
@@ -1979,6 +2060,29 @@ function renderSupportReport(data) {
 
 if (els.supportReportContainer) {
   els.supportReportContainer.addEventListener("click", (event) => {
+    const multiSelectTrigger = event.target.closest(".multi-select-trigger");
+    if (multiSelectTrigger) {
+      const wrap = multiSelectTrigger.closest(".multi-select-filter");
+      if (!wrap) return;
+      const menu = wrap.querySelector(".multi-select-menu");
+      const willOpen = menu && menu.classList.contains("hidden");
+      els.supportReportContainer.querySelectorAll(".multi-select-menu").forEach((other) => {
+        other.classList.add("hidden");
+      });
+      if (menu && willOpen) menu.classList.remove("hidden");
+      event.stopPropagation();
+      return;
+    }
+
+    if (event.target.closest(".multi-select-menu")) {
+      event.stopPropagation();
+      return;
+    }
+
+    els.supportReportContainer.querySelectorAll(".multi-select-menu").forEach((menu) => {
+      menu.classList.add("hidden");
+    });
+
     const legendItem = event.target.closest(".trend-legend-item");
     if (legendItem) {
       const key = legendItem.dataset.seriesKey;
@@ -2000,7 +2104,7 @@ if (els.supportReportContainer) {
 
   els.supportReportContainer.addEventListener("input", (event) => {
     const filterKey = event.target.dataset.filter;
-    if (!filterKey || event.target.tagName !== "INPUT") return;
+    if (!filterKey || event.target.tagName !== "INPUT" || event.target.type === "checkbox") return;
     supportReportFilters[filterKey] = event.target.value;
     updateSupportReportDrilldownRows();
   });
@@ -2008,13 +2112,35 @@ if (els.supportReportContainer) {
   els.supportReportContainer.addEventListener("change", (event) => {
     if (event.target.name === "trend-column") {
       supportReportTrendColumn = event.target.value;
+      syncTrendColumnSquadFilter();
       mountSupportReportTrendChart();
+      updateSupportReportColumnHighlight();
+      syncSupportReportSquadFilterUI();
+      updateSupportReportDrilldownRows();
+      return;
+    }
+    const multiSelectWrap = event.target.closest(".multi-select-filter");
+    if (multiSelectWrap && event.target.type === "checkbox") {
+      const filterKey = multiSelectWrap.dataset.filter;
+      if (!filterKey || !Array.isArray(supportReportFilters[filterKey])) return;
+      supportReportFilters[filterKey] = [...multiSelectWrap.querySelectorAll('input[type="checkbox"]:checked')].map(
+        (checkbox) => checkbox.value
+      );
+      updateSupportReportMultiSelectTrigger(multiSelectWrap);
+      updateSupportReportDrilldownRows();
       return;
     }
     const filterKey = event.target.dataset.filter;
     if (!filterKey || event.target.tagName !== "SELECT") return;
     supportReportFilters[filterKey] = event.target.value;
     updateSupportReportDrilldownRows();
+  });
+
+  document.addEventListener("click", () => {
+    if (!els.supportReportContainer) return;
+    els.supportReportContainer.querySelectorAll(".multi-select-menu").forEach((menu) => {
+      menu.classList.add("hidden");
+    });
   });
 }
 
