@@ -152,11 +152,14 @@ from .milestones_report import (
     MILESTONES_REPORT_CACHE_VERSION,
     build_milestones_report,
 )
-from .notion_client import NotionError, extract_page_id
+from .notion_client import NotionClient, NotionError, extract_page_id
 from .notion_report import (
     DEFAULT_PARENT_PAGE_URL,
+    notion_refresh_public_base_url,
+    notion_refresh_token,
     publish_dashboard_to_notion,
     publish_sprint_report_to_notion,
+    replace_squad_section_on_page,
 )
 from .partner_insights import (
     PARTNER_INSIGHTS_CACHE_KEY,
@@ -195,6 +198,8 @@ _AUTH_PUBLIC_PATHS = {
     # independently of this Google-login middleware.
     "/api/cron/refresh-support-report",
     "/api/cron/refresh-escalations",
+    # Linked from each squad section in a published EPD Report Notion page.
+    "/notion/refresh-squad",
 }
 
 
@@ -532,8 +537,58 @@ def dashboard_refresh_all():
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+@app.api_route("/notion/refresh-squad", methods=["GET", "POST"])
+def notion_refresh_squad(
+    request: Request,
+    team: str = Query(..., description='Linear team key, e.g. "PROG"'),
+    page_id: str = Query(..., description="Notion EPD Report page id or URL"),
+    token: str = Query(..., description="Refresh token from the published link"),
+    only_star_projects: bool = Query(
+        default=False,
+        description='Match the "Only Star Projects" export shape when rewriting Projects',
+    ),
+):
+    """Refresh one squad section on an existing EPD Report Notion page.
+
+    Linked from a callout embedded at publish time. Force-refreshes Linear
+    data for that squad, rewrites its Notion section, then redirects back to
+    the report page (usually in a new browser tab opened from Notion)."""
+    _require_notion_refresh_token(token)
+    try:
+        normalized_page_id = extract_page_id(page_id)
+        teams = _get_dashboard_teams()
+        matched = next((t for t in teams if t["key"].lower() == team.lower()), None)
+        if matched is None:
+            raise HTTPException(status_code=404, detail=f'Unknown squad "{team}"')
+        projects_report = _get_projects_report(force=True)
+        squad = _get_squad(matched, force=True, projects_report=projects_report)
+        base_url = notion_refresh_public_base_url(str(request.base_url))
+        heading_id = replace_squad_section_on_page(
+            normalized_page_id,
+            squad,
+            skip_sprint_data=True,
+            only_star_projects=only_star_projects,
+            public_base_url=base_url or None,
+            refresh_token=notion_refresh_token(),
+        )
+        page = NotionClient().retrieve_page(normalized_page_id)
+        page_url = page.get("url") or ""
+        if not page_url:
+            raise HTTPException(status_code=502, detail="Notion did not return a page URL to redirect to")
+        return RedirectResponse(url=f"{page_url}#{heading_id.replace('-', '')}", status_code=302)
+    except NotionError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except LinearGraphQLError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @app.post("/api/dashboard/publish-notion")
 def dashboard_publish_notion(
+    request: Request,
     skip_sprint_data: bool = Query(
         default=True,
         description="Omit Previous Sprint and reduce Current Sprint to just a heading + commentary callout",
@@ -567,6 +622,8 @@ def dashboard_publish_notion(
             parent_page_id=parent_page_id,
             skip_sprint_data=skip_sprint_data,
             only_star_projects=only_star_projects,
+            public_base_url=notion_refresh_public_base_url(str(request.base_url)) or None,
+            refresh_token=notion_refresh_token(),
         )
     except NotionError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
@@ -680,6 +737,17 @@ def support_report_history():
     """Accumulated trend-chart history for the support report's top table -
     see support_report.py's docstring ("Trend history")."""
     return get_support_report_history()
+
+
+def _require_notion_refresh_token(token: str) -> None:
+    """Query-param gate for `/notion/refresh-squad` - linked from each squad
+    section in a published EPD Report page. Uses `NOTION_REFRESH_SECRET`,
+    falling back to `CRON_SECRET` when unset."""
+    secret = notion_refresh_token()
+    if not secret:
+        raise HTTPException(status_code=503, detail="Notion section refresh is not configured")
+    if token != secret:
+        raise HTTPException(status_code=403, detail="Invalid refresh token")
 
 
 def _require_cron_secret(request: Request) -> None:

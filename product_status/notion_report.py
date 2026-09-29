@@ -90,9 +90,11 @@ full Notion databases via a view's `width` field - neither applies here),
 so column widths have to be dragged to size by hand in the Notion UI.
 """
 
+import os
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 from .milestones import match_key_milestones
@@ -245,6 +247,104 @@ def callout(emoji: str, text_runs) -> Dict[str, Any]:
 
 def commentary_callout() -> Dict[str, Any]:
     return callout("💡", [rich_text(COMMENTARY_TEXT, bold=True)])
+
+
+def squad_refresh_url(base_url: str, team_key: str, page_id: str, token: str) -> str:
+    """Link embedded in each squad section on publish - GET `/notion/refresh-squad`
+    refreshes Linear data and rewrites that section, then redirects back here."""
+    query = urlencode({"team": team_key, "page_id": page_id, "token": token})
+    return f"{base_url.rstrip('/')}/notion/refresh-squad?{query}"
+
+
+def refresh_section_callout(refresh_url: str) -> Dict[str, Any]:
+    return callout(
+        "🔄",
+        [
+            rich_text("Refresh this section from Linear — "),
+            rich_text("click here", link=refresh_url, bold=True),
+            rich_text(". Updates generated content; manual notes may be overwritten."),
+        ],
+    )
+
+
+def block_plain_text(block: Dict[str, Any]) -> str:
+    block_type = block.get("type")
+    if not block_type or block_type not in block:
+        return ""
+    payload = block[block_type]
+    rich = payload.get("rich_text") or []
+    return "".join(part.get("plain_text") or "" for part in rich).strip()
+
+
+def _is_squad_heading(block: Dict[str, Any], team_name: str) -> bool:
+    return block.get("type") == "heading_2" and block_plain_text(block) == team_name
+
+
+def find_squad_section_block_ids(page_id: str, team_name: str, client: Optional[NotionClient] = None) -> Tuple[str, List[str]]:
+    """Return `(heading_block_id, content_block_ids)` for one squad section.
+
+    Content blocks are every top-level block after the squad's `heading_2`
+    until the next squad `heading_2` (or end of page). The heading itself is
+    kept so the table-of-contents anchor stays stable."""
+    client = client or NotionClient()
+    children = client.list_block_children(page_id)
+    heading_id: Optional[str] = None
+    content_ids: List[str] = []
+    in_section = False
+    for block in children:
+        if block.get("type") == "heading_2":
+            if in_section:
+                break
+            if _is_squad_heading(block, team_name):
+                heading_id = block["id"]
+                in_section = True
+            continue
+        if in_section:
+            content_ids.append(block["id"])
+    if not heading_id:
+        raise ValueError(f'Could not find a squad heading for "{team_name}" on this Notion page')
+    return heading_id, content_ids
+
+
+def replace_squad_section_on_page(
+    page_id: str,
+    squad: Dict[str, Any],
+    *,
+    skip_sprint_data: bool = True,
+    only_star_projects: bool = False,
+    public_base_url: Optional[str] = None,
+    refresh_token: Optional[str] = None,
+    client: Optional[NotionClient] = None,
+) -> str:
+    """Rewrite one squad's section on an existing EPD Report page. Returns
+    the squad heading block id (for redirect anchors)."""
+    client = client or NotionClient()
+    team_name = squad["team"]["name"]
+    heading_id, content_ids = find_squad_section_block_ids(page_id, team_name, client=client)
+    for block_id in content_ids:
+        client.delete_block(block_id)
+
+    team_blocks = build_team_blocks(
+        squad, skip_sprint_data=skip_sprint_data, only_star_projects=only_star_projects
+    )
+    # heading_2 already on the page - append everything after it.
+    content_blocks = team_blocks[1:]
+    refresh_url = None
+    if public_base_url and refresh_token:
+        refresh_url = squad_refresh_url(public_base_url, squad["team"]["key"], page_id, refresh_token)
+    if refresh_url:
+        content_blocks = [refresh_section_callout(refresh_url), *content_blocks]
+    if content_blocks:
+        create_nested_blocks(client, page_id, content_blocks, after_block_id=heading_id)
+    return heading_id
+
+
+def notion_refresh_public_base_url(request_base_url: Optional[str] = None) -> str:
+    return (os.environ.get("PUBLIC_BASE_URL") or request_base_url or "").rstrip("/")
+
+
+def notion_refresh_token() -> Optional[str]:
+    return os.environ.get("NOTION_REFRESH_SECRET") or os.environ.get("CRON_SECRET")
 
 
 def table(headers: List[str], rows: List[List[Any]]) -> Dict[str, Any]:
@@ -633,6 +733,10 @@ def _publish_squads_page(
     intro_text: str,
     parent_page_id: Optional[str],
     client: Optional[NotionClient],
+    *,
+    embed_squad_refresh_links: bool = False,
+    public_base_url: Optional[str] = None,
+    refresh_token: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Shared page-building routine for both `publish_dashboard_to_notion`
     and `publish_sprint_report_to_notion`: creates `title` as a sub-page of
@@ -657,7 +761,13 @@ def _publish_squads_page(
     heading_positions: List[int] = []
     for squad in squads:
         heading_positions.append(len(blocks))
-        blocks.extend(team_blocks_fn(squad))
+        team_blocks = team_blocks_fn(squad)
+        if embed_squad_refresh_links and public_base_url and refresh_token:
+            refresh_url = squad_refresh_url(
+                public_base_url, squad["team"]["key"], page["id"], refresh_token
+            )
+            team_blocks = [team_blocks[0], refresh_section_callout(refresh_url), *team_blocks[1:]]
+        blocks.extend(team_blocks)
 
     created = create_nested_blocks(client, page["id"], blocks)
 
@@ -679,6 +789,8 @@ def publish_dashboard_to_notion(
     client: Optional[NotionClient] = None,
     skip_sprint_data: bool = True,
     only_star_projects: bool = False,
+    public_base_url: Optional[str] = None,
+    refresh_token: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create an "EPD Report <date>" sub-page of `parent_page_id` (defaults
     to the workspace's Product Ops Reports page): an intro callout, a table
@@ -702,6 +814,9 @@ def publish_dashboard_to_notion(
         REPORT_INTRO_TEXT,
         parent_page_id,
         client,
+        embed_squad_refresh_links=bool(public_base_url and refresh_token),
+        public_base_url=public_base_url,
+        refresh_token=refresh_token,
     )
 
     return {"pageId": page["id"], "url": page.get("url"), "title": title}

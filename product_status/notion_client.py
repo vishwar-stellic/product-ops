@@ -85,11 +85,41 @@ class NotionClient:
         }
         return self._request("POST", "/pages", body)
 
-    def append_children(self, block_id: str, children: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def retrieve_page(self, page_id: str) -> Dict[str, Any]:
+        return self._request("GET", f"/pages/{page_id}")
+
+    def list_block_children(self, block_id: str) -> List[Dict[str, Any]]:
+        """All direct children of a block/page, following Notion pagination."""
+        results: List[Dict[str, Any]] = []
+        start_cursor: Optional[str] = None
+        while True:
+            path = f"/blocks/{block_id}/children?page_size={MAX_CHILDREN_PER_REQUEST}"
+            if start_cursor:
+                path += f"&start_cursor={start_cursor}"
+            resp = self._request("GET", path)
+            results.extend(resp.get("results") or [])
+            if not resp.get("has_more"):
+                break
+            start_cursor = resp.get("next_cursor")
+        return results
+
+    def delete_block(self, block_id: str) -> None:
+        self._request("DELETE", f"/blocks/{block_id}")
+
+    def append_children(
+        self,
+        block_id: str,
+        children: List[Dict[str, Any]],
+        *,
+        after_block_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         results: List[Dict[str, Any]] = []
         for i in range(0, len(children), MAX_CHILDREN_PER_REQUEST):
             chunk = [_strip_internal(c) for c in children[i : i + MAX_CHILDREN_PER_REQUEST]]
-            resp = self._request("PATCH", f"/blocks/{block_id}/children", {"children": chunk})
+            body: Dict[str, Any] = {"children": chunk}
+            if after_block_id and i == 0:
+                body["position"] = {"type": "after_block", "after_block": {"id": after_block_id}}
+            resp = self._request("PATCH", f"/blocks/{block_id}/children", body)
             results.extend(resp["results"])
         return results
 
@@ -101,7 +131,11 @@ class NotionClient:
 
 
 def create_nested_blocks(
-    client: NotionClient, parent_block_id: str, blocks: List[Dict[str, Any]]
+    client: NotionClient,
+    parent_block_id: str,
+    blocks: List[Dict[str, Any]],
+    *,
+    after_block_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Append `blocks` under `parent_block_id`, then recursively append any
     `_children` each block carries under that block's freshly created ID.
@@ -117,7 +151,7 @@ def create_nested_blocks(
     """
     if not blocks:
         return []
-    created = client.append_children(parent_block_id, blocks)
+    created = client.append_children(parent_block_id, blocks, after_block_id=after_block_id)
     for input_block, created_block in zip(blocks, created):
         nested = input_block.get("_children")
         if nested:
