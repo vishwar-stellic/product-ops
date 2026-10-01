@@ -665,9 +665,36 @@ body {
   border-color: var(--accent);
 }
 
+/* `width: 0; min-width: 100%` makes the picker fill its cell without its
+   label text pushing the column wider (percentage min-widths don't count
+   toward a table column's intrinsic size). Column floors are set below. */
 .date-range-picker {
   position: relative;
-  min-width: 9.5rem;
+  width: 0;
+  min-width: 100%;
+}
+
+/* Compact Date Created / First Reply / Last Update / User Name columns:
+   headers may wrap and the filter controls truncate instead of widening
+   the column. nth-child: 2 = created, 3 = first reply, 6 = last update,
+   7 = user name (see `renderSupportReportSortableHeaders`). */
+.filter-table thead tr:first-child th:nth-child(2),
+.filter-table thead tr:first-child th:nth-child(3),
+.filter-table thead tr:first-child th:nth-child(6),
+.filter-table thead tr:first-child th:nth-child(7) {
+  white-space: normal;
+}
+
+.filter-table .filter-row th:nth-child(2),
+.filter-table .filter-row th:nth-child(3),
+.filter-table .filter-row th:nth-child(6),
+.filter-table .filter-row th:nth-child(7) {
+  min-width: 5.5rem;
+}
+
+.filter-table .filter-row th:nth-child(7) .multi-select-filter {
+  width: 0;
+  min-width: 100%;
 }
 
 .date-range-picker-trigger {
@@ -682,6 +709,10 @@ body {
   background: var(--bg);
   color: var(--text);
   cursor: pointer;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .date-range-picker-trigger:hover {
@@ -805,6 +836,10 @@ body {
   color: var(--text);
   text-align: left;
   cursor: pointer;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .multi-select-trigger:hover,
