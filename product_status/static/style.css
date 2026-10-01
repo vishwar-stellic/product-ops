@@ -647,6 +647,17 @@ body {
   border-color: var(--accent);
 }
 
+.date-range-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 9.5rem;
+}
+
+.date-range-filter input[type="date"] {
+  width: 100%;
+}
+
 .multi-select-filter {
   position: relative;
 }
@@ -847,6 +858,7 @@ body {
   color: var(--text);
   font-size: 12px;
   white-space: pre-line;
+  max-width: min(280px, 90vw);
   padding: 5px 9px;
   border-radius: var(--radius-sm);
   pointer-events: none;

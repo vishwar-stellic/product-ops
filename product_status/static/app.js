@@ -1476,7 +1476,8 @@ let supportReportHistoryData = null;
 let supportReportActiveMetric = "totalOpenKU";
 const supportReportFilters = {
   squad: [],
-  createdAt: "",
+  createdDateFrom: "",
+  createdDateTo: "",
   firstResponseSLA: "",
   updatedAt: "",
   userName: [],
@@ -1524,6 +1525,35 @@ function supportReportFilterLabel(value) {
   return value || "(blank)";
 }
 
+function supportReportLocalDayBounds(dateInputValue) {
+  if (!dateInputValue) return null;
+  const parts = dateInputValue.split("-").map((p) => Number.parseInt(p, 10));
+  if (parts.length !== 3 || parts.some((n) => Number.isNaN(n))) return null;
+  const [year, month, day] = parts;
+  const start = new Date(year, month - 1, day, 0, 0, 0, 0);
+  const end = new Date(year, month - 1, day, 23, 59, 59, 999);
+  return { start, end };
+}
+
+function supportReportTicketCreatedInDateFilter(isoString, fromValue, toValue) {
+  if (!fromValue && !toValue) return true;
+  const created = new Date(isoString);
+  if (Number.isNaN(created.getTime())) return false;
+  const fromBounds = supportReportLocalDayBounds(fromValue);
+  const toBounds = supportReportLocalDayBounds(toValue);
+  let rangeStart = fromBounds ? fromBounds.start : null;
+  let rangeEnd = toBounds ? toBounds.end : null;
+  if (fromBounds && !toBounds) {
+    rangeEnd = fromBounds.end;
+  }
+  if (!fromBounds && toBounds) {
+    rangeStart = toBounds.start;
+  }
+  if (rangeStart && created < rangeStart) return false;
+  if (rangeEnd && created > rangeEnd) return false;
+  return true;
+}
+
 function supportReportFilteredTickets(tickets) {
   const f = supportReportFilters;
   return tickets.filter((t) => {
@@ -1533,7 +1563,11 @@ function supportReportFilteredTickets(tickets) {
     if (f.userName.length && !f.userName.includes(supportReportFilterLabel(t.userName))) return false;
     if (f.partnerName.length && !f.partnerName.includes(supportReportFilterLabel(t.partnerName))) return false;
     if (f.description && !(t.description || "").toLowerCase().includes(f.description.toLowerCase())) return false;
-    if (f.createdAt && !formatDateTime(t.createdAt).toLowerCase().includes(f.createdAt.toLowerCase())) return false;
+    if (
+      !supportReportTicketCreatedInDateFilter(t.createdAt, f.createdDateFrom, f.createdDateTo)
+    ) {
+      return false;
+    }
     if (f.updatedAt && !formatDateTime(t.updatedAt).toLowerCase().includes(f.updatedAt.toLowerCase())) return false;
     return true;
   });
@@ -1761,9 +1795,16 @@ function renderSupportReportDrilldown() {
           </tr>
           <tr class="filter-row">
             <th>${renderSupportReportMultiSelect("squad", squadOptions, supportReportFilters.squad)}</th>
-            <th><input type="text" data-filter="createdAt" placeholder="Filter…" value="${escapeHtml(
-              supportReportFilters.createdAt
-            )}"></th>
+            <th>
+              <div class="date-range-filter" title="From date, or from–to range (local calendar days, times ignored)">
+                <input type="date" data-filter="createdDateFrom" aria-label="Created from" value="${escapeHtml(
+                  supportReportFilters.createdDateFrom
+                )}">
+                <input type="date" data-filter="createdDateTo" aria-label="Created to (optional)" value="${escapeHtml(
+                  supportReportFilters.createdDateTo
+                )}">
+              </div>
+            </th>
             <th><select data-filter="firstResponseSLA">${selectOptions(
               SUPPORT_REPORT_SLA_OPTIONS,
               supportReportFilters.firstResponseSLA
@@ -2043,9 +2084,19 @@ function attachTrendTooltipHandlers(wrap) {
     tooltip.style.display = "none";
   };
   const position = (evt) => {
-    const rect = wrap.getBoundingClientRect();
-    tooltip.style.left = `${evt.clientX - rect.left}px`;
-    tooltip.style.top = `${evt.clientY - rect.top}px`;
+    const wrapRect = wrap.getBoundingClientRect();
+    const x = evt.clientX - wrapRect.left;
+    const y = evt.clientY - wrapRect.top;
+    tooltip.style.left = `${x}px`;
+    tooltip.style.top = `${y}px`;
+    tooltip.style.transform = "translate(-50%, calc(-100% - 10px))";
+    const tipRect = tooltip.getBoundingClientRect();
+    const edge = 8;
+    if (tipRect.right > wrapRect.right - edge) {
+      tooltip.style.transform = "translate(calc(-100% - 6px), calc(-100% - 10px))";
+    } else if (tipRect.left < wrapRect.left + edge) {
+      tooltip.style.transform = "translate(6px, calc(-100% - 10px))";
+    }
   };
   hide();
   wrap.querySelectorAll(".trend-dot-hit, .trend-bar-hit").forEach((dot) => {
