@@ -1796,10 +1796,10 @@ const SUPPORT_REPORT_TREND_COLORS = ["#6e8bff", "#3ecf8e", "#e5c15c", "#f16565",
 
 // Weekly cohort SLA bars (right axis, 0–100%) — see support_report.py `_build_weekly_sla_cohorts`.
 const SUPPORT_REPORT_WEEKLY_BAR_SERIES = [
-  { key: "weeklyPctOutOfResolution", label: "% out of resolution SLA (weekly cohort)" },
+  { key: "weeklyPctResolutionMet", label: "% resolution SLA met (weekly cohort)" },
   { key: "weeklyPctFirstResponseMetOpen", label: "% FR SLA met, open tickets (weekly cohort)" },
 ];
-const SUPPORT_REPORT_WEEKLY_BAR_COLORS = ["#f16565", "#3ecf8e"];
+const SUPPORT_REPORT_WEEKLY_BAR_COLORS = ["#3ecf8e", "#6e8bff"];
 // Matches support_report.py `SUPPORT_REPORT_TREND_CHART_MAX_POINTS` (history API returns this many).
 const SUPPORT_REPORT_TREND_CHART_MAX_POINTS = 36;
 
@@ -1812,6 +1812,23 @@ function formatTrendDate(isoString) {
   const d = new Date(isoString);
   if (Number.isNaN(d.getTime())) return "";
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function formatSupportReportCohortWeek(isoString) {
+  const d = new Date(isoString);
+  if (Number.isNaN(d.getTime())) return isoString || "";
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+function supportReportWeeklyBarTooltip({ columnLabel, weekStartAt, seriesLabel, total, met, pct }) {
+  const lines = [
+    columnLabel,
+    `Week of ${formatSupportReportCohortWeek(weekStartAt)}`,
+    `Total tickets: ${total}`,
+    `Met SLA: ${met}`,
+    `${seriesLabel}: ${pct}%`,
+  ];
+  return lines.join("\n");
 }
 
 // Builds the actual <svg>...</svg> markup for the trend chart at a given
@@ -1927,18 +1944,28 @@ function renderSupportReportTrendSVG(points, width, column, columnLabel, hiddenS
             const cx = xFromTime(weekStart + 3.5 * 86400000);
             const values = [
               {
-                key: "weeklyPctOutOfResolution",
-                pct: col.pctOutOfResolutionSla,
+                key: "weeklyPctResolutionMet",
+                pct: col.pctResolutionSlaMet,
+                total: col.resolutionEligible,
+                met: col.resolutionSlaMetCount,
                 color: SUPPORT_REPORT_WEEKLY_BAR_COLORS[0],
                 label: SUPPORT_REPORT_WEEKLY_BAR_SERIES[0].label,
               },
               {
                 key: "weeklyPctFirstResponseMetOpen",
                 pct: col.pctFirstResponseSlaMetOpen,
+                total: col.openAtEval,
+                met: col.firstResponseSlaMetCount,
                 color: SUPPORT_REPORT_WEEKLY_BAR_COLORS[1],
                 label: SUPPORT_REPORT_WEEKLY_BAR_SERIES[1].label,
               },
-            ].filter((v) => barSeriesVisible.some((s) => s.key === v.key) && v.pct != null);
+            ].filter(
+              (v) =>
+                barSeriesVisible.some((s) => s.key === v.key) &&
+                v.pct != null &&
+                typeof v.total === "number" &&
+                typeof v.met === "number"
+            );
             if (!values.length) return "";
             const groupWidth = weekBarWidth * values.length + 2 * (values.length - 1);
             let x = cx - groupWidth / 2;
@@ -1950,9 +1977,16 @@ function renderSupportReportTrendSVG(points, width, column, columnLabel, hiddenS
                 const rect = `<rect x="${x.toFixed(1)}" y="${y1.toFixed(1)}" width="${weekBarWidth.toFixed(
                   1
                 )}" height="${h.toFixed(1)}" fill="${v.color}" opacity="0.55" rx="1"></rect>`;
-                const tip = `${escapeHtml(columnLabel)} — ${escapeHtml(w.weekStartAt.slice(0, 10))}: ${escapeHtml(
-                  v.label
-                )} ${v.pct}%`;
+                const tip = escapeHtml(
+                  supportReportWeeklyBarTooltip({
+                    columnLabel,
+                    weekStartAt: w.weekStartAt,
+                    seriesLabel: v.label,
+                    total: v.total,
+                    met: v.met,
+                    pct: v.pct,
+                  })
+                );
                 const hit = `<rect class="trend-bar-hit" x="${x.toFixed(1)}" y="${paddingTop}" width="${weekBarWidth.toFixed(
                   1
                 )}" height="${plotHeight}" fill="transparent" data-tooltip="${tip}"></rect>`;
@@ -2158,7 +2192,7 @@ function renderSupportReportTrendChart() {
       <div class="trend-svg-wrap"></div>
       <p class="empty-note trend-cohort-note">
         Lines: last ${SUPPORT_REPORT_TREND_CHART_MAX_POINTS} daily refresh snapshots. Weekly bars (right axis): last 6 Pacific calendar weeks (tickets created that week).
-        Red = % Urgent/High out of resolution SLA; green = % still-open cohort tickets that met first-response SLA.
+        Green = % Urgent/High that met resolution SLA; blue = % still-open cohort tickets that met first-response SLA.
       </p>
     </div>`;
 }

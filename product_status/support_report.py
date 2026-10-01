@@ -99,8 +99,9 @@ hiccup never breaks the report itself).
 Each refresh also computes `weeklyCohorts` (last
 `SUPPORT_REPORT_WEEKLY_COHORT_WEEKS` Pacific Monday weeks, one point per
 week): Key User tickets **created** that week. Resolution bar = % of
-Urgent/High in the cohort that breached resolution SLA as of week end (or
-now for the current week). First-response bar = % of cohort tickets still
+Urgent/High in the cohort that **met** resolution SLA as of week end (or
+now for the current week) — i.e. not yet / never out of the 21-day window.
+First-response bar = % of cohort tickets still
 **open** at that moment that had met first-response SLA by then. Bars use
 the chart's right axis (0–100%); the existing refresh history lines stay on
 the left.
@@ -267,7 +268,7 @@ def _build_weekly_sla_cohorts(
     reply_overrides: Dict[str, Optional[float]],
     now: float,
 ) -> List[Dict[str, Any]]:
-    """One row per Pacific calendar week: % resolution SLA breach (Urgent/High
+    """One row per Pacific calendar week: % resolution SLA met (Urgent/High
     cohort) and % first-response SLA met among cohort tickets still open at
     week end (or now for the current week)."""
     week_starts = _list_week_starts(now, SUPPORT_REPORT_WEEKLY_COHORT_WEEKS)
@@ -292,17 +293,19 @@ def _build_weekly_sla_cohorts(
                 scoped = [c for c in cohort if _squad_for(c) == col]
 
             res_eligible = [c for c in scoped if _priority(c) in ("Urgent", "High")]
-            res_breached = sum(1 for c in res_eligible if _resolution_breached_at(c, eval_ts))
+            res_met = sum(1 for c in res_eligible if not _resolution_breached_at(c, eval_ts))
             open_at_eval = [c for c in scoped if _is_open_at(c, eval_ts)]
             fr_met = sum(1 for c in open_at_eval if _first_response_met_at(c, reply_overrides, eval_ts))
 
-            pct_res = round(100.0 * res_breached / len(res_eligible), 1) if res_eligible else None
+            pct_res = round(100.0 * res_met / len(res_eligible), 1) if res_eligible else None
             pct_fr = round(100.0 * fr_met / len(open_at_eval), 1) if open_at_eval else None
             by_column[col] = {
-                "pctOutOfResolutionSla": pct_res,
+                "pctResolutionSlaMet": pct_res,
                 "pctFirstResponseSlaMetOpen": pct_fr,
                 "resolutionEligible": len(res_eligible),
+                "resolutionSlaMetCount": res_met,
                 "openAtEval": len(open_at_eval),
+                "firstResponseSlaMetCount": fr_met,
             }
 
         rows.append(

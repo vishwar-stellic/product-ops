@@ -846,7 +846,7 @@ body {
   border: 1px solid var(--border);
   color: var(--text);
   font-size: 12px;
-  white-space: nowrap;
+  white-space: pre-line;
   padding: 5px 9px;
   border-radius: var(--radius-sm);
   pointer-events: none;
