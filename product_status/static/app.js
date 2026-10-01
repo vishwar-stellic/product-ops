@@ -1479,7 +1479,8 @@ const supportReportFilters = {
   createdDateFrom: "",
   createdDateTo: "",
   firstResponseSLA: "",
-  updatedAt: "",
+  updatedDateFrom: "",
+  updatedDateTo: "",
   userName: [],
   partnerName: [],
   priority: [],
@@ -1497,6 +1498,13 @@ function formatDateTime(isoString) {
     hour: "numeric",
     minute: "2-digit",
   });
+}
+
+function formatDateOnly(isoString) {
+  if (!isoString) return "—";
+  const d = new Date(isoString);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
 // "Out of first response"/"out of resolution" aren't their own ticket
@@ -1535,7 +1543,7 @@ function supportReportLocalDayBounds(dateInputValue) {
   return { start, end };
 }
 
-function supportReportTicketCreatedInDateFilter(isoString, fromValue, toValue) {
+function supportReportTicketInDateFilter(isoString, fromValue, toValue) {
   if (!fromValue && !toValue) return true;
   const created = new Date(isoString);
   if (Number.isNaN(created.getTime())) return false;
@@ -1567,9 +1575,28 @@ function supportReportFormatFilterDate(iso) {
   return bounds.start.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
-function supportReportCreatedDateTriggerLabel() {
-  const from = supportReportFilters.createdDateFrom;
-  const to = supportReportFilters.createdDateTo;
+const SUPPORT_REPORT_DATE_FILTER_FIELDS = {
+  created: { fromKey: "createdDateFrom", toKey: "createdDateTo" },
+  updated: { fromKey: "updatedDateFrom", toKey: "updatedDateTo" },
+};
+
+function supportReportDateFilterRange(field) {
+  const spec = SUPPORT_REPORT_DATE_FILTER_FIELDS[field];
+  return { from: supportReportFilters[spec.fromKey], to: supportReportFilters[spec.toKey] };
+}
+
+function supportReportSetDateFilterRange(field, from, to) {
+  const spec = SUPPORT_REPORT_DATE_FILTER_FIELDS[field];
+  supportReportFilters[spec.fromKey] = from;
+  supportReportFilters[spec.toKey] = to;
+}
+
+function supportReportClearDateFilter(field) {
+  supportReportSetDateFilterRange(field, "", "");
+}
+
+function supportReportDateTriggerLabel(field) {
+  const { from, to } = supportReportDateFilterRange(field);
   if (!from && !to) return "All dates";
   if (from && (!to || to === from)) return supportReportFormatFilterDate(from);
   if (from && to) return `${supportReportFormatFilterDate(from)} – ${supportReportFormatFilterDate(to)}`;
@@ -1577,28 +1604,30 @@ function supportReportCreatedDateTriggerLabel() {
   return "All dates";
 }
 
-let supportReportCreatedDateMenuEl = null;
-let supportReportCreatedDateDraftAnchor = null;
-let supportReportCreatedDateView = { year: new Date().getFullYear(), month: new Date().getMonth() };
+let supportReportDateMenuEl = null;
+let supportReportDateMenuField = null;
+let supportReportDateDraftAnchor = null;
+let supportReportDateView = { year: new Date().getFullYear(), month: new Date().getMonth() };
 
-function closeSupportReportCreatedDateMenu() {
-  if (supportReportCreatedDateMenuEl) {
-    supportReportCreatedDateMenuEl.remove();
-    supportReportCreatedDateMenuEl = null;
+function closeSupportReportDateMenu() {
+  if (supportReportDateMenuEl) {
+    supportReportDateMenuEl.remove();
+    supportReportDateMenuEl = null;
   }
-  supportReportCreatedDateDraftAnchor = null;
+  supportReportDateMenuField = null;
+  supportReportDateDraftAnchor = null;
 }
 
-function supportReportCreatedDateDayClass(iso, viewYear, viewMonth) {
+function supportReportDateDayClass(iso, viewYear, viewMonth, field) {
   const bounds = supportReportLocalDayBounds(iso);
   if (!bounds) return "day";
   const classes = ["day"];
   if (bounds.start.getFullYear() !== viewYear || bounds.start.getMonth() !== viewMonth) {
     classes.push("other-month");
   }
-  const from = supportReportFilters.createdDateFrom;
-  const to = supportReportFilters.createdDateTo || from;
-  const draft = supportReportCreatedDateDraftAnchor;
+  const { from, to: toRaw } = supportReportDateFilterRange(field);
+  const to = toRaw || from;
+  const draft = supportReportDateMenuField === field ? supportReportDateDraftAnchor : null;
   let rangeFrom = from;
   let rangeTo = to;
   if (draft) {
@@ -1617,8 +1646,8 @@ function supportReportCreatedDateDayClass(iso, viewYear, viewMonth) {
   return classes.join(" ");
 }
 
-function renderSupportReportCreatedDateMenuContent() {
-  const { year, month } = supportReportCreatedDateView;
+function renderSupportReportDateMenuContent(field) {
+  const { year, month } = supportReportDateView;
   const monthLabel = new Date(year, month, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" });
   const firstDow = new Date(year, month, 1).getDay();
   const daysInMonth = new Date(year, month + 1, 0).getDate();
@@ -1629,13 +1658,13 @@ function renderSupportReportCreatedDateMenuContent() {
     const d = new Date(year, month, -firstDow + i + 1);
     const iso = supportReportIsoDateLocal(d);
     cells.push(
-      `<button type="button" class="${supportReportCreatedDateDayClass(iso, year, month)}" data-date="${iso}">${d.getDate()}</button>`
+      `<button type="button" class="${supportReportDateDayClass(iso, year, month, field)}" data-date="${iso}">${d.getDate()}</button>`
     );
   }
   for (let day = 1; day <= daysInMonth; day++) {
     const iso = supportReportIsoDateLocal(new Date(year, month, day));
     cells.push(
-      `<button type="button" class="${supportReportCreatedDateDayClass(iso, year, month)}" data-date="${iso}">${day}</button>`
+      `<button type="button" class="${supportReportDateDayClass(iso, year, month, field)}" data-date="${iso}">${day}</button>`
     );
   }
   const trailing = (7 - ((firstDow + daysInMonth) % 7)) % 7;
@@ -1643,10 +1672,10 @@ function renderSupportReportCreatedDateMenuContent() {
     const d = new Date(year, month + 1, i);
     const iso = supportReportIsoDateLocal(d);
     cells.push(
-      `<button type="button" class="${supportReportCreatedDateDayClass(iso, year, month)}" data-date="${iso}">${d.getDate()}</button>`
+      `<button type="button" class="${supportReportDateDayClass(iso, year, month, field)}" data-date="${iso}">${d.getDate()}</button>`
     );
   }
-  const hint = supportReportCreatedDateDraftAnchor
+  const hint = supportReportDateDraftAnchor
     ? "Choose end date (or same day for one date)"
     : "Choose start date, then end date";
   return `
@@ -1663,49 +1692,54 @@ function renderSupportReportCreatedDateMenuContent() {
     </div>`;
 }
 
-function refreshSupportReportCreatedDateMenu() {
-  if (!supportReportCreatedDateMenuEl) return;
-  supportReportCreatedDateMenuEl.innerHTML = renderSupportReportCreatedDateMenuContent();
+function refreshSupportReportDateMenu() {
+  if (!supportReportDateMenuEl || !supportReportDateMenuField) return;
+  supportReportDateMenuEl.innerHTML = renderSupportReportDateMenuContent(supportReportDateMenuField);
 }
 
-function updateSupportReportCreatedDateTrigger() {
-  const btn =
-    els.supportReportContainer &&
-    els.supportReportContainer.querySelector(".date-range-picker-trigger");
-  if (btn) btn.textContent = supportReportCreatedDateTriggerLabel();
+function updateSupportReportDateTriggers() {
+  if (!els.supportReportContainer) return;
+  els.supportReportContainer.querySelectorAll(".date-range-picker-trigger[data-date-field]").forEach((btn) => {
+    const field = btn.dataset.dateField;
+    if (field) btn.textContent = supportReportDateTriggerLabel(field);
+  });
 }
 
-function openSupportReportCreatedDateMenu(trigger) {
-  closeSupportReportCreatedDateMenu();
-  const from = supportReportFilters.createdDateFrom;
+function openSupportReportDateMenu(trigger) {
+  const field = trigger.dataset.dateField;
+  if (!field || !SUPPORT_REPORT_DATE_FILTER_FIELDS[field]) return;
+  closeSupportReportDateMenu();
+  supportReportDateMenuField = field;
+  const { from } = supportReportDateFilterRange(field);
   if (from) {
     const b = supportReportLocalDayBounds(from);
     if (b) {
-      supportReportCreatedDateView = { year: b.start.getFullYear(), month: b.start.getMonth() };
+      supportReportDateView = { year: b.start.getFullYear(), month: b.start.getMonth() };
     }
   } else {
     const now = new Date();
-    supportReportCreatedDateView = { year: now.getFullYear(), month: now.getMonth() };
+    supportReportDateView = { year: now.getFullYear(), month: now.getMonth() };
   }
-  supportReportCreatedDateMenuEl = document.createElement("div");
-  supportReportCreatedDateMenuEl.className = "date-range-picker-menu";
-  supportReportCreatedDateMenuEl.innerHTML = renderSupportReportCreatedDateMenuContent();
-  document.body.appendChild(supportReportCreatedDateMenuEl);
+  supportReportDateMenuEl = document.createElement("div");
+  supportReportDateMenuEl.className = "date-range-picker-menu";
+  supportReportDateMenuEl.innerHTML = renderSupportReportDateMenuContent(field);
+  document.body.appendChild(supportReportDateMenuEl);
   const rect = trigger.getBoundingClientRect();
-  supportReportCreatedDateMenuEl.style.left = `${rect.left}px`;
-  supportReportCreatedDateMenuEl.style.top = `${rect.bottom + 4}px`;
-  const menuRect = supportReportCreatedDateMenuEl.getBoundingClientRect();
+  supportReportDateMenuEl.style.left = `${rect.left}px`;
+  supportReportDateMenuEl.style.top = `${rect.bottom + 4}px`;
+  const menuRect = supportReportDateMenuEl.getBoundingClientRect();
   if (menuRect.right > window.innerWidth - 8) {
-    supportReportCreatedDateMenuEl.style.left = `${Math.max(8, window.innerWidth - menuRect.width - 8)}px`;
+    supportReportDateMenuEl.style.left = `${Math.max(8, window.innerWidth - menuRect.width - 8)}px`;
   }
 }
 
-function handleSupportReportCreatedDateMenuClick(event) {
-  if (!supportReportCreatedDateMenuEl) return;
+function handleSupportReportDateMenuClick(event) {
+  if (!supportReportDateMenuEl || !supportReportDateMenuField) return;
+  const field = supportReportDateMenuField;
   const nav = event.target.closest("[data-cal-nav]");
   if (nav) {
     const delta = Number(nav.getAttribute("data-cal-nav"));
-    let { year, month } = supportReportCreatedDateView;
+    let { year, month } = supportReportDateView;
     month += delta;
     if (month < 0) {
       month = 11;
@@ -1714,51 +1748,49 @@ function handleSupportReportCreatedDateMenuClick(event) {
       month = 0;
       year += 1;
     }
-    supportReportCreatedDateView = { year, month };
-    refreshSupportReportCreatedDateMenu();
+    supportReportDateView = { year, month };
+    refreshSupportReportDateMenu();
     return;
   }
   if (event.target.closest("[data-cal-clear]")) {
-    supportReportFilters.createdDateFrom = "";
-    supportReportFilters.createdDateTo = "";
-    supportReportCreatedDateDraftAnchor = null;
-    updateSupportReportCreatedDateTrigger();
+    supportReportClearDateFilter(field);
+    supportReportDateDraftAnchor = null;
+    updateSupportReportDateTriggers();
     updateSupportReportDrilldownRows();
-    refreshSupportReportCreatedDateMenu();
+    refreshSupportReportDateMenu();
     return;
   }
   if (event.target.closest("[data-cal-close]")) {
-    closeSupportReportCreatedDateMenu();
+    closeSupportReportDateMenu();
     return;
   }
   const dayBtn = event.target.closest("button.day[data-date]");
   if (!dayBtn) return;
   const iso = dayBtn.getAttribute("data-date");
-  if (!supportReportCreatedDateDraftAnchor) {
-    supportReportCreatedDateDraftAnchor = iso;
-    refreshSupportReportCreatedDateMenu();
+  if (!supportReportDateDraftAnchor) {
+    supportReportDateDraftAnchor = iso;
+    refreshSupportReportDateMenu();
     return;
   }
-  let from = supportReportCreatedDateDraftAnchor;
+  let from = supportReportDateDraftAnchor;
   let to = iso;
   if (to < from) {
     const tmp = from;
     from = to;
     to = tmp;
   }
-  supportReportFilters.createdDateFrom = from;
-  supportReportFilters.createdDateTo = to;
-  supportReportCreatedDateDraftAnchor = null;
-  updateSupportReportCreatedDateTrigger();
+  supportReportSetDateFilterRange(field, from, to);
+  supportReportDateDraftAnchor = null;
+  updateSupportReportDateTriggers();
   updateSupportReportDrilldownRows();
-  closeSupportReportCreatedDateMenu();
+  closeSupportReportDateMenu();
 }
 
-function renderSupportReportCreatedDatePicker() {
+function renderSupportReportDatePicker(field) {
   return `<div class="date-range-picker">
-    <button type="button" class="date-range-picker-trigger">${escapeHtml(
-      supportReportCreatedDateTriggerLabel()
-    )}</button>
+    <button type="button" class="date-range-picker-trigger" data-date-field="${escapeHtml(field)}">${escapeHtml(
+    supportReportDateTriggerLabel(field)
+  )}</button>
   </div>`;
 }
 
@@ -1771,12 +1803,12 @@ function supportReportFilteredTickets(tickets) {
     if (f.userName.length && !f.userName.includes(supportReportFilterLabel(t.userName))) return false;
     if (f.partnerName.length && !f.partnerName.includes(supportReportFilterLabel(t.partnerName))) return false;
     if (f.description && !(t.description || "").toLowerCase().includes(f.description.toLowerCase())) return false;
-    if (
-      !supportReportTicketCreatedInDateFilter(t.createdAt, f.createdDateFrom, f.createdDateTo)
-    ) {
+    if (!supportReportTicketInDateFilter(t.createdAt, f.createdDateFrom, f.createdDateTo)) {
       return false;
     }
-    if (f.updatedAt && !formatDateTime(t.updatedAt).toLowerCase().includes(f.updatedAt.toLowerCase())) return false;
+    if (!supportReportTicketInDateFilter(t.updatedAt, f.updatedDateFrom, f.updatedDateTo)) {
+      return false;
+    }
     return true;
   });
 }
@@ -1930,11 +1962,11 @@ function renderSupportReportTicketRows(tickets) {
       (t) => `
       <tr>
         <td>${escapeHtml(t.squadLabel)}</td>
-        <td>${formatDateTime(t.createdAt)}</td>
+        <td>${formatDateOnly(t.createdAt)}</td>
         <td><span class="status-badge ${slaStatusClass(t.firstResponseSLA)}">${escapeHtml(
         t.firstResponseSLA
       )}</span></td>
-        <td>${formatDateTime(t.updatedAt)}</td>
+        <td>${formatDateOnly(t.updatedAt)}</td>
         <td>${escapeHtml(t.userName)}</td>
         <td>${escapeHtml(t.partnerName)}</td>
         <td>${escapeHtml(t.priority)}</td>
@@ -2003,14 +2035,12 @@ function renderSupportReportDrilldown() {
           </tr>
           <tr class="filter-row">
             <th>${renderSupportReportMultiSelect("squad", squadOptions, supportReportFilters.squad)}</th>
-            <th>${renderSupportReportCreatedDatePicker()}</th>
+            <th>${renderSupportReportDatePicker("created")}</th>
             <th><select data-filter="firstResponseSLA">${selectOptions(
               SUPPORT_REPORT_SLA_OPTIONS,
               supportReportFilters.firstResponseSLA
             )}</select></th>
-            <th><input type="text" data-filter="updatedAt" placeholder="Filter…" value="${escapeHtml(
-              supportReportFilters.updatedAt
-            )}"></th>
+            <th>${renderSupportReportDatePicker("updated")}</th>
             <th>${renderSupportReportMultiSelect("userName", userNameOptions, supportReportFilters.userName)}</th>
             <th>${renderSupportReportMultiSelect(
               "partnerName",
@@ -2458,7 +2488,7 @@ function renderSupportReportTrendChart() {
 function renderSupportReport(data) {
   if (!els.supportReportContainer) return;
   closeAllSupportReportMultiSelectMenus();
-  closeSupportReportCreatedDateMenu();
+  closeSupportReportDateMenu();
   supportReportData = data;
   const areas = data.areas || [];
 
@@ -2584,13 +2614,13 @@ if (els.supportReportContainer) {
   document.addEventListener("click", (event) => {
     if (event.target.closest(".date-range-picker-menu") || event.target.closest(".date-range-picker-trigger")) {
       if (event.target.closest(".date-range-picker-trigger")) {
-        openSupportReportCreatedDateMenu(event.target.closest(".date-range-picker-trigger"));
-      } else if (supportReportCreatedDateMenuEl) {
-        handleSupportReportCreatedDateMenuClick(event);
+        openSupportReportDateMenu(event.target.closest(".date-range-picker-trigger"));
+      } else if (supportReportDateMenuEl) {
+        handleSupportReportDateMenuClick(event);
       }
       return;
     }
-    closeSupportReportCreatedDateMenu();
+    closeSupportReportDateMenu();
     if (event.target.closest(".multi-select-menu") || event.target.closest(".multi-select-trigger")) return;
     closeAllSupportReportMultiSelectMenus();
   });
