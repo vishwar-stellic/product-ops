@@ -619,6 +619,19 @@ body {
   white-space: nowrap;
 }
 
+.filter-table th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.filter-table th.sortable:hover {
+  color: var(--accent);
+}
+
+.filter-table th .sort-indicator {
+  font-size: 10px;
+}
+
 .filter-table .filter-row th {
   padding-top: 6px;
   padding-bottom: 10px;

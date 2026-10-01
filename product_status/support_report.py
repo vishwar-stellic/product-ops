@@ -129,7 +129,7 @@ SUPPORT_REPORT_CACHE_KEY = "dashboard-support-report"
 # Bump whenever this module's output shape or underlying metric logic
 # changes - see `milestones_report.py:MILESTONES_REPORT_CACHE_VERSION` for
 # why (same cache has no schema of its own).
-SUPPORT_REPORT_CACHE_VERSION = 12
+SUPPORT_REPORT_CACHE_VERSION = 13
 
 # Separate raw key (not versioned/aged like the main report - see
 # `cache.read_raw`) for the trend chart's accumulating history log.
@@ -555,12 +555,16 @@ def _ticket_record(
     out_of_resolution = bool(
         created and (now - created) / 86400.0 > RES_TARGET_DAYS and priority in ("Urgent", "High")
     )
+    first_reply = (conversation.get("statistics") or {}).get("first_admin_reply_at") or reply_overrides.get(
+        conversation["id"]
+    )
     return {
         "id": conversation.get("id"),
         "url": _conversation_url(conversation.get("id")),
         "squad": squad,
         "squadLabel": squad_label,
         "createdAt": _epoch_to_iso(created),
+        "firstReplyAt": _epoch_to_iso(first_reply),
         "updatedAt": _epoch_to_iso(conversation.get("updated_at")),
         "userName": _user_name(conversation, contact_name_map),
         "partnerName": partner_name(conversation, company_map),

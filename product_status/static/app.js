@@ -1951,7 +1951,83 @@ function slaStatusClass(status) {
   return "status-planned"; // Pending
 }
 
-const SUPPORT_REPORT_TICKET_COLUMNS = 8;
+const SUPPORT_REPORT_TICKET_COLUMNS = 9;
+
+// Sortable columns of the drill-down table, in display order. Clicking a
+// header cycles ascending -> descending -> unsorted (original order).
+const SUPPORT_REPORT_SORT_COLUMNS = [
+  { key: "squadLabel", label: "Squad" },
+  { key: "createdAt", label: "Date Created", type: "date" },
+  { key: "firstReplyAt", label: "First Reply", type: "date" },
+  { key: "firstResponseSLA", label: "First Response SLA", type: "sla" },
+  { key: "updatedAt", label: "Last Update", type: "date" },
+  { key: "userName", label: "User Name" },
+  { key: "partnerName", label: "Partner Name" },
+  { key: "priority", label: "Priority", type: "priority" },
+  { key: "description", label: "Ticket Description" },
+];
+const SUPPORT_REPORT_SLA_SORT_ORDER = ["Not Met", "Pending", "Met"];
+const supportReportSort = { key: null, dir: "asc" };
+
+function supportReportSortedTickets(tickets) {
+  const { key, dir } = supportReportSort;
+  const column = SUPPORT_REPORT_SORT_COLUMNS.find((c) => c.key === key);
+  if (!column) return tickets;
+  const sign = dir === "desc" ? -1 : 1;
+  const valueOf = (t) => {
+    const v = t[key];
+    if (column.type === "date") {
+      const time = v ? new Date(v).getTime() : NaN;
+      return Number.isNaN(time) ? null : time;
+    }
+    if (column.type === "priority") return SUPPORT_REPORT_PRIORITY_ORDER.indexOf(v);
+    if (column.type === "sla") return SUPPORT_REPORT_SLA_SORT_ORDER.indexOf(v);
+    return (v || "").toString().toLowerCase();
+  };
+  return [...tickets].sort((a, b) => {
+    const va = valueOf(a);
+    const vb = valueOf(b);
+    // Blanks (e.g. no first reply yet) always sink to the bottom, either direction.
+    if (va === null && vb === null) return 0;
+    if (va === null) return 1;
+    if (vb === null) return -1;
+    if (typeof va === "string") return sign * va.localeCompare(vb);
+    return sign * (va - vb);
+  });
+}
+
+function supportReportSortIndicator(key) {
+  if (supportReportSort.key !== key) return "";
+  return supportReportSort.dir === "asc" ? " ▲" : " ▼";
+}
+
+function renderSupportReportSortableHeaders() {
+  return SUPPORT_REPORT_SORT_COLUMNS.map(
+    (c) =>
+      `<th class="sortable" data-sort-key="${c.key}" title="Click to sort">${escapeHtml(
+        c.label
+      )}<span class="sort-indicator">${supportReportSortIndicator(c.key)}</span></th>`
+  ).join("");
+}
+
+function toggleSupportReportSort(key) {
+  if (supportReportSort.key !== key) {
+    supportReportSort.key = key;
+    supportReportSort.dir = "asc";
+  } else if (supportReportSort.dir === "asc") {
+    supportReportSort.dir = "desc";
+  } else {
+    supportReportSort.key = null;
+    supportReportSort.dir = "asc";
+  }
+  if (els.supportReportContainer) {
+    els.supportReportContainer.querySelectorAll(".support-drilldown th[data-sort-key]").forEach((th) => {
+      const indicator = th.querySelector(".sort-indicator");
+      if (indicator) indicator.textContent = supportReportSortIndicator(th.dataset.sortKey);
+    });
+  }
+  updateSupportReportDrilldownRows();
+}
 
 function renderSupportReportTicketRows(tickets) {
   if (!tickets.length) {
@@ -1963,6 +2039,7 @@ function renderSupportReportTicketRows(tickets) {
       <tr>
         <td>${escapeHtml(t.squadLabel)}</td>
         <td>${formatDateOnly(t.createdAt)}</td>
+        <td>${formatDateOnly(t.firstReplyAt)}</td>
         <td><span class="status-badge ${slaStatusClass(t.firstResponseSLA)}">${escapeHtml(
         t.firstResponseSLA
       )}</span></td>
@@ -1986,7 +2063,7 @@ function updateSupportReportDrilldownRows() {
   const badge = els.supportReportContainer.querySelector(".support-drilldown .label-badge");
   if (!tbody) return;
   const allTickets = supportReportTicketsForMetric(supportReportData, supportReportActiveMetric);
-  const filtered = supportReportFilteredTickets(allTickets);
+  const filtered = supportReportSortedTickets(supportReportFilteredTickets(allTickets));
   tbody.innerHTML = renderSupportReportTicketRows(filtered);
   if (badge) badge.textContent = `${filtered.length} of ${allTickets.length}`;
 }
@@ -1995,7 +2072,7 @@ function renderSupportReportDrilldown() {
   if (!supportReportData || !supportReportActiveMetric) return "";
   const row = SUPPORT_REPORT_ROWS.find((r) => r.key === supportReportActiveMetric);
   const allTickets = supportReportTicketsForMetric(supportReportData, supportReportActiveMetric);
-  const filtered = supportReportFilteredTickets(allTickets);
+  const filtered = supportReportSortedTickets(supportReportFilteredTickets(allTickets));
 
   // Filter dropdown options are derived from the full (unfiltered) ticket
   // set for this metric, not the currently-filtered one, so options never
@@ -2023,19 +2100,11 @@ function renderSupportReportDrilldown() {
   } of ${allTickets.length}</span></h3>
       <table class="data-table filter-table">
         <thead>
-          <tr>
-            <th>Squad</th>
-            <th>Date Created</th>
-            <th>First Response SLA</th>
-            <th>Last Update</th>
-            <th>User Name</th>
-            <th>Partner Name</th>
-            <th>Priority</th>
-            <th>Ticket Description</th>
-          </tr>
+          <tr>${renderSupportReportSortableHeaders()}</tr>
           <tr class="filter-row">
             <th>${renderSupportReportMultiSelect("squad", squadOptions, supportReportFilters.squad)}</th>
             <th>${renderSupportReportDatePicker("created")}</th>
+            <th></th>
             <th><select data-filter="firstResponseSLA">${selectOptions(
               SUPPORT_REPORT_SLA_OPTIONS,
               supportReportFilters.firstResponseSLA
@@ -2700,6 +2769,12 @@ function renderSupportReport(data) {
 
 if (els.supportReportContainer) {
   els.supportReportContainer.addEventListener("click", (event) => {
+    const sortHeader = event.target.closest(".support-drilldown th[data-sort-key]");
+    if (sortHeader) {
+      toggleSupportReportSort(sortHeader.dataset.sortKey);
+      return;
+    }
+
     const barHit = event.target.closest(".trend-bar-hit");
     if (barHit) {
       selectSupportReportDebug({
