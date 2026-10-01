@@ -956,8 +956,22 @@ body {
   height: 220px;
 }
 
-.trend-dot-hit {
+.trend-dot-hit,
+.trend-bar-hit {
   cursor: pointer;
+}
+
+.support-debug .debug-stats {
+  margin: 0 0 8px;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.support-debug .debug-reconcile {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 .trend-tooltip {

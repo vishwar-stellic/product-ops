@@ -2067,7 +2067,7 @@ const SUPPORT_REPORT_TREND_COLORS = ["#6e8bff", "#3ecf8e", "#e5c15c", "#f16565",
 // Weekly cohort SLA bars (right axis, 0–100%) — see support_report.py `_build_weekly_sla_cohorts`.
 const SUPPORT_REPORT_WEEKLY_BAR_SERIES = [
   { key: "weeklyPctResolutionMet", label: "% resolution SLA met (weekly cohort)" },
-  { key: "weeklyPctFirstResponseMetOpen", label: "% FR SLA met, open tickets (weekly cohort)" },
+  { key: "weeklyPctFirstResponseMet", label: "% first response SLA met (weekly cohort)" },
 ];
 const SUPPORT_REPORT_WEEKLY_BAR_COLORS = ["#3ecf8e", "#6e8bff"];
 // Matches support_report.py `SUPPORT_REPORT_TREND_CHART_MAX_POINTS` (history API returns this many).
@@ -2090,6 +2090,144 @@ function formatSupportReportCohortWeek(isoString) {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
+// ---- Debug panel (filled when a weekly cohort bar is clicked) ----
+// Shows the counts and the exact tickets (with links) behind one bar, using
+// the per-ticket detail the backend ships in `weeklyCohorts[].tickets` (see
+// support_report.py `_cohort_ticket_debug`).
+let supportReportDebugSelection = null; // { weekStartAt, seriesKey, column }
+
+function renderSupportReportDebug() {
+  const placeholder = `
+    <div class="squad-block support-debug">
+      <h3 class="block-title">Debug: SLA calculation</h3>
+      <p class="empty-note">Click a bar in the trend chart above to list the counts and tickets used to calculate it.</p>
+    </div>`;
+  const sel = supportReportDebugSelection;
+  if (!sel || !supportReportData) return placeholder;
+  const week = (supportReportData.weeklyCohorts || []).find((w) => w.weekStartAt === sel.weekStartAt);
+  if (!week) return placeholder;
+
+  const isFirstResponse = sel.seriesKey === "weeklyPctFirstResponseMet";
+  const seriesLabel = (SUPPORT_REPORT_WEEKLY_BAR_SERIES.find((s) => s.key === sel.seriesKey) || {}).label || sel.seriesKey;
+  const columnLabel = supportReportTrendColumnLabel(sel.column);
+  const tickets = (week.tickets || []).filter((t) => sel.column === "TOTAL" || t.squad === sel.column);
+  const reported = (week.byColumn && week.byColumn[sel.column]) || {};
+  const squadLabels = Object.fromEntries(((supportReportData.areas || [])).map((a) => [a.squad, a.label]));
+  const pct = (num, den) => (den ? `${(Math.round((1000 * num) / den) / 10).toFixed(1)}%` : "—");
+  const link = (t) =>
+    `<a href="${escapeHtml(t.url)}" target="_blank" rel="noopener">${escapeHtml(t.description)}</a>`;
+
+  let statsHtml;
+  let headHtml;
+  let rowsHtml;
+  let reconcileHtml;
+
+  if (isFirstResponse) {
+    const met = tickets.filter((t) => t.frLabel === "Met");
+    const notMet = tickets.filter((t) => t.frLabel === "Not Met");
+    const pending = tickets.filter((t) => t.frLabel === "Pending");
+    const graded = met.length + notMet.length;
+    const matches = reported.firstResponseGraded === graded && reported.firstResponseSlaMetCount === met.length;
+    statsHtml = `
+      <li>Tickets created this week (cohort): <strong>${tickets.length}</strong></li>
+      <li>Met (first reply within ${supportReportData.frTargetHours} business hours): <strong>${met.length}</strong></li>
+      <li>Not met (replied late, or no reply after the window): <strong>${notMet.length}</strong></li>
+      <li>Pending (no reply yet, still inside the window — excluded): <strong>${pending.length}</strong></li>
+      <li>Denominator (Met + Not met): <strong>${graded}</strong></li>
+      <li>Recomputed: ${met.length} / ${graded} = <strong>${pct(met.length, graded)}</strong></li>`;
+    reconcileHtml = `Chart reported ${reported.firstResponseSlaMetCount ?? "—"} / ${
+      reported.firstResponseGraded ?? "—"
+    } = ${reported.pctFirstResponseSlaMet ?? "—"}% — ${
+      matches ? "✓ matches the listed tickets" : "⚠ does NOT match the listed tickets"
+    }`;
+    const rank = { "Not Met": 0, Pending: 1, Met: 2 };
+    const sorted = [...tickets].sort((a, b) => rank[a.frLabel] - rank[b.frLabel]);
+    headHtml = `<th>Ticket</th><th>Squad</th><th>Created</th><th>Priority</th><th>State</th>
+      <th>First reply</th><th>Reply source</th><th>Business hrs to reply</th><th>Result</th><th>Counted</th>`;
+    rowsHtml = sorted
+      .map((t) => {
+        const counted =
+          t.frLabel === "Met" ? "numerator + denominator" : t.frLabel === "Not Met" ? "denominator" : "excluded";
+        return `<tr>
+          <td>${link(t)}</td>
+          <td>${escapeHtml(squadLabels[t.squad] || t.squad || "(none)")}</td>
+          <td>${formatDateTime(t.createdAt)}</td>
+          <td>${escapeHtml(t.priority)}</td>
+          <td>${escapeHtml(t.state || "—")} / ${escapeHtml(t.ticketState || "—")}</td>
+          <td>${t.firstReplyAt ? formatDateTime(t.firstReplyAt) : "none"}</td>
+          <td>${escapeHtml(t.replySource || "—")}</td>
+          <td class="num">${t.frBusinessHours}${t.firstReplyAt ? "" : " (so far)"}</td>
+          <td><span class="status-badge ${slaStatusClass(t.frLabel)}">${escapeHtml(t.frLabel)}</span></td>
+          <td>${counted}</td>
+        </tr>`;
+      })
+      .join("");
+  } else {
+    const eligible = tickets.filter((t) => t.resolutionEligible);
+    const breached = eligible.filter((t) => t.resolutionBreached);
+    const metRes = eligible.length - breached.length;
+    const matches = reported.resolutionEligible === eligible.length && reported.resolutionSlaMetCount === metRes;
+    statsHtml = `
+      <li>Tickets created this week (cohort): <strong>${tickets.length}</strong></li>
+      <li>Not Urgent/High (not eligible — excluded): <strong>${tickets.length - eligible.length}</strong></li>
+      <li>Eligible (Urgent/High) — denominator: <strong>${eligible.length}</strong></li>
+      <li>Breached (open or closed after more than ${supportReportData.resTargetDays} days): <strong>${breached.length}</strong></li>
+      <li>Met (within ${supportReportData.resTargetDays} days so far): <strong>${metRes}</strong></li>
+      <li>Evaluated as of: <strong>${formatDateTime(week.evaluatedAt)}</strong></li>
+      <li>Recomputed: ${metRes} / ${eligible.length} = <strong>${pct(metRes, eligible.length)}</strong></li>`;
+    reconcileHtml = `Chart reported ${reported.resolutionSlaMetCount ?? "—"} / ${
+      reported.resolutionEligible ?? "—"
+    } = ${reported.pctResolutionSlaMet ?? "—"}% — ${
+      matches ? "✓ matches the listed tickets" : "⚠ does NOT match the listed tickets"
+    }`;
+    const result = (t) => (!t.resolutionEligible ? "Not eligible" : t.resolutionBreached ? "Breached" : "Met");
+    const rank = { Breached: 0, Met: 1, "Not eligible": 2 };
+    const sorted = [...tickets].sort((a, b) => rank[result(a)] - rank[result(b)]);
+    headHtml = `<th>Ticket</th><th>Squad</th><th>Created</th><th>Priority</th><th>State</th>
+      <th>First closed</th><th>Age at evaluation (days)</th><th>Result</th><th>Counted</th>`;
+    rowsHtml = sorted
+      .map((t) => {
+        const r = result(t);
+        const badge = r === "Met" ? "status-completed" : r === "Breached" ? "status-canceled" : "status-planned";
+        const counted = r === "Not eligible" ? "excluded" : r === "Met" ? "numerator + denominator" : "denominator";
+        return `<tr>
+          <td>${link(t)}</td>
+          <td>${escapeHtml(squadLabels[t.squad] || t.squad || "(none)")}</td>
+          <td>${formatDateTime(t.createdAt)}</td>
+          <td>${escapeHtml(t.priority)}</td>
+          <td>${escapeHtml(t.state || "—")} / ${escapeHtml(t.ticketState || "—")}</td>
+          <td>${t.firstCloseAt ? formatDateTime(t.firstCloseAt) : "not closed"}</td>
+          <td class="num">${t.resolutionAgeDays ?? "—"}</td>
+          <td><span class="status-badge ${badge}">${escapeHtml(r)}</span></td>
+          <td>${counted}</td>
+        </tr>`;
+      })
+      .join("");
+  }
+
+  return `
+    <div class="squad-block support-debug">
+      <h3 class="block-title">Debug: ${escapeHtml(seriesLabel)} <span class="label-badge">${escapeHtml(
+    columnLabel
+  )} · week of ${escapeHtml(formatSupportReportCohortWeek(week.weekStartAt))}</span></h3>
+      <ul class="debug-stats">${statsHtml}</ul>
+      <p class="debug-reconcile">${escapeHtml(reconcileHtml)}</p>
+      <table class="data-table filter-table">
+        <thead><tr>${headHtml}</tr></thead>
+        <tbody>${rowsHtml || '<tr><td colspan="10"><p class="empty-note">No tickets in this cohort.</p></td></tr>'}</tbody>
+      </table>
+    </div>`;
+}
+
+function selectSupportReportDebug(selection) {
+  supportReportDebugSelection = selection;
+  const el = els.supportReportContainer && els.supportReportContainer.querySelector(".support-debug");
+  if (!el) return;
+  el.outerHTML = renderSupportReportDebug();
+  const fresh = els.supportReportContainer.querySelector(".support-debug");
+  if (fresh) fresh.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 function supportReportWeeklyBarTooltip({ columnLabel, weekStartAt, seriesLabel, total, met, pct }) {
   const lines = [
     columnLabel,
@@ -2097,6 +2235,7 @@ function supportReportWeeklyBarTooltip({ columnLabel, weekStartAt, seriesLabel, 
     `Total tickets: ${total}`,
     `Met SLA: ${met}`,
     `${seriesLabel}: ${pct}%`,
+    "Click for calculation details",
   ];
   return lines.join("\n");
 }
@@ -2222,9 +2361,9 @@ function renderSupportReportTrendSVG(points, width, column, columnLabel, hiddenS
                 label: SUPPORT_REPORT_WEEKLY_BAR_SERIES[0].label,
               },
               {
-                key: "weeklyPctFirstResponseMetOpen",
-                pct: col.pctFirstResponseSlaMetOpen,
-                total: col.openAtEval,
+                key: "weeklyPctFirstResponseMet",
+                pct: col.pctFirstResponseSlaMet,
+                total: col.firstResponseGraded,
                 met: col.firstResponseSlaMetCount,
                 color: SUPPORT_REPORT_WEEKLY_BAR_COLORS[1],
                 label: SUPPORT_REPORT_WEEKLY_BAR_SERIES[1].label,
@@ -2259,7 +2398,9 @@ function renderSupportReportTrendSVG(points, width, column, columnLabel, hiddenS
                 );
                 const hit = `<rect class="trend-bar-hit" x="${x.toFixed(1)}" y="${paddingTop}" width="${weekBarWidth.toFixed(
                   1
-                )}" height="${plotHeight}" fill="transparent" data-tooltip="${tip}"></rect>`;
+                )}" height="${plotHeight}" fill="transparent" data-tooltip="${tip}" data-week="${escapeHtml(
+                  w.weekStartAt
+                )}" data-series="${escapeHtml(v.key)}" data-column="${escapeHtml(column)}"></rect>`;
                 x += weekBarWidth + 2;
                 return rect + hit;
               })
@@ -2480,7 +2621,7 @@ function renderSupportReportTrendChart() {
       <div class="trend-svg-wrap"></div>
       <p class="empty-note trend-cohort-note">
         Lines: last ${SUPPORT_REPORT_TREND_CHART_MAX_POINTS} daily refresh snapshots. Weekly bars (right axis): last 6 Pacific calendar weeks (tickets created that week).
-        Green = % Urgent/High that met resolution SLA; blue = % still-open cohort tickets that met first-response SLA.
+        Green = % Urgent/High that met resolution SLA; blue = % of that week's tickets (any state) whose first response came within the SLA window (tickets still awaiting a reply inside the window are excluded).
       </p>
     </div>`;
 }
@@ -2543,7 +2684,8 @@ function renderSupportReport(data) {
         <tbody>${bodyRows}</tbody>
       </table>
     </div>
-    ${renderSupportReportDrilldown()}`;
+    ${renderSupportReportDrilldown()}
+    ${renderSupportReportDebug()}`;
 
   mountSupportReportTrendChart();
 
@@ -2557,6 +2699,16 @@ function renderSupportReport(data) {
 
 if (els.supportReportContainer) {
   els.supportReportContainer.addEventListener("click", (event) => {
+    const barHit = event.target.closest(".trend-bar-hit");
+    if (barHit) {
+      selectSupportReportDebug({
+        weekStartAt: barHit.dataset.week,
+        seriesKey: barHit.dataset.series,
+        column: barHit.dataset.column,
+      });
+      return;
+    }
+
     const multiSelectTrigger = event.target.closest(".multi-select-trigger");
     if (multiSelectTrigger) {
       const wrap = multiSelectTrigger.closest(".multi-select-filter");

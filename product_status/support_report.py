@@ -101,8 +101,9 @@ Each refresh also computes `weeklyCohorts` (last
 week): Key User tickets **created** that week. Resolution bar = % of
 Urgent/High in the cohort that **met** resolution SLA as of week end (or
 now for the current week) — i.e. not yet / never out of the 21-day window.
-First-response bar = % of cohort tickets still
-**open** at that moment that had met first-response SLA by then. Bars use
+First-response bar = % of the cohort's tickets (any state) whose first reply
+landed within the SLA window, graded like the drill-down table; tickets still
+"Pending" (no reply yet, clock not run out) are excluded. Bars use
 the chart's right axis (0–100%); the existing refresh history lines stay on
 the left.
 """
@@ -128,7 +129,7 @@ SUPPORT_REPORT_CACHE_KEY = "dashboard-support-report"
 # Bump whenever this module's output shape or underlying metric logic
 # changes - see `milestones_report.py:MILESTONES_REPORT_CACHE_VERSION` for
 # why (same cache has no schema of its own).
-SUPPORT_REPORT_CACHE_VERSION = 8
+SUPPORT_REPORT_CACHE_VERSION = 11
 
 # Separate raw key (not versioned/aged like the main report - see
 # `cache.read_raw`) for the trend chart's accumulating history log.
@@ -224,43 +225,63 @@ def _list_week_starts(now: float, num_weeks: int) -> List[float]:
     return [current - i * 7 * 86400.0 for i in range(num_weeks - 1, -1, -1)]
 
 
-def _is_open_at(conversation: Dict[str, Any], eval_ts: float) -> bool:
-    if _ticket_state(conversation) == RESOLVED_TICKET_STATE:
-        return False
+def _resolution_age_days_at(conversation: Dict[str, Any], eval_ts: float) -> Optional[float]:
+    """Days from creation until the earlier of first close and `eval_ts` -
+    the clock the 21-day resolution SLA runs against. `None` if the ticket
+    didn't exist yet at `eval_ts`."""
+    created = conversation.get("created_at")
+    if not created or created >= eval_ts:
+        return None
     first_close = (conversation.get("statistics") or {}).get("first_close_at")
-    if first_close and first_close < eval_ts:
-        return False
-    state = conversation.get("state")
-    if state == "closed":
-        return False
-    return state in ("open", "snoozed")
+    end = min(eval_ts, first_close) if first_close and first_close < eval_ts else eval_ts
+    return (end - created) / 86400.0
 
 
 def _resolution_breached_at(conversation: Dict[str, Any], eval_ts: float) -> bool:
-    created = conversation.get("created_at")
-    if not created or created >= eval_ts:
-        return False
     if _priority(conversation) not in ("Urgent", "High"):
         return False
-    first_close = (conversation.get("statistics") or {}).get("first_close_at")
-    end = min(eval_ts, first_close) if first_close and first_close < eval_ts else eval_ts
-    return (end - created) / 86400.0 > RES_TARGET_DAYS
+    age = _resolution_age_days_at(conversation, eval_ts)
+    return age is not None and age > RES_TARGET_DAYS
 
 
-def _first_response_met_at(
-    conversation: Dict[str, Any], reply_overrides: Dict[str, Optional[float]], eval_ts: float
-) -> bool:
+def _conversation_url(conversation_id: Any) -> str:
+    return f"https://app.intercom.com/a/inbox/{INTERCOM_INBOX_PREFIX}/inbox/shared/all/conversation/{conversation_id}"
+
+
+def _cohort_ticket_debug(
+    conversation: Dict[str, Any],
+    reply_overrides: Dict[str, Optional[float]],
+    eval_ts: float,
+    now: float,
+) -> Dict[str, Any]:
+    """Per-ticket inputs and outcomes behind the weekly cohort bars, so the
+    dashboard's debug panel can show exactly what each bar counted."""
+    stats = conversation.get("statistics") or {}
     created = conversation.get("created_at")
-    if not created or created >= eval_ts:
-        return False
-    reply = (conversation.get("statistics") or {}).get("first_admin_reply_at") or reply_overrides.get(
-        conversation["id"]
-    )
-    if reply and reply > eval_ts:
-        reply = None
-    if not reply:
-        return False
-    return _business_hours_between(created, reply) <= FR_TARGET_HOURS
+    stat_reply = stats.get("first_admin_reply_at")
+    override_reply = reply_overrides.get(conversation["id"])
+    reply = stat_reply or override_reply
+    priority = _priority(conversation) or "(blank)"
+    eligible = priority in ("Urgent", "High")
+    age = _resolution_age_days_at(conversation, eval_ts)
+    return {
+        "id": conversation.get("id"),
+        "url": _conversation_url(conversation.get("id")),
+        "description": _ticket_description(conversation),
+        "squad": _squad_for(conversation) or "",
+        "createdAt": _epoch_to_iso(created),
+        "priority": priority,
+        "state": conversation.get("state"),
+        "ticketState": _ticket_state(conversation),
+        "firstReplyAt": _epoch_to_iso(reply),
+        "replySource": "intercom statistics" if stat_reply else ("conversation parts" if override_reply else None),
+        "frBusinessHours": round(_business_hours_between(created, reply or now), 1),
+        "frLabel": _first_response_label(conversation, reply_overrides, now),
+        "firstCloseAt": _epoch_to_iso(stats.get("first_close_at")),
+        "resolutionEligible": eligible,
+        "resolutionAgeDays": round(age, 1) if age is not None else None,
+        "resolutionBreached": bool(eligible and age is not None and age > RES_TARGET_DAYS),
+    }
 
 
 def _build_weekly_sla_cohorts(
@@ -268,9 +289,13 @@ def _build_weekly_sla_cohorts(
     reply_overrides: Dict[str, Optional[float]],
     now: float,
 ) -> List[Dict[str, Any]]:
-    """One row per Pacific calendar week: % resolution SLA met (Urgent/High
-    cohort) and % first-response SLA met among cohort tickets still open at
-    week end (or now for the current week)."""
+    """One row per Pacific calendar week (cohort = Key User tickets created
+    that week, in any state today): % resolution SLA met (Urgent/High,
+    evaluated as of week end) and % first-response SLA met - the share of
+    cohort tickets whose first reply landed within `FR_TARGET_HOURS` business
+    hours, using the same grading as the drill-down table
+    (`_first_response_label`). Tickets still "Pending" (no reply yet, clock
+    not run out) have no outcome yet and are left out of the denominator."""
     week_starts = _list_week_starts(now, SUPPORT_REPORT_WEEKLY_COHORT_WEEKS)
     column_keys = ["TOTAL"] + [a["squad"] for a in AREAS]
     rows: List[Dict[str, Any]] = []
@@ -294,24 +319,29 @@ def _build_weekly_sla_cohorts(
 
             res_eligible = [c for c in scoped if _priority(c) in ("Urgent", "High")]
             res_met = sum(1 for c in res_eligible if not _resolution_breached_at(c, eval_ts))
-            open_at_eval = [c for c in scoped if _is_open_at(c, eval_ts)]
-            fr_met = sum(1 for c in open_at_eval if _first_response_met_at(c, reply_overrides, eval_ts))
+            fr_labels = [_first_response_label(c, reply_overrides, now) for c in scoped]
+            fr_met = sum(1 for label in fr_labels if label == "Met")
+            fr_graded = sum(1 for label in fr_labels if label in ("Met", "Not Met"))
 
             pct_res = round(100.0 * res_met / len(res_eligible), 1) if res_eligible else None
-            pct_fr = round(100.0 * fr_met / len(open_at_eval), 1) if open_at_eval else None
+            pct_fr = round(100.0 * fr_met / fr_graded, 1) if fr_graded else None
             by_column[col] = {
                 "pctResolutionSlaMet": pct_res,
-                "pctFirstResponseSlaMetOpen": pct_fr,
+                "pctFirstResponseSlaMet": pct_fr,
                 "resolutionEligible": len(res_eligible),
                 "resolutionSlaMetCount": res_met,
-                "openAtEval": len(open_at_eval),
+                "firstResponseGraded": fr_graded,
                 "firstResponseSlaMetCount": fr_met,
             }
 
         rows.append(
             {
                 "weekStartAt": datetime.fromtimestamp(week_start, timezone.utc).isoformat(),
+                "evaluatedAt": datetime.fromtimestamp(eval_ts, timezone.utc).isoformat(),
                 "byColumn": by_column,
+                # Every cohort ticket once (the dashboard filters by squad
+                # for the debug panel) - see `_cohort_ticket_debug`.
+                "tickets": [_cohort_ticket_debug(c, reply_overrides, eval_ts, now) for c in cohort],
             }
         )
     return rows
@@ -505,7 +535,7 @@ def _ticket_record(
     )
     return {
         "id": conversation.get("id"),
-        "url": f"https://app.intercom.com/a/inbox/{INTERCOM_INBOX_PREFIX}/inbox/shared/all/conversation/{conversation.get('id')}",
+        "url": _conversation_url(conversation.get("id")),
         "squad": squad,
         "squadLabel": squad_label,
         "createdAt": _epoch_to_iso(created),
@@ -670,24 +700,22 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
     # still shows the conversation itself as open.
     open_register = [c for c in open_raw + snoozed_raw if _ticket_state(c) != RESOLVED_TICKET_STATE]
 
-    # Only *open* (not snoozed) Key User tickets missing a reliable
-    # first-reply timestamp need verifying - see `_verify_replies`.
-    needs_verification = [
-        c
-        for c in open_register + cohort_raw
-        if c.get("state") == "open"
-        and _is_key_user(c)
-        and not (c.get("statistics") or {}).get("first_admin_reply_at")
-    ]
-    # De-dupe by conversation id (open register overlaps cohort pull).
-    seen_ids = set()
-    deduped_verification: List[Dict[str, Any]] = []
-    for c in needs_verification:
+    # Key User tickets missing a reliable first-reply timestamp need
+    # verifying - see `_verify_replies`: open (not snoozed) ones for the
+    # table, plus every ticket in the weekly cohort window (any state) so the
+    # first-response bars don't count answered tickets as unanswered.
+    needs_verification: List[Dict[str, Any]] = []
+    seen_verification_ids = set()
+    for c in [x for x in open_register if x.get("state") == "open"] + cohort_raw:
         cid = c.get("id")
-        if cid and cid not in seen_ids:
-            seen_ids.add(cid)
-            deduped_verification.append(c)
-    needs_verification = deduped_verification
+        if (
+            cid
+            and cid not in seen_verification_ids
+            and _is_key_user(c)
+            and not (c.get("statistics") or {}).get("first_admin_reply_at")
+        ):
+            seen_verification_ids.add(cid)
+            needs_verification.append(c)
     # These two extra lookups are independent of each other, so run them
     # side by side rather than one after another.
     with ThreadPoolExecutor(max_workers=2) as pool:
