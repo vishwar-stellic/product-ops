@@ -1478,7 +1478,10 @@ const supportReportFilters = {
   squad: [],
   createdDateFrom: "",
   createdDateTo: "",
+  firstReplyDateFrom: "",
+  firstReplyDateTo: "",
   firstResponseSLA: "",
+  ticketState: [],
   updatedDateFrom: "",
   updatedDateTo: "",
   userName: [],
@@ -1545,6 +1548,8 @@ function supportReportLocalDayBounds(dateInputValue) {
 
 function supportReportTicketInDateFilter(isoString, fromValue, toValue) {
   if (!fromValue && !toValue) return true;
+  // No timestamp (e.g. no first reply yet) can't fall inside a date range.
+  if (!isoString) return false;
   const created = new Date(isoString);
   if (Number.isNaN(created.getTime())) return false;
   const fromBounds = supportReportLocalDayBounds(fromValue);
@@ -1577,6 +1582,7 @@ function supportReportFormatFilterDate(iso) {
 
 const SUPPORT_REPORT_DATE_FILTER_FIELDS = {
   created: { fromKey: "createdDateFrom", toKey: "createdDateTo" },
+  firstReply: { fromKey: "firstReplyDateFrom", toKey: "firstReplyDateTo" },
   updated: { fromKey: "updatedDateFrom", toKey: "updatedDateTo" },
 };
 
@@ -1800,10 +1806,14 @@ function supportReportFilteredTickets(tickets) {
     if (f.squad.length && !f.squad.includes(t.squadLabel)) return false;
     if (f.firstResponseSLA && t.firstResponseSLA !== f.firstResponseSLA) return false;
     if (f.priority.length && !f.priority.includes(t.priority)) return false;
+    if (f.ticketState.length && !f.ticketState.includes(supportReportFilterLabel(t.ticketState))) return false;
     if (f.userName.length && !f.userName.includes(supportReportFilterLabel(t.userName))) return false;
     if (f.partnerName.length && !f.partnerName.includes(supportReportFilterLabel(t.partnerName))) return false;
     if (f.description && !(t.description || "").toLowerCase().includes(f.description.toLowerCase())) return false;
     if (!supportReportTicketInDateFilter(t.createdAt, f.createdDateFrom, f.createdDateTo)) {
+      return false;
+    }
+    if (!supportReportTicketInDateFilter(t.firstReplyAt, f.firstReplyDateFrom, f.firstReplyDateTo)) {
       return false;
     }
     if (!supportReportTicketInDateFilter(t.updatedAt, f.updatedDateFrom, f.updatedDateTo)) {
@@ -1951,7 +1961,7 @@ function slaStatusClass(status) {
   return "status-planned"; // Pending
 }
 
-const SUPPORT_REPORT_TICKET_COLUMNS = 9;
+const SUPPORT_REPORT_TICKET_COLUMNS = 10;
 
 // Sortable columns of the drill-down table, in display order. Clicking a
 // header cycles ascending -> descending -> unsorted (original order).
@@ -1960,6 +1970,7 @@ const SUPPORT_REPORT_SORT_COLUMNS = [
   { key: "createdAt", label: "Date Created", type: "date" },
   { key: "firstReplyAt", label: "First Reply", type: "date" },
   { key: "firstResponseSLA", label: "First Response SLA", type: "sla" },
+  { key: "ticketState", label: "Ticket State" },
   { key: "updatedAt", label: "Last Update", type: "date" },
   { key: "userName", label: "User Name" },
   { key: "partnerName", label: "Partner Name" },
@@ -2043,6 +2054,9 @@ function renderSupportReportTicketRows(tickets) {
         <td><span class="status-badge ${slaStatusClass(t.firstResponseSLA)}">${escapeHtml(
         t.firstResponseSLA
       )}</span></td>
+        <td>${escapeHtml(supportReportFilterLabel(t.ticketState))}${
+        t.conversationState ? `<div class="cell-sub">${escapeHtml(t.conversationState)}</div>` : ""
+      }</td>
         <td>${formatDateOnly(t.updatedAt)}</td>
         <td>${escapeHtml(t.userName)}</td>
         <td>${escapeHtml(t.partnerName)}</td>
@@ -2080,6 +2094,7 @@ function renderSupportReportDrilldown() {
   const squadOptions = [...new Set(allTickets.map((t) => t.squadLabel))].sort();
   const userNameOptions = [...new Set(allTickets.map((t) => supportReportFilterLabel(t.userName)))].sort();
   const partnerNameOptions = [...new Set(allTickets.map((t) => supportReportFilterLabel(t.partnerName)))].sort();
+  const ticketStateOptions = [...new Set(allTickets.map((t) => supportReportFilterLabel(t.ticketState)))].sort();
   const priorityOptions = [...new Set(allTickets.map((t) => t.priority))].sort(
     (a, b) => SUPPORT_REPORT_PRIORITY_ORDER.indexOf(a) - SUPPORT_REPORT_PRIORITY_ORDER.indexOf(b)
   );
@@ -2104,11 +2119,12 @@ function renderSupportReportDrilldown() {
           <tr class="filter-row">
             <th>${renderSupportReportMultiSelect("squad", squadOptions, supportReportFilters.squad)}</th>
             <th>${renderSupportReportDatePicker("created")}</th>
-            <th></th>
+            <th>${renderSupportReportDatePicker("firstReply")}</th>
             <th><select data-filter="firstResponseSLA">${selectOptions(
               SUPPORT_REPORT_SLA_OPTIONS,
               supportReportFilters.firstResponseSLA
             )}</select></th>
+            <th>${renderSupportReportMultiSelect("ticketState", ticketStateOptions, supportReportFilters.ticketState)}</th>
             <th>${renderSupportReportDatePicker("updated")}</th>
             <th>${renderSupportReportMultiSelect("userName", userNameOptions, supportReportFilters.userName)}</th>
             <th>${renderSupportReportMultiSelect(

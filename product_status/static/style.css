@@ -619,6 +619,11 @@ body {
   white-space: nowrap;
 }
 
+.filter-table .cell-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
 .filter-table th.sortable {
   cursor: pointer;
   user-select: none;
