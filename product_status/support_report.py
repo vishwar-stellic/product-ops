@@ -99,8 +99,8 @@ hiccup never breaks the report itself).
 Each refresh also computes `weeklyCohorts` (last
 `SUPPORT_REPORT_WEEKLY_COHORT_WEEKS` Pacific Monday weeks, one point per
 week): Key User tickets **created** that week. Resolution bar = % of
-Urgent/High in the cohort that **met** resolution SLA as of week end (or
-now for the current week) — i.e. not yet / never out of the 21-day window.
+Urgent/High in the cohort that **met** resolution SLA as of now: closed
+within the 21-day window, or still open and not yet past it.
 First-response bar = % of the cohort's tickets (any state) whose first reply
 landed within the SLA window, graded like the drill-down table; tickets still
 "Pending" (no reply yet, clock not run out) are excluded. Bars use
@@ -129,7 +129,7 @@ SUPPORT_REPORT_CACHE_KEY = "dashboard-support-report"
 # Bump whenever this module's output shape or underlying metric logic
 # changes - see `milestones_report.py:MILESTONES_REPORT_CACHE_VERSION` for
 # why (same cache has no schema of its own).
-SUPPORT_REPORT_CACHE_VERSION = 11
+SUPPORT_REPORT_CACHE_VERSION = 12
 
 # Separate raw key (not versioned/aged like the main report - see
 # `cache.read_raw`) for the trend chart's accumulating history log.
@@ -225,15 +225,33 @@ def _list_week_starts(now: float, num_weeks: int) -> List[float]:
     return [current - i * 7 * 86400.0 for i in range(num_weeks - 1, -1, -1)]
 
 
+def _resolution_close_ts(conversation: Dict[str, Any]) -> tuple:
+    """`(epoch, source)` for when this ticket stopped its resolution clock, or
+    `(None, None)` if it's still unresolved. Prefers Intercom's own
+    `first_close_at`, then `last_close_at`; if the conversation is closed (or
+    its ticket is marked Resolved) but Intercom recorded neither timestamp -
+    common for tickets closed via API/automation - falls back to
+    `updated_at` rather than treating a finished ticket as open forever."""
+    stats = conversation.get("statistics") or {}
+    if stats.get("first_close_at"):
+        return stats["first_close_at"], "first_close_at"
+    if stats.get("last_close_at"):
+        return stats["last_close_at"], "last_close_at"
+    if conversation.get("state") == "closed" or _ticket_state(conversation) == RESOLVED_TICKET_STATE:
+        if conversation.get("updated_at"):
+            return conversation["updated_at"], "updated_at (no close timestamp)"
+    return None, None
+
+
 def _resolution_age_days_at(conversation: Dict[str, Any], eval_ts: float) -> Optional[float]:
-    """Days from creation until the earlier of first close and `eval_ts` -
-    the clock the 21-day resolution SLA runs against. `None` if the ticket
+    """Days from creation until the earlier of its close and `eval_ts` - the
+    clock the 21-day resolution SLA runs against. `None` if the ticket
     didn't exist yet at `eval_ts`."""
     created = conversation.get("created_at")
     if not created or created >= eval_ts:
         return None
-    first_close = (conversation.get("statistics") or {}).get("first_close_at")
-    end = min(eval_ts, first_close) if first_close and first_close < eval_ts else eval_ts
+    close_ts, _ = _resolution_close_ts(conversation)
+    end = min(eval_ts, close_ts) if close_ts else eval_ts
     return (end - created) / 86400.0
 
 
@@ -264,6 +282,7 @@ def _cohort_ticket_debug(
     priority = _priority(conversation) or "(blank)"
     eligible = priority in ("Urgent", "High")
     age = _resolution_age_days_at(conversation, eval_ts)
+    close_ts, close_source = _resolution_close_ts(conversation)
     return {
         "id": conversation.get("id"),
         "url": _conversation_url(conversation.get("id")),
@@ -277,7 +296,8 @@ def _cohort_ticket_debug(
         "replySource": "intercom statistics" if stat_reply else ("conversation parts" if override_reply else None),
         "frBusinessHours": round(_business_hours_between(created, reply or now), 1),
         "frLabel": _first_response_label(conversation, reply_overrides, now),
-        "firstCloseAt": _epoch_to_iso(stats.get("first_close_at")),
+        "closedAt": _epoch_to_iso(close_ts),
+        "closedSource": close_source,
         "resolutionEligible": eligible,
         "resolutionAgeDays": round(age, 1) if age is not None else None,
         "resolutionBreached": bool(eligible and age is not None and age > RES_TARGET_DAYS),
@@ -291,7 +311,9 @@ def _build_weekly_sla_cohorts(
 ) -> List[Dict[str, Any]]:
     """One row per Pacific calendar week (cohort = Key User tickets created
     that week, in any state today): % resolution SLA met (Urgent/High,
-    evaluated as of week end) and % first-response SLA met - the share of
+    evaluated as of now: closed within `RES_TARGET_DAYS`, or still open and
+    not yet past it - evaluating at week end would be meaningless since a
+    ticket can't be older than 7 days then) and % first-response SLA met - the share of
     cohort tickets whose first reply landed within `FR_TARGET_HOURS` business
     hours, using the same grading as the drill-down table
     (`_first_response_label`). Tickets still "Pending" (no reply yet, clock
@@ -302,7 +324,7 @@ def _build_weekly_sla_cohorts(
 
     for week_start in week_starts:
         week_end = _week_end(week_start)
-        eval_ts = min(now, week_end - 1.0)
+        eval_ts = now
         cohort = [
             c
             for c in cohort_conversations

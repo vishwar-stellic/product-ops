@@ -2171,8 +2171,8 @@ function renderSupportReportDebug() {
       <li>Tickets created this week (cohort): <strong>${tickets.length}</strong></li>
       <li>Not Urgent/High (not eligible — excluded): <strong>${tickets.length - eligible.length}</strong></li>
       <li>Eligible (Urgent/High) — denominator: <strong>${eligible.length}</strong></li>
-      <li>Breached (open or closed after more than ${supportReportData.resTargetDays} days): <strong>${breached.length}</strong></li>
-      <li>Met (within ${supportReportData.resTargetDays} days so far): <strong>${metRes}</strong></li>
+      <li>Breached (took, or has so far taken, more than ${supportReportData.resTargetDays} days): <strong>${breached.length}</strong></li>
+      <li>Met (closed within ${supportReportData.resTargetDays} days, or still open and under it): <strong>${metRes}</strong></li>
       <li>Evaluated as of: <strong>${formatDateTime(week.evaluatedAt)}</strong></li>
       <li>Recomputed: ${metRes} / ${eligible.length} = <strong>${pct(metRes, eligible.length)}</strong></li>`;
     reconcileHtml = `Chart reported ${reported.resolutionSlaMetCount ?? "—"} / ${
@@ -2184,7 +2184,7 @@ function renderSupportReportDebug() {
     const rank = { Breached: 0, Met: 1, "Not eligible": 2 };
     const sorted = [...tickets].sort((a, b) => rank[result(a)] - rank[result(b)]);
     headHtml = `<th>Ticket</th><th>Squad</th><th>Created</th><th>Priority</th><th>State</th>
-      <th>First closed</th><th>Age at evaluation (days)</th><th>Result</th><th>Counted</th>`;
+      <th>Closed at</th><th>Close time source</th><th>Age at evaluation (days)</th><th>Result</th><th>Counted</th>`;
     rowsHtml = sorted
       .map((t) => {
         const r = result(t);
@@ -2196,7 +2196,8 @@ function renderSupportReportDebug() {
           <td>${formatDateTime(t.createdAt)}</td>
           <td>${escapeHtml(t.priority)}</td>
           <td>${escapeHtml(t.state || "—")} / ${escapeHtml(t.ticketState || "—")}</td>
-          <td>${t.firstCloseAt ? formatDateTime(t.firstCloseAt) : "not closed"}</td>
+          <td>${t.closedAt ? formatDateTime(t.closedAt) : "not closed (clock still running)"}</td>
+          <td>${escapeHtml(t.closedSource || "—")}</td>
           <td class="num">${t.resolutionAgeDays ?? "—"}</td>
           <td><span class="status-badge ${badge}">${escapeHtml(r)}</span></td>
           <td>${counted}</td>
