@@ -127,17 +127,18 @@ SUPPORT_REPORT_CACHE_KEY = "dashboard-support-report"
 # Bump whenever this module's output shape or underlying metric logic
 # changes - see `milestones_report.py:MILESTONES_REPORT_CACHE_VERSION` for
 # why (same cache has no schema of its own).
-SUPPORT_REPORT_CACHE_VERSION = 7
+SUPPORT_REPORT_CACHE_VERSION = 8
 
 # Separate raw key (not versioned/aged like the main report - see
 # `cache.read_raw`) for the trend chart's accumulating history log.
 SUPPORT_REPORT_HISTORY_KEY = "dashboard-support-report-history"
-# ~1.5 years of daily snapshots (one point per real refresh, so in practice
-# far slower than daily) - generous headroom while keeping the blob small.
+# ~1.5 years of daily snapshots in storage (one point per real refresh); the
+# chart reads only the most recent `SUPPORT_REPORT_TREND_CHART_MAX_POINTS`.
 SUPPORT_REPORT_HISTORY_MAX_POINTS = 500
+SUPPORT_REPORT_TREND_CHART_MAX_POINTS = 36
 
 # Pacific Monday weeks for the trend chart's SLA cohort bars (one point per week).
-SUPPORT_REPORT_WEEKLY_COHORT_WEEKS = 26
+SUPPORT_REPORT_WEEKLY_COHORT_WEEKS = 6
 
 INTERCOM_INBOX_PREFIX = "g60t55rg"
 
@@ -604,9 +605,14 @@ def _record_history(report: Dict[str, Any]) -> None:
 
 
 def get_support_report_history() -> Dict[str, Any]:
-    """The accumulated trend history log, for `GET
-    /api/support-report/history` - `{"points": [...]}`, oldest first."""
-    return cache.read_raw(SUPPORT_REPORT_HISTORY_KEY) or {"points": []}
+    """Trend history for the chart - `{"points": [...]}` (oldest first among
+    the returned slice), capped at `SUPPORT_REPORT_TREND_CHART_MAX_POINTS`."""
+    existing = cache.read_raw(SUPPORT_REPORT_HISTORY_KEY) or {}
+    points = existing.get("points") or []
+    return {
+        "points": points[-SUPPORT_REPORT_TREND_CHART_MAX_POINTS:],
+        "totalPointsStored": len(points),
+    }
 
 
 def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, Any]:
@@ -684,7 +690,7 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
     with ThreadPoolExecutor(max_workers=2) as pool:
         reply_future = pool.submit(_verify_replies, client, needs_verification)
         contact_name_future = pool.submit(
-            _build_contact_name_map, client, open_register + created_raw + closed_raw + cohort_raw
+            _build_contact_name_map, client, open_register + created_raw + closed_raw
         )
         reply_overrides = reply_future.result()
         contact_name_map = contact_name_future.result()

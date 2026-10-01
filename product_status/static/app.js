@@ -1800,6 +1800,13 @@ const SUPPORT_REPORT_WEEKLY_BAR_SERIES = [
   { key: "weeklyPctFirstResponseMetOpen", label: "% FR SLA met, open tickets (weekly cohort)" },
 ];
 const SUPPORT_REPORT_WEEKLY_BAR_COLORS = ["#f16565", "#3ecf8e"];
+// Matches support_report.py `SUPPORT_REPORT_TREND_CHART_MAX_POINTS` (history API returns this many).
+const SUPPORT_REPORT_TREND_CHART_MAX_POINTS = 36;
+
+function supportReportTrendChartPoints() {
+  const points = (supportReportHistoryData && supportReportHistoryData.points) || [];
+  return points.slice(-SUPPORT_REPORT_TREND_CHART_MAX_POINTS);
+}
 
 function formatTrendDate(isoString) {
   const d = new Date(isoString);
@@ -2034,7 +2041,7 @@ let supportTrendResizeObserver = null;
 // div's *actual* pixel width - see `renderSupportReportTrendSVG`'s comment.
 function mountSupportReportTrendChart() {
   const wrap = els.supportReportContainer && els.supportReportContainer.querySelector(".trend-svg-wrap");
-  const points = (supportReportHistoryData && supportReportHistoryData.points) || [];
+  const points = supportReportTrendChartPoints();
   if (!wrap || points.length < 2) return;
   const draw = () => {
     const width = Math.max(300, Math.round(wrap.clientWidth));
@@ -2111,7 +2118,9 @@ function renderSupportReportTrendLegend() {
 }
 
 function renderSupportReportTrendChart() {
-  const points = (supportReportHistoryData && supportReportHistoryData.points) || [];
+  const points = supportReportTrendChartPoints();
+  const totalStored =
+    (supportReportHistoryData && supportReportHistoryData.totalPointsStored) || points.length;
   if (points.length < 2) {
     return `
       <div class="squad-block support-trend-chart">
@@ -2137,17 +2146,19 @@ function renderSupportReportTrendChart() {
     .join("");
   return `
     <div class="squad-block support-trend-chart">
-      <h3 class="block-title">Trend <span class="label-badge">${points.length} refresh${
+      <h3 class="block-title">Trend <span class="label-badge">Last ${points.length} refresh${
     points.length === 1 ? "" : "es"
-  } logged</span></h3>
+  }${
+    totalStored > points.length ? ` (${totalStored} stored)` : ""
+  }</span></h3>
       <div class="trend-controls">
         <div class="trend-legend">${legend}</div>
         <div class="trend-column-picker">${columnPicker}</div>
       </div>
       <div class="trend-svg-wrap"></div>
       <p class="empty-note trend-cohort-note">
-        Weekly bars (right axis): one cohort per Pacific calendar week (tickets created that week). Red = % Urgent/High out of resolution SLA;
-        green = % still-open cohort tickets that met first-response SLA.
+        Lines: last ${SUPPORT_REPORT_TREND_CHART_MAX_POINTS} daily refresh snapshots. Weekly bars (right axis): last 6 Pacific calendar weeks (tickets created that week).
+        Red = % Urgent/High out of resolution SLA; green = % still-open cohort tickets that met first-response SLA.
       </p>
     </div>`;
 }
