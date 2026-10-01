@@ -39,9 +39,9 @@ body {
 }
 
 .topbar-inner {
-  max-width: 1280px;
+  max-width: 1760px;
   margin: 0 auto;
-  padding: 16px 24px;
+  padding: 16px 12px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -100,9 +100,9 @@ body {
 }
 
 .tabbar-inner {
-  max-width: 1280px;
+  max-width: 1760px;
   margin: 0 auto;
-  padding: 0 24px;
+  padding: 0 12px;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -309,9 +309,9 @@ body {
 }
 
 .container {
-  max-width: 1280px;
+  max-width: 1760px;
   margin: 0 auto;
-  padding: 28px 24px 80px;
+  padding: 28px 12px 80px;
 }
 
 .error-banner {
