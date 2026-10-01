@@ -1794,6 +1794,13 @@ function renderSupportReportDrilldown() {
 // no existing 5th semantic color to borrow).
 const SUPPORT_REPORT_TREND_COLORS = ["#6e8bff", "#3ecf8e", "#e5c15c", "#f16565", "#b98af6"];
 
+// Weekly cohort SLA bars (right axis, 0–100%) — see support_report.py `_build_weekly_sla_cohorts`.
+const SUPPORT_REPORT_WEEKLY_BAR_SERIES = [
+  { key: "weeklyPctOutOfResolution", label: "% out of resolution SLA (weekly cohort)" },
+  { key: "weeklyPctFirstResponseMetOpen", label: "% FR SLA met, open tickets (weekly cohort)" },
+];
+const SUPPORT_REPORT_WEEKLY_BAR_COLORS = ["#f16565", "#3ecf8e"];
+
 function formatTrendDate(isoString) {
   const d = new Date(isoString);
   if (Number.isNaN(d.getTime())) return "";
@@ -1806,30 +1813,32 @@ function formatTrendDate(isoString) {
 // pixels - avoids the classic responsive-SVG trap where a fixed viewBox
 // scaled to fill a flexible-width container via `preserveAspectRatio="none"`
 // stretches circles into ellipses and warps text.
-function renderSupportReportTrendSVG(points, width, column, columnLabel, hiddenSeriesKeys) {
+function renderSupportReportTrendSVG(points, width, column, columnLabel, hiddenSeriesKeys, weeklyCohorts) {
   const height = 220;
   const paddingLeft = 44;
-  const paddingRight = 12;
+  const paddingRight = 44;
   const paddingTop = 14;
   const paddingBottom = 26;
   const plotWidth = Math.max(1, width - paddingLeft - paddingRight);
   const plotHeight = height - paddingTop - paddingBottom;
   const n = points.length;
 
-  // Reserve one virtual x-axis slot before the earliest point and one after
-  // the latest (extrapolated from the neighboring real gap) so the first and
-  // last dots - and the line's actual endpoints - sit clear of the plot's
-  // edges instead of pinned right on top of them, making the full line easy
-  // to see. Real data lives at slot indices 1..n; slot 0 and slot n+1 are
-  // the virtual padding ticks, giving n+2 total slots / n+1 gaps.
   const times = points.map((p) => new Date(p.at).getTime());
   const leftStep = n >= 2 ? times[1] - times[0] : 86400000;
   const rightStep = n >= 2 ? times[n - 1] - times[n - 2] : 86400000;
-  const virtualLeftAt = new Date(times[0] - leftStep).toISOString();
-  const virtualRightAt = new Date(times[n - 1] + rightStep).toISOString();
-  const totalGaps = n + 1;
-  const slotX = (slot) => paddingLeft + (slot / totalGaps) * plotWidth;
-  const xFor = (dataIndex) => slotX(dataIndex + 1);
+  const virtualLeftTime = times[0] - leftStep;
+  const virtualRightTime = times[n - 1] + rightStep;
+  const weekCenters = (weeklyCohorts || [])
+    .map((w) => new Date(w.weekStartAt).getTime() + 3.5 * 86400000)
+    .filter((t) => !Number.isNaN(t));
+  let timeMin = Math.min(virtualLeftTime, ...times, ...(weekCenters.length ? weekCenters : [virtualLeftTime]));
+  let timeMax = Math.max(virtualRightTime, ...times, ...(weekCenters.length ? weekCenters : [virtualRightTime]));
+  if (timeMax <= timeMin) timeMax = timeMin + 86400000;
+  const timeSpan = timeMax - timeMin;
+  const xFromTime = (t) => paddingLeft + ((t - timeMin) / timeSpan) * plotWidth;
+  const xFor = (dataIndex) => xFromTime(times[dataIndex]);
+  const virtualLeftAt = new Date(virtualLeftTime).toISOString();
+  const virtualRightAt = new Date(virtualRightTime).toISOString();
 
   // Series hidden via the legend (see `renderSupportReportTrendChart`'s
   // clickable legend items) are dropped entirely here - not just visually
@@ -1842,14 +1851,19 @@ function renderSupportReportTrendSVG(points, width, column, columnLabel, hiddenS
     values: points.map((p) => ((p.metrics && p.metrics[row.key] && p.metrics[row.key][column]) || 0)),
   })).filter((s) => !hiddenSeriesKeys || !hiddenSeriesKeys.has(s.key));
 
-  if (series.length === 0) {
+  const showBars =
+    weeklyCohorts &&
+    weeklyCohorts.length &&
+    SUPPORT_REPORT_WEEKLY_BAR_SERIES.some((s) => !hiddenSeriesKeys || !hiddenSeriesKeys.has(s.key));
+  if (series.length === 0 && !showBars) {
     return `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" class="trend-svg">
       <text x="${width / 2}" y="${height / 2}" text-anchor="middle" class="trend-axis-label">Every series is hidden — click a legend item to show it again.</text>
     </svg>`;
   }
 
-  const maxValue = Math.max(1, ...series.flatMap((s) => s.values));
+  const maxValue = series.length ? Math.max(1, ...series.flatMap((s) => s.values)) : 1;
   const yFor = (v) => paddingTop + plotHeight - (v / maxValue) * plotHeight;
+  const yPct = (pct) => paddingTop + plotHeight - (pct / 100) * plotHeight;
 
   const gridLines = [0, 0.25, 0.5, 0.75, 1]
     .map((t) => {
@@ -1863,23 +1877,85 @@ function renderSupportReportTrendSVG(points, width, column, columnLabel, hiddenS
     })
     .join("");
 
+  const rightAxis =
+    showBars &&
+    [0, 0.25, 0.5, 0.75, 1]
+      .map((t) => {
+        const y = paddingTop + plotHeight - t * plotHeight;
+        return `<text x="${width - paddingRight + 8}" y="${(y + 4).toFixed(
+          1
+        )}" class="trend-axis-label trend-axis-label-right" text-anchor="start">${Math.round(t * 100)}%</text>`;
+      })
+      .join("");
+
   const maxLabels = Math.min(n, Math.max(2, Math.floor(plotWidth / 90)));
   const labelStep = Math.max(1, Math.round((n - 1) / Math.max(1, maxLabels - 1)));
   const realLabels = points
-    .map((p, i) => ({ slot: i + 1, at: p.at }))
-    .filter((_, i) => i % labelStep === 0 || i === n - 1)
+    .map((p, i) => ({ at: p.at, i }))
+    .filter(({ i }) => i % labelStep === 0 || i === n - 1)
     .map(
-      ({ slot, at }) =>
-        `<text x="${slotX(slot).toFixed(1)}" y="${height - 6}" class="trend-axis-label" text-anchor="middle">${escapeHtml(
+      ({ at }) =>
+        `<text x="${xFromTime(new Date(at).getTime()).toFixed(1)}" y="${height - 6}" class="trend-axis-label" text-anchor="middle">${escapeHtml(
           formatTrendDate(at)
         )}</text>`
     )
     .join("");
-  const virtualLabel = (slot, at) =>
-    `<text x="${slotX(slot).toFixed(1)}" y="${
+  const virtualLabel = (at) =>
+    `<text x="${xFromTime(new Date(at).getTime()).toFixed(1)}" y="${
       height - 6
     }" class="trend-axis-label trend-axis-label-faint" text-anchor="middle">${escapeHtml(formatTrendDate(at))}</text>`;
-  const xLabels = virtualLabel(0, virtualLeftAt) + realLabels + virtualLabel(n + 1, virtualRightAt);
+  const xLabels = virtualLabel(virtualLeftAt) + realLabels + virtualLabel(virtualRightAt);
+
+  const weekBarWidth = Math.max(4, (7 * 86400000 / timeSpan) * plotWidth * 0.18);
+  const barSeriesVisible = SUPPORT_REPORT_WEEKLY_BAR_SERIES.filter(
+    (s) => !hiddenSeriesKeys || !hiddenSeriesKeys.has(s.key)
+  );
+  const barsSvg =
+    showBars && barSeriesVisible.length
+      ? weeklyCohorts
+          .map((w) => {
+            const col = (w.byColumn && w.byColumn[column]) || {};
+            const weekStart = new Date(w.weekStartAt).getTime();
+            if (Number.isNaN(weekStart)) return "";
+            const cx = xFromTime(weekStart + 3.5 * 86400000);
+            const values = [
+              {
+                key: "weeklyPctOutOfResolution",
+                pct: col.pctOutOfResolutionSla,
+                color: SUPPORT_REPORT_WEEKLY_BAR_COLORS[0],
+                label: SUPPORT_REPORT_WEEKLY_BAR_SERIES[0].label,
+              },
+              {
+                key: "weeklyPctFirstResponseMetOpen",
+                pct: col.pctFirstResponseSlaMetOpen,
+                color: SUPPORT_REPORT_WEEKLY_BAR_COLORS[1],
+                label: SUPPORT_REPORT_WEEKLY_BAR_SERIES[1].label,
+              },
+            ].filter((v) => barSeriesVisible.some((s) => s.key === v.key) && v.pct != null);
+            if (!values.length) return "";
+            const groupWidth = weekBarWidth * values.length + 2 * (values.length - 1);
+            let x = cx - groupWidth / 2;
+            return values
+              .map((v) => {
+                const y0 = paddingTop + plotHeight;
+                const y1 = yPct(v.pct);
+                const h = Math.max(0, y0 - y1);
+                const rect = `<rect x="${x.toFixed(1)}" y="${y1.toFixed(1)}" width="${weekBarWidth.toFixed(
+                  1
+                )}" height="${h.toFixed(1)}" fill="${v.color}" opacity="0.55" rx="1"></rect>`;
+                const tip = `${escapeHtml(columnLabel)} — ${escapeHtml(w.weekStartAt.slice(0, 10))}: ${escapeHtml(
+                  v.label
+                )} ${v.pct}%`;
+                const hit = `<rect class="trend-bar-hit" x="${x.toFixed(1)}" y="${paddingTop}" width="${weekBarWidth.toFixed(
+                  1
+                )}" height="${plotHeight}" fill="transparent" data-tooltip="${tip}"></rect>`;
+                x += weekBarWidth + 2;
+                return rect + hit;
+              })
+              .join("");
+          })
+          .join("")
+      : "";
 
   const seriesSvg = series
     .map((s) => {
@@ -1905,7 +1981,7 @@ function renderSupportReportTrendSVG(points, width, column, columnLabel, hiddenS
     })
     .join("");
 
-  return `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" class="trend-svg">${gridLines}${seriesSvg}${xLabels}</svg>`;
+  return `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" class="trend-svg">${gridLines}${rightAxis || ""}${barsSvg}${seriesSvg}${xLabels}</svg>`;
 }
 
 let trendTooltipEl = null;
@@ -1931,7 +2007,7 @@ function attachTrendTooltipHandlers(wrap) {
     tooltip.style.top = `${evt.clientY - rect.top}px`;
   };
   hide();
-  wrap.querySelectorAll(".trend-dot-hit").forEach((dot) => {
+  wrap.querySelectorAll(".trend-dot-hit, .trend-bar-hit").forEach((dot) => {
     dot.addEventListener("mouseenter", (evt) => {
       tooltip.textContent = dot.getAttribute("data-tooltip") || "";
       tooltip.style.display = "block";
@@ -1967,7 +2043,8 @@ function mountSupportReportTrendChart() {
       width,
       supportReportTrendColumn,
       supportReportTrendColumnLabel(supportReportTrendColumn),
-      supportReportTrendHiddenSeries
+      supportReportTrendHiddenSeries,
+      supportReportData && supportReportData.weeklyCohorts
     );
     attachTrendTooltipHandlers(wrap);
   };
@@ -2010,7 +2087,7 @@ function supportReportTrendColumnLabel(key) {
 // (via `refreshSupportReportTrendLegendAndChart`) without re-rendering the
 // whole tab.
 function renderSupportReportTrendLegend() {
-  return SUPPORT_REPORT_ROWS.map((row, idx) => {
+  const lineLegend = SUPPORT_REPORT_ROWS.map((row, idx) => {
     const hidden = supportReportTrendHiddenSeries.has(row.key);
     return `<span class="trend-legend-item${
       hidden ? " trend-legend-item-hidden" : ""
@@ -2020,6 +2097,17 @@ function renderSupportReportTrendLegend() {
       SUPPORT_REPORT_TREND_COLORS[idx % SUPPORT_REPORT_TREND_COLORS.length]
     }"></span>${escapeHtml(row.label)}</span>`;
   }).join("");
+  const barLegend = SUPPORT_REPORT_WEEKLY_BAR_SERIES.map((row, idx) => {
+    const hidden = supportReportTrendHiddenSeries.has(row.key);
+    return `<span class="trend-legend-item trend-legend-item-bar${
+      hidden ? " trend-legend-item-hidden" : ""
+    }" data-series-key="${escapeHtml(row.key)}" title="Click to ${
+      hidden ? "show" : "hide"
+    } this bar series" role="button"><span class="trend-legend-swatch trend-legend-swatch-bar" style="background:${
+      SUPPORT_REPORT_WEEKLY_BAR_COLORS[idx]
+    }"></span>${escapeHtml(row.label)}</span>`;
+  }).join("");
+  return lineLegend + barLegend;
 }
 
 function renderSupportReportTrendChart() {
@@ -2057,6 +2145,10 @@ function renderSupportReportTrendChart() {
         <div class="trend-column-picker">${columnPicker}</div>
       </div>
       <div class="trend-svg-wrap"></div>
+      <p class="empty-note trend-cohort-note">
+        Weekly bars (right axis): one cohort per Pacific calendar week (tickets created that week). Red = % Urgent/High out of resolution SLA;
+        green = % still-open cohort tickets that met first-response SLA.
+      </p>
     </div>`;
 }
 

@@ -94,6 +94,16 @@ that moment - the dashboard's trend chart reads this via
 at `SUPPORT_REPORT_HISTORY_MAX_POINTS` (oldest points drop off) so the log
 can't grow unbounded; recording is best-effort (wrapped so a storage
 hiccup never breaks the report itself).
+
+## Weekly SLA cohort bars (trend chart)
+Each refresh also computes `weeklyCohorts` (last
+`SUPPORT_REPORT_WEEKLY_COHORT_WEEKS` Pacific Monday weeks, one point per
+week): Key User tickets **created** that week. Resolution bar = % of
+Urgent/High in the cohort that breached resolution SLA as of week end (or
+now for the current week). First-response bar = % of cohort tickets still
+**open** at that moment that had met first-response SLA by then. Bars use
+the chart's right axis (0–100%); the existing refresh history lines stay on
+the left.
 """
 
 import html
@@ -117,7 +127,7 @@ SUPPORT_REPORT_CACHE_KEY = "dashboard-support-report"
 # Bump whenever this module's output shape or underlying metric logic
 # changes - see `milestones_report.py:MILESTONES_REPORT_CACHE_VERSION` for
 # why (same cache has no schema of its own).
-SUPPORT_REPORT_CACHE_VERSION = 6
+SUPPORT_REPORT_CACHE_VERSION = 7
 
 # Separate raw key (not versioned/aged like the main report - see
 # `cache.read_raw`) for the trend chart's accumulating history log.
@@ -125,6 +135,9 @@ SUPPORT_REPORT_HISTORY_KEY = "dashboard-support-report-history"
 # ~1.5 years of daily snapshots (one point per real refresh, so in practice
 # far slower than daily) - generous headroom while keeping the blob small.
 SUPPORT_REPORT_HISTORY_MAX_POINTS = 500
+
+# Pacific Monday weeks for the trend chart's SLA cohort bars (one point per week).
+SUPPORT_REPORT_WEEKLY_COHORT_WEEKS = 26
 
 INTERCOM_INBOX_PREFIX = "g60t55rg"
 
@@ -197,6 +210,107 @@ def _priority(conversation: Dict[str, Any]) -> Optional[str]:
 
 def _ticket_state(conversation: Dict[str, Any]) -> str:
     return (conversation.get("ticket") or {}).get("ticket_custom_state_admin_label") or "(blank)"
+
+
+def _week_end(week_start: float) -> float:
+    return week_start + 7 * 86400.0
+
+
+def _list_week_starts(now: float, num_weeks: int) -> List[float]:
+    """Pacific Monday 00:00 boundaries, oldest first, including the current week."""
+    current = _current_week_start(now)
+    return [current - i * 7 * 86400.0 for i in range(num_weeks - 1, -1, -1)]
+
+
+def _is_open_at(conversation: Dict[str, Any], eval_ts: float) -> bool:
+    if _ticket_state(conversation) == RESOLVED_TICKET_STATE:
+        return False
+    first_close = (conversation.get("statistics") or {}).get("first_close_at")
+    if first_close and first_close < eval_ts:
+        return False
+    state = conversation.get("state")
+    if state == "closed":
+        return False
+    return state in ("open", "snoozed")
+
+
+def _resolution_breached_at(conversation: Dict[str, Any], eval_ts: float) -> bool:
+    created = conversation.get("created_at")
+    if not created or created >= eval_ts:
+        return False
+    if _priority(conversation) not in ("Urgent", "High"):
+        return False
+    first_close = (conversation.get("statistics") or {}).get("first_close_at")
+    end = min(eval_ts, first_close) if first_close and first_close < eval_ts else eval_ts
+    return (end - created) / 86400.0 > RES_TARGET_DAYS
+
+
+def _first_response_met_at(
+    conversation: Dict[str, Any], reply_overrides: Dict[str, Optional[float]], eval_ts: float
+) -> bool:
+    created = conversation.get("created_at")
+    if not created or created >= eval_ts:
+        return False
+    reply = (conversation.get("statistics") or {}).get("first_admin_reply_at") or reply_overrides.get(
+        conversation["id"]
+    )
+    if reply and reply > eval_ts:
+        reply = None
+    if not reply:
+        return False
+    return _business_hours_between(created, reply) <= FR_TARGET_HOURS
+
+
+def _build_weekly_sla_cohorts(
+    cohort_conversations: List[Dict[str, Any]],
+    reply_overrides: Dict[str, Optional[float]],
+    now: float,
+) -> List[Dict[str, Any]]:
+    """One row per Pacific calendar week: % resolution SLA breach (Urgent/High
+    cohort) and % first-response SLA met among cohort tickets still open at
+    week end (or now for the current week)."""
+    week_starts = _list_week_starts(now, SUPPORT_REPORT_WEEKLY_COHORT_WEEKS)
+    column_keys = ["TOTAL"] + [a["squad"] for a in AREAS]
+    rows: List[Dict[str, Any]] = []
+
+    for week_start in week_starts:
+        week_end = _week_end(week_start)
+        eval_ts = min(now, week_end - 1.0)
+        cohort = [
+            c
+            for c in cohort_conversations
+            if _is_key_user(c)
+            and c.get("created_at")
+            and week_start <= c["created_at"] < week_end
+        ]
+        by_column: Dict[str, Dict[str, Any]] = {}
+        for col in column_keys:
+            if col == "TOTAL":
+                scoped = cohort
+            else:
+                scoped = [c for c in cohort if _squad_for(c) == col]
+
+            res_eligible = [c for c in scoped if _priority(c) in ("Urgent", "High")]
+            res_breached = sum(1 for c in res_eligible if _resolution_breached_at(c, eval_ts))
+            open_at_eval = [c for c in scoped if _is_open_at(c, eval_ts)]
+            fr_met = sum(1 for c in open_at_eval if _first_response_met_at(c, reply_overrides, eval_ts))
+
+            pct_res = round(100.0 * res_breached / len(res_eligible), 1) if res_eligible else None
+            pct_fr = round(100.0 * fr_met / len(open_at_eval), 1) if open_at_eval else None
+            by_column[col] = {
+                "pctOutOfResolutionSla": pct_res,
+                "pctFirstResponseSlaMetOpen": pct_fr,
+                "resolutionEligible": len(res_eligible),
+                "openAtEval": len(open_at_eval),
+            }
+
+        rows.append(
+            {
+                "weekStartAt": datetime.fromtimestamp(week_start, timezone.utc).isoformat(),
+                "byColumn": by_column,
+            }
+        )
+    return rows
 
 
 def _current_week_start(now: float) -> float:
@@ -499,6 +613,7 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
     client = client or IntercomClient()
     now = time.time()
     week_start = _current_week_start(now)
+    cohort_since = _list_week_starts(now, SUPPORT_REPORT_WEEKLY_COHORT_WEEKS)[0]
 
     # Intercom's search API can't filter on the "Product Area" custom
     # attribute (or its prefix-match semantics), so - like the skill - this
@@ -509,7 +624,7 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
     # concurrently rather than one after another (a full sequential pull
     # took ~185s in practice; see `vercel.json`'s maxDuration for the
     # resulting worst-case budget on the force-refresh endpoint).
-    with ThreadPoolExecutor(max_workers=5) as pool:
+    with ThreadPoolExecutor(max_workers=6) as pool:
         open_future = pool.submit(
             lambda: list(client.search_conversations({"field": "state", "operator": "=", "value": "open"}))
         )
@@ -519,6 +634,11 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
         created_future = pool.submit(
             lambda: list(
                 client.search_conversations({"field": "created_at", "operator": ">=", "value": int(week_start)})
+            )
+        )
+        cohort_future = pool.submit(
+            lambda: list(
+                client.search_conversations({"field": "created_at", "operator": ">=", "value": int(cohort_since)})
             )
         )
         closed_future = pool.submit(
@@ -532,6 +652,7 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
         open_raw = open_future.result()
         snoozed_raw = snoozed_future.result()
         created_raw = created_future.result()
+        cohort_raw = cohort_future.result()
         closed_raw = closed_future.result()
         company_map = company_map_future.result()
 
@@ -544,17 +665,26 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
     # first-reply timestamp need verifying - see `_verify_replies`.
     needs_verification = [
         c
-        for c in open_register
+        for c in open_register + cohort_raw
         if c.get("state") == "open"
         and _is_key_user(c)
         and not (c.get("statistics") or {}).get("first_admin_reply_at")
     ]
+    # De-dupe by conversation id (open register overlaps cohort pull).
+    seen_ids = set()
+    deduped_verification: List[Dict[str, Any]] = []
+    for c in needs_verification:
+        cid = c.get("id")
+        if cid and cid not in seen_ids:
+            seen_ids.add(cid)
+            deduped_verification.append(c)
+    needs_verification = deduped_verification
     # These two extra lookups are independent of each other, so run them
     # side by side rather than one after another.
     with ThreadPoolExecutor(max_workers=2) as pool:
         reply_future = pool.submit(_verify_replies, client, needs_verification)
         contact_name_future = pool.submit(
-            _build_contact_name_map, client, open_register + created_raw + closed_raw
+            _build_contact_name_map, client, open_register + created_raw + closed_raw + cohort_raw
         )
         reply_overrides = reply_future.result()
         contact_name_map = contact_name_future.result()
@@ -589,6 +719,7 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
         "weekStartAt": datetime.fromtimestamp(week_start, timezone.utc).isoformat(),
         "frTargetHours": FR_TARGET_HOURS,
         "resTargetDays": RES_TARGET_DAYS,
+        "weeklyCohorts": _build_weekly_sla_cohorts(cohort_raw, reply_overrides, now),
         "areas": areas,
     }
     _record_history(report)
