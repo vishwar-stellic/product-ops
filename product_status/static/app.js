@@ -1554,6 +1554,214 @@ function supportReportTicketCreatedInDateFilter(isoString, fromValue, toValue) {
   return true;
 }
 
+function supportReportIsoDateLocal(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function supportReportFormatFilterDate(iso) {
+  const bounds = supportReportLocalDayBounds(iso);
+  if (!bounds) return iso;
+  return bounds.start.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+function supportReportCreatedDateTriggerLabel() {
+  const from = supportReportFilters.createdDateFrom;
+  const to = supportReportFilters.createdDateTo;
+  if (!from && !to) return "All dates";
+  if (from && (!to || to === from)) return supportReportFormatFilterDate(from);
+  if (from && to) return `${supportReportFormatFilterDate(from)} – ${supportReportFormatFilterDate(to)}`;
+  if (to) return `Through ${supportReportFormatFilterDate(to)}`;
+  return "All dates";
+}
+
+let supportReportCreatedDateMenuEl = null;
+let supportReportCreatedDateDraftAnchor = null;
+let supportReportCreatedDateView = { year: new Date().getFullYear(), month: new Date().getMonth() };
+
+function closeSupportReportCreatedDateMenu() {
+  if (supportReportCreatedDateMenuEl) {
+    supportReportCreatedDateMenuEl.remove();
+    supportReportCreatedDateMenuEl = null;
+  }
+  supportReportCreatedDateDraftAnchor = null;
+}
+
+function supportReportCreatedDateDayClass(iso, viewYear, viewMonth) {
+  const bounds = supportReportLocalDayBounds(iso);
+  if (!bounds) return "day";
+  const classes = ["day"];
+  if (bounds.start.getFullYear() !== viewYear || bounds.start.getMonth() !== viewMonth) {
+    classes.push("other-month");
+  }
+  const from = supportReportFilters.createdDateFrom;
+  const to = supportReportFilters.createdDateTo || from;
+  const draft = supportReportCreatedDateDraftAnchor;
+  let rangeFrom = from;
+  let rangeTo = to;
+  if (draft) {
+    rangeFrom = draft;
+    rangeTo = draft;
+  } else if (from && to && from !== to) {
+    rangeFrom = from < to ? from : to;
+    rangeTo = from < to ? to : from;
+  }
+  if (rangeFrom && rangeTo) {
+    if (iso === rangeFrom) classes.push("range-start");
+    else if (iso === rangeTo) classes.push("range-end");
+    else if (iso > rangeFrom && iso < rangeTo) classes.push("in-range");
+    else if (iso === rangeFrom && iso === rangeTo) classes.push("selected");
+  }
+  return classes.join(" ");
+}
+
+function renderSupportReportCreatedDateMenuContent() {
+  const { year, month } = supportReportCreatedDateView;
+  const monthLabel = new Date(year, month, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  const firstDow = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const cells = [];
+  const dows = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
+  dows.forEach((d) => cells.push(`<span class="dow">${d}</span>`));
+  for (let i = 0; i < firstDow; i++) {
+    const d = new Date(year, month, -firstDow + i + 1);
+    const iso = supportReportIsoDateLocal(d);
+    cells.push(
+      `<button type="button" class="${supportReportCreatedDateDayClass(iso, year, month)}" data-date="${iso}">${d.getDate()}</button>`
+    );
+  }
+  for (let day = 1; day <= daysInMonth; day++) {
+    const iso = supportReportIsoDateLocal(new Date(year, month, day));
+    cells.push(
+      `<button type="button" class="${supportReportCreatedDateDayClass(iso, year, month)}" data-date="${iso}">${day}</button>`
+    );
+  }
+  const trailing = (7 - ((firstDow + daysInMonth) % 7)) % 7;
+  for (let i = 1; i <= trailing; i++) {
+    const d = new Date(year, month + 1, i);
+    const iso = supportReportIsoDateLocal(d);
+    cells.push(
+      `<button type="button" class="${supportReportCreatedDateDayClass(iso, year, month)}" data-date="${iso}">${d.getDate()}</button>`
+    );
+  }
+  const hint = supportReportCreatedDateDraftAnchor
+    ? "Choose end date (or same day for one date)"
+    : "Choose start date, then end date";
+  return `
+    <header>
+      <button type="button" data-cal-nav="-1" aria-label="Previous month">‹</button>
+      <span>${escapeHtml(monthLabel)}</span>
+      <button type="button" data-cal-nav="1" aria-label="Next month">›</button>
+    </header>
+    <p class="date-range-picker-hint">${hint}</p>
+    <div class="date-range-picker-grid">${cells.join("")}</div>
+    <div class="date-range-picker-footer">
+      <button type="button" data-cal-clear>Clear</button>
+      <button type="button" data-cal-close>Close</button>
+    </div>`;
+}
+
+function refreshSupportReportCreatedDateMenu() {
+  if (!supportReportCreatedDateMenuEl) return;
+  supportReportCreatedDateMenuEl.innerHTML = renderSupportReportCreatedDateMenuContent();
+}
+
+function updateSupportReportCreatedDateTrigger() {
+  const btn =
+    els.supportReportContainer &&
+    els.supportReportContainer.querySelector(".date-range-picker-trigger");
+  if (btn) btn.textContent = supportReportCreatedDateTriggerLabel();
+}
+
+function openSupportReportCreatedDateMenu(trigger) {
+  closeSupportReportCreatedDateMenu();
+  const from = supportReportFilters.createdDateFrom;
+  if (from) {
+    const b = supportReportLocalDayBounds(from);
+    if (b) {
+      supportReportCreatedDateView = { year: b.start.getFullYear(), month: b.start.getMonth() };
+    }
+  } else {
+    const now = new Date();
+    supportReportCreatedDateView = { year: now.getFullYear(), month: now.getMonth() };
+  }
+  supportReportCreatedDateMenuEl = document.createElement("div");
+  supportReportCreatedDateMenuEl.className = "date-range-picker-menu";
+  supportReportCreatedDateMenuEl.innerHTML = renderSupportReportCreatedDateMenuContent();
+  document.body.appendChild(supportReportCreatedDateMenuEl);
+  const rect = trigger.getBoundingClientRect();
+  supportReportCreatedDateMenuEl.style.left = `${rect.left}px`;
+  supportReportCreatedDateMenuEl.style.top = `${rect.bottom + 4}px`;
+  const menuRect = supportReportCreatedDateMenuEl.getBoundingClientRect();
+  if (menuRect.right > window.innerWidth - 8) {
+    supportReportCreatedDateMenuEl.style.left = `${Math.max(8, window.innerWidth - menuRect.width - 8)}px`;
+  }
+}
+
+function handleSupportReportCreatedDateMenuClick(event) {
+  if (!supportReportCreatedDateMenuEl) return;
+  const nav = event.target.closest("[data-cal-nav]");
+  if (nav) {
+    const delta = Number(nav.getAttribute("data-cal-nav"));
+    let { year, month } = supportReportCreatedDateView;
+    month += delta;
+    if (month < 0) {
+      month = 11;
+      year -= 1;
+    } else if (month > 11) {
+      month = 0;
+      year += 1;
+    }
+    supportReportCreatedDateView = { year, month };
+    refreshSupportReportCreatedDateMenu();
+    return;
+  }
+  if (event.target.closest("[data-cal-clear]")) {
+    supportReportFilters.createdDateFrom = "";
+    supportReportFilters.createdDateTo = "";
+    supportReportCreatedDateDraftAnchor = null;
+    updateSupportReportCreatedDateTrigger();
+    updateSupportReportDrilldownRows();
+    refreshSupportReportCreatedDateMenu();
+    return;
+  }
+  if (event.target.closest("[data-cal-close]")) {
+    closeSupportReportCreatedDateMenu();
+    return;
+  }
+  const dayBtn = event.target.closest("button.day[data-date]");
+  if (!dayBtn) return;
+  const iso = dayBtn.getAttribute("data-date");
+  if (!supportReportCreatedDateDraftAnchor) {
+    supportReportCreatedDateDraftAnchor = iso;
+    refreshSupportReportCreatedDateMenu();
+    return;
+  }
+  let from = supportReportCreatedDateDraftAnchor;
+  let to = iso;
+  if (to < from) {
+    const tmp = from;
+    from = to;
+    to = tmp;
+  }
+  supportReportFilters.createdDateFrom = from;
+  supportReportFilters.createdDateTo = to;
+  supportReportCreatedDateDraftAnchor = null;
+  updateSupportReportCreatedDateTrigger();
+  updateSupportReportDrilldownRows();
+  closeSupportReportCreatedDateMenu();
+}
+
+function renderSupportReportCreatedDatePicker() {
+  return `<div class="date-range-picker">
+    <button type="button" class="date-range-picker-trigger">${escapeHtml(
+      supportReportCreatedDateTriggerLabel()
+    )}</button>
+  </div>`;
+}
+
 function supportReportFilteredTickets(tickets) {
   const f = supportReportFilters;
   return tickets.filter((t) => {
@@ -1795,16 +2003,7 @@ function renderSupportReportDrilldown() {
           </tr>
           <tr class="filter-row">
             <th>${renderSupportReportMultiSelect("squad", squadOptions, supportReportFilters.squad)}</th>
-            <th>
-              <div class="date-range-filter" title="From date, or from–to range (local calendar days, times ignored)">
-                <input type="date" data-filter="createdDateFrom" aria-label="Created from" value="${escapeHtml(
-                  supportReportFilters.createdDateFrom
-                )}">
-                <input type="date" data-filter="createdDateTo" aria-label="Created to (optional)" value="${escapeHtml(
-                  supportReportFilters.createdDateTo
-                )}">
-              </div>
-            </th>
+            <th>${renderSupportReportCreatedDatePicker()}</th>
             <th><select data-filter="firstResponseSLA">${selectOptions(
               SUPPORT_REPORT_SLA_OPTIONS,
               supportReportFilters.firstResponseSLA
@@ -2073,39 +2272,47 @@ let trendTooltipEl = null;
 // a plain positioned div rather than native SVG <title> tooltips, which
 // render inconsistently (or not at all, e.g. in Safari) and have an
 // awkward built-in delay.
+function positionTrendTooltip(tooltip, evt) {
+  const margin = 12;
+  const gap = 10;
+  tooltip.style.display = "block";
+  tooltip.style.visibility = "hidden";
+  tooltip.style.left = "0px";
+  tooltip.style.top = "0px";
+  const tipRect = tooltip.getBoundingClientRect();
+  let left = evt.clientX - tipRect.width / 2;
+  let top = evt.clientY - tipRect.height - gap;
+  if (left + tipRect.width > window.innerWidth - margin) {
+    left = evt.clientX - tipRect.width - 8;
+  }
+  if (left < margin) {
+    left = margin;
+  }
+  if (top < margin) {
+    top = evt.clientY + gap;
+  }
+  tooltip.style.left = `${left}px`;
+  tooltip.style.top = `${top}px`;
+  tooltip.style.visibility = "visible";
+}
+
 function attachTrendTooltipHandlers(wrap) {
   if (!trendTooltipEl) {
     trendTooltipEl = document.createElement("div");
     trendTooltipEl.className = "trend-tooltip";
+    document.body.appendChild(trendTooltipEl);
   }
-  wrap.appendChild(trendTooltipEl);
   const tooltip = trendTooltipEl;
   const hide = () => {
     tooltip.style.display = "none";
-  };
-  const position = (evt) => {
-    const wrapRect = wrap.getBoundingClientRect();
-    const x = evt.clientX - wrapRect.left;
-    const y = evt.clientY - wrapRect.top;
-    tooltip.style.left = `${x}px`;
-    tooltip.style.top = `${y}px`;
-    tooltip.style.transform = "translate(-50%, calc(-100% - 10px))";
-    const tipRect = tooltip.getBoundingClientRect();
-    const edge = 8;
-    if (tipRect.right > wrapRect.right - edge) {
-      tooltip.style.transform = "translate(calc(-100% - 6px), calc(-100% - 10px))";
-    } else if (tipRect.left < wrapRect.left + edge) {
-      tooltip.style.transform = "translate(6px, calc(-100% - 10px))";
-    }
   };
   hide();
   wrap.querySelectorAll(".trend-dot-hit, .trend-bar-hit").forEach((dot) => {
     dot.addEventListener("mouseenter", (evt) => {
       tooltip.textContent = dot.getAttribute("data-tooltip") || "";
-      tooltip.style.display = "block";
-      position(evt);
+      positionTrendTooltip(tooltip, evt);
     });
-    dot.addEventListener("mousemove", position);
+    dot.addEventListener("mousemove", (evt) => positionTrendTooltip(tooltip, evt));
     dot.addEventListener("mouseleave", hide);
   });
 }
@@ -2251,6 +2458,7 @@ function renderSupportReportTrendChart() {
 function renderSupportReport(data) {
   if (!els.supportReportContainer) return;
   closeAllSupportReportMultiSelectMenus();
+  closeSupportReportCreatedDateMenu();
   supportReportData = data;
   const areas = data.areas || [];
 
@@ -2374,6 +2582,15 @@ if (els.supportReportContainer) {
   });
 
   document.addEventListener("click", (event) => {
+    if (event.target.closest(".date-range-picker-menu") || event.target.closest(".date-range-picker-trigger")) {
+      if (event.target.closest(".date-range-picker-trigger")) {
+        openSupportReportCreatedDateMenu(event.target.closest(".date-range-picker-trigger"));
+      } else if (supportReportCreatedDateMenuEl) {
+        handleSupportReportCreatedDateMenuClick(event);
+      }
+      return;
+    }
+    closeSupportReportCreatedDateMenu();
     if (event.target.closest(".multi-select-menu") || event.target.closest(".multi-select-trigger")) return;
     closeAllSupportReportMultiSelectMenus();
   });
