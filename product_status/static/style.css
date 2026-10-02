@@ -917,6 +917,36 @@ body {
   text-decoration: underline;
 }
 
+/* Support Report sub-tabs (Open Tickets / Performance) */
+
+.support-subtabs {
+  display: flex;
+  gap: 4px;
+  margin: 0 0 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.support-subtab-btn {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  color: var(--text-dim);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+
+.support-subtab-btn:hover {
+  color: var(--text);
+}
+
+.support-subtab-btn.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
 /* Support Report trend chart */
 
 .support-trend-chart .trend-controls {

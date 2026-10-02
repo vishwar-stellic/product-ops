@@ -1474,13 +1474,21 @@ let supportReportHistoryData = null;
 // handler). Defaults to total open KU so the drill-down table is visible
 // on first load.
 let supportReportActiveMetric = "totalOpenKU";
+// Which sub-tab of the Support Report is showing: "open" (line trend chart +
+// counts table + open-tickets table) or "performance" (weekly SLA % bars +
+// debug table for the clicked bar). Session-only, like the other view state.
+const SUPPORT_REPORT_SUBTABS = [
+  { key: "open", label: "Open Tickets" },
+  { key: "performance", label: "Performance" },
+];
+let supportReportSubtab = "open";
 const supportReportFilters = {
   squad: [],
   createdDateFrom: "",
   createdDateTo: "",
   firstReplyDateFrom: "",
   firstReplyDateTo: "",
-  firstResponseSLA: "",
+  firstResponseSLA: [],
   ticketState: [],
   updatedDateFrom: "",
   updatedDateTo: "",
@@ -1804,7 +1812,7 @@ function supportReportFilteredTickets(tickets) {
   const f = supportReportFilters;
   return tickets.filter((t) => {
     if (f.squad.length && !f.squad.includes(t.squadLabel)) return false;
-    if (f.firstResponseSLA && t.firstResponseSLA !== f.firstResponseSLA) return false;
+    if (f.firstResponseSLA.length && !f.firstResponseSLA.includes(t.firstResponseSLA)) return false;
     if (f.priority.length && !f.priority.includes(t.priority)) return false;
     if (f.ticketState.length && !f.ticketState.includes(supportReportFilterLabel(t.ticketState))) return false;
     if (f.userName.length && !f.userName.includes(supportReportFilterLabel(t.userName))) return false;
@@ -2099,15 +2107,6 @@ function renderSupportReportDrilldown() {
     (a, b) => SUPPORT_REPORT_PRIORITY_ORDER.indexOf(a) - SUPPORT_REPORT_PRIORITY_ORDER.indexOf(b)
   );
 
-  const selectOptions = (options, current) =>
-    ['<option value="">All</option>']
-      .concat(
-        options.map(
-          (o) => `<option value="${escapeHtml(o)}"${o === current ? " selected" : ""}>${escapeHtml(o)}</option>`
-        )
-      )
-      .join("");
-
   return `
     <div class="squad-block support-drilldown">
       <h3 class="block-title">${escapeHtml(row ? row.label : "")} <span class="label-badge">${
@@ -2120,10 +2119,11 @@ function renderSupportReportDrilldown() {
             <th>${renderSupportReportMultiSelect("squad", squadOptions, supportReportFilters.squad)}</th>
             <th>${renderSupportReportDatePicker("created")}</th>
             <th>${renderSupportReportDatePicker("firstReply")}</th>
-            <th><select data-filter="firstResponseSLA">${selectOptions(
+            <th>${renderSupportReportMultiSelect(
+              "firstResponseSLA",
               SUPPORT_REPORT_SLA_OPTIONS,
               supportReportFilters.firstResponseSLA
-            )}</select></th>
+            )}</th>
             <th>${renderSupportReportMultiSelect("ticketState", ticketStateOptions, supportReportFilters.ticketState)}</th>
             <th>${renderSupportReportDatePicker("updated")}</th>
             <th>${renderSupportReportMultiSelect("userName", userNameOptions, supportReportFilters.userName)}</th>
@@ -2185,7 +2185,7 @@ function renderSupportReportDebug() {
   const placeholder = `
     <div class="squad-block support-debug">
       <h3 class="block-title">Debug: SLA calculation</h3>
-      <p class="empty-note">Click a bar in the trend chart above to list the counts and tickets used to calculate it.</p>
+      <p class="empty-note">Click a bar in the chart above to list the counts and tickets used to calculate it.</p>
     </div>`;
   const sel = supportReportDebugSelection;
   if (!sel || !supportReportData) return placeholder;
@@ -2584,6 +2584,109 @@ function refreshSupportReportTrendLegendAndChart() {
   mountSupportReportTrendChart();
 }
 
+// Bars-only chart for the Performance sub-tab: one group per weekly cohort
+// (evenly spaced, labelled by week start), % on a single 0-100 axis. Reuses
+// the same `.trend-bar-hit` / `data-week|series|column` hooks as the combo
+// chart so hover tooltips and click-for-debug work unchanged.
+function renderSupportReportPerformanceSVG(weeklyCohorts, width, column, columnLabel, hiddenSeriesKeys) {
+  const height = 220;
+  const paddingLeft = 44;
+  const paddingRight = 16;
+  const paddingTop = 18;
+  const paddingBottom = 26;
+  const plotWidth = Math.max(1, width - paddingLeft - paddingRight);
+  const plotHeight = height - paddingTop - paddingBottom;
+  const yPct = (pct) => paddingTop + plotHeight - (pct / 100) * plotHeight;
+
+  const visibleSeries = SUPPORT_REPORT_WEEKLY_BAR_SERIES.map((s, idx) => ({
+    ...s,
+    color: SUPPORT_REPORT_WEEKLY_BAR_COLORS[idx],
+  })).filter((s) => !hiddenSeriesKeys || !hiddenSeriesKeys.has(s.key));
+  if (!visibleSeries.length) {
+    return `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" class="trend-svg">
+      <text x="${width / 2}" y="${height / 2}" text-anchor="middle" class="trend-axis-label">Every series is hidden — click a legend item to show it again.</text>
+    </svg>`;
+  }
+
+  const weeks = [...weeklyCohorts].sort((a, b) => new Date(a.weekStartAt) - new Date(b.weekStartAt));
+  const slot = plotWidth / Math.max(1, weeks.length);
+  const barWidth = Math.max(10, Math.min(48, (slot * 0.7) / visibleSeries.length));
+  const gap = 4;
+  const groupWidth = barWidth * visibleSeries.length + gap * (visibleSeries.length - 1);
+
+  const gridLines = [0, 0.25, 0.5, 0.75, 1]
+    .map((t) => {
+      const y = paddingTop + plotHeight - t * plotHeight;
+      return `<line x1="${paddingLeft}" y1="${y.toFixed(1)}" x2="${width - paddingRight}" y2="${y.toFixed(
+        1
+      )}" class="trend-gridline" />
+        <text x="${paddingLeft - 8}" y="${(y + 4).toFixed(1)}" class="trend-axis-label" text-anchor="end">${Math.round(
+        t * 100
+      )}%</text>`;
+    })
+    .join("");
+
+  const groups = weeks
+    .map((w, i) => {
+      const col = (w.byColumn && w.byColumn[column]) || {};
+      const cx = paddingLeft + slot * (i + 0.5);
+      const label = `<text x="${cx.toFixed(1)}" y="${height - 6}" class="trend-axis-label" text-anchor="middle">${escapeHtml(
+        formatTrendDate(w.weekStartAt)
+      )}</text>`;
+      const values = visibleSeries.map((s) => {
+        const isRes = s.key === "weeklyPctResolutionMet";
+        return {
+          key: s.key,
+          label: s.label,
+          color: s.color,
+          pct: isRes ? col.pctResolutionSlaMet : col.pctFirstResponseSlaMet,
+          total: isRes ? col.resolutionEligible : col.firstResponseGraded,
+          met: isRes ? col.resolutionSlaMetCount : col.firstResponseSlaMetCount,
+        };
+      });
+      let x = cx - groupWidth / 2;
+      const bars = values
+        .map((v) => {
+          const hasData = v.pct != null && typeof v.total === "number" && typeof v.met === "number";
+          const bx = x;
+          x += barWidth + gap;
+          if (!hasData) {
+            return `<text x="${(bx + barWidth / 2).toFixed(1)}" y="${yPct(0) - 4}" class="trend-axis-label trend-axis-label-faint" text-anchor="middle">n/a</text>`;
+          }
+          const y1 = yPct(v.pct);
+          const h = Math.max(0, paddingTop + plotHeight - y1);
+          const tip = escapeHtml(
+            supportReportWeeklyBarTooltip({
+              columnLabel,
+              weekStartAt: w.weekStartAt,
+              seriesLabel: v.label,
+              total: v.total,
+              met: v.met,
+              pct: v.pct,
+            })
+          );
+          return (
+            `<rect x="${bx.toFixed(1)}" y="${y1.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${h.toFixed(
+              1
+            )}" fill="${v.color}" opacity="0.75" rx="2"></rect>` +
+            `<text x="${(bx + barWidth / 2).toFixed(1)}" y="${(y1 - 4).toFixed(
+              1
+            )}" class="trend-axis-label" text-anchor="middle">${Math.round(v.pct)}%</text>` +
+            `<rect class="trend-bar-hit" x="${bx.toFixed(1)}" y="${paddingTop}" width="${barWidth.toFixed(
+              1
+            )}" height="${plotHeight}" fill="transparent" data-tooltip="${tip}" data-week="${escapeHtml(
+              w.weekStartAt
+            )}" data-series="${escapeHtml(v.key)}" data-column="${escapeHtml(column)}"></rect>`
+          );
+        })
+        .join("");
+      return bars + label;
+    })
+    .join("");
+
+  return `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" class="trend-svg">${gridLines}${groups}</svg>`;
+}
+
 let supportTrendResizeObserver = null;
 
 // Draws (or redraws, on container resize) the trend chart at the wrap
@@ -2591,17 +2694,28 @@ let supportTrendResizeObserver = null;
 function mountSupportReportTrendChart() {
   const wrap = els.supportReportContainer && els.supportReportContainer.querySelector(".trend-svg-wrap");
   const points = supportReportTrendChartPoints();
-  if (!wrap || points.length < 2) return;
+  const performance = supportReportSubtab === "performance";
+  const weeklyCohorts = (supportReportData && supportReportData.weeklyCohorts) || [];
+  if (!wrap || (performance ? !weeklyCohorts.length : points.length < 2)) return;
   const draw = () => {
     const width = Math.max(300, Math.round(wrap.clientWidth));
-    wrap.innerHTML = renderSupportReportTrendSVG(
-      points,
-      width,
-      supportReportTrendColumn,
-      supportReportTrendColumnLabel(supportReportTrendColumn),
-      supportReportTrendHiddenSeries,
-      supportReportData && supportReportData.weeklyCohorts
-    );
+    wrap.innerHTML = performance
+      ? renderSupportReportPerformanceSVG(
+          weeklyCohorts,
+          width,
+          supportReportTrendColumn,
+          supportReportTrendColumnLabel(supportReportTrendColumn),
+          supportReportTrendHiddenSeries
+        )
+      : // Open Tickets tab: lines only - weekly bars live on the Performance tab.
+        renderSupportReportTrendSVG(
+          points,
+          width,
+          supportReportTrendColumn,
+          supportReportTrendColumnLabel(supportReportTrendColumn),
+          supportReportTrendHiddenSeries,
+          null
+        );
     attachTrendTooltipHandlers(wrap);
   };
   draw();
@@ -2663,10 +2777,52 @@ function renderSupportReportTrendLegend() {
       SUPPORT_REPORT_WEEKLY_BAR_COLORS[idx]
     }"></span>${escapeHtml(row.label)}</span>`;
   }).join("");
-  return lineLegend + barLegend;
+  return supportReportSubtab === "performance" ? barLegend : lineLegend;
+}
+
+function renderSupportReportColumnPicker() {
+  return supportReportTrendColumnOptions()
+    .map(
+      (opt) => `
+      <label class="trend-column-option">
+        <input type="radio" name="trend-column" value="${escapeHtml(opt.key)}"${
+        opt.key === supportReportTrendColumn ? " checked" : ""
+      }>
+        ${escapeHtml(opt.label)}
+      </label>`
+    )
+    .join("");
+}
+
+// Performance sub-tab: weekly SLA % bars only. Clicking a bar fills the debug
+// table below (see `renderSupportReportDebug`).
+function renderSupportReportPerformanceChart() {
+  const weeklyCohorts = (supportReportData && supportReportData.weeklyCohorts) || [];
+  if (!weeklyCohorts.length) {
+    return `
+      <div class="squad-block support-trend-chart">
+        <h3 class="block-title">Weekly SLA performance</h3>
+        <p class="empty-note">No weekly cohort data yet — it's computed each time the report refreshes.</p>
+      </div>`;
+  }
+  return `
+    <div class="squad-block support-trend-chart">
+      <h3 class="block-title">Weekly SLA performance <span class="label-badge">Last ${weeklyCohorts.length} week${
+    weeklyCohorts.length === 1 ? "" : "s"
+  }</span></h3>
+      <div class="trend-controls">
+        <div class="trend-legend">${renderSupportReportTrendLegend()}</div>
+        <div class="trend-column-picker">${renderSupportReportColumnPicker()}</div>
+      </div>
+      <div class="trend-svg-wrap"></div>
+      <p class="empty-note trend-cohort-note">
+        Last 6 Pacific calendar weeks (tickets created that week). Green = % Urgent/High that met resolution SLA; blue = % of that week's tickets (any state) whose first response came within the SLA window (tickets still awaiting a reply inside the window are excluded). Click a bar to see the tickets behind it.
+      </p>
+    </div>`;
 }
 
 function renderSupportReportTrendChart() {
+  if (supportReportSubtab === "performance") return renderSupportReportPerformanceChart();
   const points = supportReportTrendChartPoints();
   const totalStored =
     (supportReportHistoryData && supportReportHistoryData.totalPointsStored) || points.length;
@@ -2682,17 +2838,7 @@ function renderSupportReportTrendChart() {
       </div>`;
   }
   const legend = renderSupportReportTrendLegend();
-  const columnPicker = supportReportTrendColumnOptions()
-    .map(
-      (opt) => `
-      <label class="trend-column-option">
-        <input type="radio" name="trend-column" value="${escapeHtml(opt.key)}"${
-        opt.key === supportReportTrendColumn ? " checked" : ""
-      }>
-        ${escapeHtml(opt.label)}
-      </label>`
-    )
-    .join("");
+  const columnPicker = renderSupportReportColumnPicker();
   return `
     <div class="squad-block support-trend-chart">
       <h3 class="block-title">Trend <span class="label-badge">Last ${points.length} refresh${
@@ -2706,8 +2852,7 @@ function renderSupportReportTrendChart() {
       </div>
       <div class="trend-svg-wrap"></div>
       <p class="empty-note trend-cohort-note">
-        Lines: last ${SUPPORT_REPORT_TREND_CHART_MAX_POINTS} daily refresh snapshots. Weekly bars (right axis): last 6 Pacific calendar weeks (tickets created that week).
-        Green = % Urgent/High that met resolution SLA; blue = % of that week's tickets (any state) whose first response came within the SLA window (tickets still awaiting a reply inside the window are excluded).
+        Last ${SUPPORT_REPORT_TREND_CHART_MAX_POINTS} daily refresh snapshots. Weekly SLA bars are on the Performance tab.
       </p>
     </div>`;
 }
@@ -2749,7 +2894,26 @@ function renderSupportReport(data) {
     )}</td>${cells}</tr>`;
   }).join("");
 
+  const subtabBar = `
+    <div class="support-subtabs" role="tablist">${SUPPORT_REPORT_SUBTABS.map(
+      (t) =>
+        `<button type="button" role="tab" class="support-subtab-btn${
+          t.key === supportReportSubtab ? " active" : ""
+        }" data-support-subtab="${t.key}">${escapeHtml(t.label)}</button>`
+    ).join("")}</div>`;
+
+  if (supportReportSubtab === "performance") {
+    els.supportReportContainer.innerHTML = `
+    ${subtabBar}
+    ${renderSupportReportTrendChart()}
+    ${renderSupportReportDebug()}`;
+    mountSupportReportTrendChart();
+    updateSupportReportUpdatedAt(data);
+    return;
+  }
+
   els.supportReportContainer.innerHTML = `
+    ${subtabBar}
     ${renderSupportReportTrendChart()}
     <div class="squad-block">
       <p class="quality-definitions" style="list-style: none; padding-left: 0;">
@@ -2770,11 +2934,13 @@ function renderSupportReport(data) {
         <tbody>${bodyRows}</tbody>
       </table>
     </div>
-    ${renderSupportReportDrilldown()}
-    ${renderSupportReportDebug()}`;
+    ${renderSupportReportDrilldown()}`;
 
   mountSupportReportTrendChart();
+  updateSupportReportUpdatedAt(data);
+}
 
+function updateSupportReportUpdatedAt(data) {
   if (els.supportReportUpdatedAt && data.fetchedAt) {
     const asOfSuffix = data.asOf ? ` (as of ${new Date(data.asOf).toLocaleString()})` : "";
     els.supportReportUpdatedAt.textContent = `Updated ${formatRelativeTime(data.fetchedAt)}${asOfSuffix}`;
@@ -2785,6 +2951,16 @@ function renderSupportReport(data) {
 
 if (els.supportReportContainer) {
   els.supportReportContainer.addEventListener("click", (event) => {
+    const subtabBtn = event.target.closest(".support-subtab-btn");
+    if (subtabBtn) {
+      const next = subtabBtn.dataset.supportSubtab;
+      if (next && next !== supportReportSubtab && supportReportData) {
+        supportReportSubtab = next;
+        renderSupportReport(supportReportData);
+      }
+      return;
+    }
+
     const sortHeader = event.target.closest(".support-drilldown th[data-sort-key]");
     if (sortHeader) {
       toggleSupportReportSort(sortHeader.dataset.sortKey);
