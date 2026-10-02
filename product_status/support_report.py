@@ -100,8 +100,11 @@ Each refresh also computes `weeklyCohorts` (last
 `SUPPORT_REPORT_WEEKLY_COHORT_WEEKS` Pacific Monday weeks, one point per
 week): Key User tickets **created** that week. Resolution bar = % of
 Urgent/High in the cohort that **met** resolution SLA as of now: closed
-within the 21-day window, or still open and not yet past it.
-First-response bar = % of the cohort's tickets (any state) whose first reply
+within the 21-day window = Met; past 21 days (open or closed) = Breached;
+still open and not yet past it = "Pending". The denominator is every
+eligible ticket (Pending included), so recent weeks start low and rise as
+tickets resolve; the UI shades the pending share
+(`pctResolutionSlaPotential` is the ceiling). First-response bar = % of the cohort's tickets (any state) whose first reply
 landed within the SLA window, graded like the drill-down table; tickets still
 "Pending" (no reply yet, clock not run out) are excluded. Bars use
 the chart's right axis (0–100%); the existing refresh history lines stay on
@@ -129,7 +132,7 @@ SUPPORT_REPORT_CACHE_KEY = "dashboard-support-report"
 # Bump whenever this module's output shape or underlying metric logic
 # changes - see `milestones_report.py:MILESTONES_REPORT_CACHE_VERSION` for
 # why (same cache has no schema of its own).
-SUPPORT_REPORT_CACHE_VERSION = 14
+SUPPORT_REPORT_CACHE_VERSION = 17
 
 # Separate raw key (not versioned/aged like the main report - see
 # `cache.read_raw`) for the trend chart's accumulating history log.
@@ -227,19 +230,37 @@ def _list_week_starts(now: float, num_weeks: int) -> List[float]:
 
 def _resolution_close_ts(conversation: Dict[str, Any]) -> tuple:
     """`(epoch, source)` for when this ticket stopped its resolution clock, or
-    `(None, None)` if it's still unresolved. Prefers Intercom's own
-    `first_close_at`, then `last_close_at`; if the conversation is closed (or
-    its ticket is marked Resolved) but Intercom recorded neither timestamp -
-    common for tickets closed via API/automation - falls back to
-    `updated_at` rather than treating a finished ticket as open forever."""
+    `(None, None)` if it's still unresolved.
+
+    - Ticket status "Resolved" counts as finished even if the conversation is
+      still open; Intercom's close stats may be stale from an earlier close
+      then, so `updated_at` is used (or the latest close if the conversation
+      is closed too).
+    - A conversation that's open/snoozed and not Resolved is **still open**,
+      whatever its history: an earlier close (a reopened ticket) means
+      nothing for the resolution SLA, so the clock keeps running.
+    - A closed conversation uses its *latest* close (`last_close_at`, then
+      `first_close_at`) - if it was reopened and closed again, the final
+      close is the real one; falls back to `updated_at` when Intercom
+      recorded neither (common for tickets closed via API/automation).
+    """
     stats = conversation.get("statistics") or {}
-    if stats.get("first_close_at"):
-        return stats["first_close_at"], "first_close_at"
+    state = conversation.get("state")
+    resolved = _ticket_state(conversation) == RESOLVED_TICKET_STATE
+    updated = conversation.get("updated_at")
+
+    if state != "closed":
+        # Open or snoozed: only a Resolved ticket status ends the clock.
+        if resolved and updated:
+            return updated, "updated_at (ticket Resolved, conversation open)"
+        return None, None
+
     if stats.get("last_close_at"):
         return stats["last_close_at"], "last_close_at"
-    if conversation.get("state") == "closed" or _ticket_state(conversation) == RESOLVED_TICKET_STATE:
-        if conversation.get("updated_at"):
-            return conversation["updated_at"], "updated_at (no close timestamp)"
+    if stats.get("first_close_at"):
+        return stats["first_close_at"], "first_close_at"
+    if updated:
+        return updated, "updated_at (no close timestamp)"
     return None, None
 
 
@@ -260,6 +281,29 @@ def _resolution_breached_at(conversation: Dict[str, Any], eval_ts: float) -> boo
         return False
     age = _resolution_age_days_at(conversation, eval_ts)
     return age is not None and age > RES_TARGET_DAYS
+
+
+def _resolution_label(conversation: Dict[str, Any], eval_ts: float) -> str:
+    """Weekly-cohort resolution SLA outcome for one ticket:
+
+    - "Not eligible" - not Urgent/High (no resolution SLA applies).
+    - "Breached"     - older than `RES_TARGET_DAYS` at close (or, if still
+                       open, as of `eval_ts`).
+    - "Met"          - closed within `RES_TARGET_DAYS`.
+    - "Pending"      - still open and not yet past `RES_TARGET_DAYS`: no
+                       outcome yet. It counts in the weekly bar's denominator
+                       (all eligible tickets) but not its numerator, so the
+                       bar is a lower bound that rises as tickets resolve.
+    """
+    if _priority(conversation) not in ("Urgent", "High"):
+        return "Not eligible"
+    age = _resolution_age_days_at(conversation, eval_ts)
+    if age is None:
+        return "Pending"
+    if age > RES_TARGET_DAYS:
+        return "Breached"
+    close_ts, _ = _resolution_close_ts(conversation)
+    return "Met" if close_ts else "Pending"
 
 
 def _conversation_url(conversation_id: Any) -> str:
@@ -301,6 +345,7 @@ def _cohort_ticket_debug(
         "resolutionEligible": eligible,
         "resolutionAgeDays": round(age, 1) if age is not None else None,
         "resolutionBreached": bool(eligible and age is not None and age > RES_TARGET_DAYS),
+        "resolutionLabel": _resolution_label(conversation, eval_ts),
     }
 
 
@@ -311,9 +356,12 @@ def _build_weekly_sla_cohorts(
 ) -> List[Dict[str, Any]]:
     """One row per Pacific calendar week (cohort = Key User tickets created
     that week, in any state today): % resolution SLA met (Urgent/High,
-    evaluated as of now: closed within `RES_TARGET_DAYS`, or still open and
-    not yet past it - evaluating at week end would be meaningless since a
-    ticket can't be older than 7 days then) and % first-response SLA met - the share of
+    evaluated as of now - see `_resolution_label`: Met = closed within
+    `RES_TARGET_DAYS`; Breached and still-open "Pending" tickets are not
+    met, but all eligible tickets stay in the denominator so recent weeks
+    show a rising lower bound; evaluating at week end would be meaningless
+    since a ticket can't be older than 7 days then)
+    and % first-response SLA met - the share of
     cohort tickets whose first reply landed within `FR_TARGET_HOURS` business
     hours, using the same grading as the drill-down table
     (`_first_response_label`). Tickets still "Pending" (no reply yet, clock
@@ -340,17 +388,30 @@ def _build_weekly_sla_cohorts(
                 scoped = [c for c in cohort if _squad_for(c) == col]
 
             res_eligible = [c for c in scoped if _priority(c) in ("Urgent", "High")]
-            res_met = sum(1 for c in res_eligible if not _resolution_breached_at(c, eval_ts))
+            res_labels = [_resolution_label(c, eval_ts) for c in res_eligible]
+            res_met = sum(1 for label in res_labels if label == "Met")
+            res_graded = sum(1 for label in res_labels if label in ("Met", "Breached"))
+            res_pending = sum(1 for label in res_labels if label == "Pending")
             fr_labels = [_first_response_label(c, reply_overrides, now) for c in scoped]
             fr_met = sum(1 for label in fr_labels if label == "Met")
             fr_graded = sum(1 for label in fr_labels if label in ("Met", "Not Met"))
 
+            # Denominator = every Urgent/High ticket in the cohort, so recent
+            # weeks (mostly still-open "Pending" tickets) read as a lower
+            # bound that rises as tickets get resolved. The "potential" value
+            # is the ceiling if every pending ticket ends up Met.
             pct_res = round(100.0 * res_met / len(res_eligible), 1) if res_eligible else None
+            pct_res_potential = (
+                round(100.0 * (res_met + res_pending) / len(res_eligible), 1) if res_eligible else None
+            )
             pct_fr = round(100.0 * fr_met / fr_graded, 1) if fr_graded else None
             by_column[col] = {
                 "pctResolutionSlaMet": pct_res,
+                "pctResolutionSlaPotential": pct_res_potential,
                 "pctFirstResponseSlaMet": pct_fr,
                 "resolutionEligible": len(res_eligible),
+                "resolutionGraded": res_graded,
+                "resolutionPending": res_pending,
                 "resolutionSlaMetCount": res_met,
                 "firstResponseGraded": fr_graded,
                 "firstResponseSlaMetCount": fr_met,

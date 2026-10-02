@@ -1489,6 +1489,7 @@ const supportReportFilters = {
   firstReplyDateFrom: "",
   firstReplyDateTo: "",
   firstResponseSLA: [],
+  conversationState: [],
   ticketState: [],
   updatedDateFrom: "",
   updatedDateTo: "",
@@ -1538,6 +1539,14 @@ function supportReportTicketsForMetric(data, metricKey) {
     return openTickets.filter((t) => t.outOfResolutionSLA);
   }
   return openTickets; // totalOpenKU
+}
+
+// Intercom conversation state ("open" / "snoozed" / "closed") for display and
+// filtering - separate from the ticket status (e.g. "Resolved").
+function supportReportConversationStatusLabel(value) {
+  if (!value) return "(blank)";
+  const text = String(value);
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 function supportReportFilterLabel(value) {
@@ -1814,6 +1823,8 @@ function supportReportFilteredTickets(tickets) {
     if (f.squad.length && !f.squad.includes(t.squadLabel)) return false;
     if (f.firstResponseSLA.length && !f.firstResponseSLA.includes(t.firstResponseSLA)) return false;
     if (f.priority.length && !f.priority.includes(t.priority)) return false;
+    if (f.conversationState.length && !f.conversationState.includes(supportReportConversationStatusLabel(t.conversationState)))
+      return false;
     if (f.ticketState.length && !f.ticketState.includes(supportReportFilterLabel(t.ticketState))) return false;
     if (f.userName.length && !f.userName.includes(supportReportFilterLabel(t.userName))) return false;
     if (f.partnerName.length && !f.partnerName.includes(supportReportFilterLabel(t.partnerName))) return false;
@@ -1969,7 +1980,7 @@ function slaStatusClass(status) {
   return "status-planned"; // Pending
 }
 
-const SUPPORT_REPORT_TICKET_COLUMNS = 10;
+const SUPPORT_REPORT_TICKET_COLUMNS = 11;
 
 // Sortable columns of the drill-down table, in display order. Clicking a
 // header cycles ascending -> descending -> unsorted (original order).
@@ -1978,7 +1989,8 @@ const SUPPORT_REPORT_SORT_COLUMNS = [
   { key: "createdAt", label: "Date Created", type: "date" },
   { key: "firstReplyAt", label: "First Reply", type: "date" },
   { key: "firstResponseSLA", label: "First Response SLA", type: "sla" },
-  { key: "ticketState", label: "Ticket State" },
+  { key: "conversationState", label: "Conversation Status", compact: true },
+  { key: "ticketState", label: "Ticket Status" },
   { key: "updatedAt", label: "Last Update", type: "date" },
   { key: "userName", label: "User Name" },
   { key: "partnerName", label: "Partner Name" },
@@ -2023,7 +2035,7 @@ function supportReportSortIndicator(key) {
 function renderSupportReportSortableHeaders() {
   return SUPPORT_REPORT_SORT_COLUMNS.map(
     (c) =>
-      `<th class="sortable" data-sort-key="${c.key}" title="Click to sort">${escapeHtml(
+      `<th class="sortable${c.compact ? " col-compact" : ""}" data-sort-key="${c.key}" title="Click to sort">${escapeHtml(
         c.label
       )}<span class="sort-indicator">${supportReportSortIndicator(c.key)}</span></th>`
   ).join("");
@@ -2062,9 +2074,8 @@ function renderSupportReportTicketRows(tickets) {
         <td><span class="status-badge ${slaStatusClass(t.firstResponseSLA)}">${escapeHtml(
         t.firstResponseSLA
       )}</span></td>
-        <td>${escapeHtml(supportReportFilterLabel(t.ticketState))}${
-        t.conversationState ? `<div class="cell-sub">${escapeHtml(t.conversationState)}</div>` : ""
-      }</td>
+        <td>${escapeHtml(supportReportConversationStatusLabel(t.conversationState))}</td>
+        <td>${escapeHtml(supportReportFilterLabel(t.ticketState))}</td>
         <td>${formatDateOnly(t.updatedAt)}</td>
         <td>${escapeHtml(t.userName)}</td>
         <td>${escapeHtml(t.partnerName)}</td>
@@ -2102,6 +2113,9 @@ function renderSupportReportDrilldown() {
   const squadOptions = [...new Set(allTickets.map((t) => t.squadLabel))].sort();
   const userNameOptions = [...new Set(allTickets.map((t) => supportReportFilterLabel(t.userName)))].sort();
   const partnerNameOptions = [...new Set(allTickets.map((t) => supportReportFilterLabel(t.partnerName)))].sort();
+  const conversationStateOptions = [
+    ...new Set(allTickets.map((t) => supportReportConversationStatusLabel(t.conversationState))),
+  ].sort();
   const ticketStateOptions = [...new Set(allTickets.map((t) => supportReportFilterLabel(t.ticketState)))].sort();
   const priorityOptions = [...new Set(allTickets.map((t) => t.priority))].sort(
     (a, b) => SUPPORT_REPORT_PRIORITY_ORDER.indexOf(a) - SUPPORT_REPORT_PRIORITY_ORDER.indexOf(b)
@@ -2123,6 +2137,11 @@ function renderSupportReportDrilldown() {
               "firstResponseSLA",
               SUPPORT_REPORT_SLA_OPTIONS,
               supportReportFilters.firstResponseSLA
+            )}</th>
+            <th>${renderSupportReportMultiSelect(
+              "conversationState",
+              conversationStateOptions,
+              supportReportFilters.conversationState
             )}</th>
             <th>${renderSupportReportMultiSelect("ticketState", ticketStateOptions, supportReportFilters.ticketState)}</th>
             <th>${renderSupportReportDatePicker("updated")}</th>
@@ -2197,7 +2216,6 @@ function renderSupportReportDebug() {
   const columnLabel = supportReportTrendColumnLabel(sel.column);
   const tickets = (week.tickets || []).filter((t) => sel.column === "TOTAL" || t.squad === sel.column);
   const reported = (week.byColumn && week.byColumn[sel.column]) || {};
-  const squadLabels = Object.fromEntries(((supportReportData.areas || [])).map((a) => [a.squad, a.label]));
   const pct = (num, den) => (den ? `${(Math.round((1000 * num) / den) / 10).toFixed(1)}%` : "—");
   const link = (t) =>
     `<a href="${escapeHtml(t.url)}" target="_blank" rel="noopener">${escapeHtml(t.description)}</a>`;
@@ -2227,7 +2245,7 @@ function renderSupportReportDebug() {
     }`;
     const rank = { "Not Met": 0, Pending: 1, Met: 2 };
     const sorted = [...tickets].sort((a, b) => rank[a.frLabel] - rank[b.frLabel]);
-    headHtml = `<th>Ticket</th><th>Squad</th><th>Created</th><th>Priority</th><th>State</th>
+    headHtml = `<th>Ticket</th><th>Created</th><th>Priority</th><th class="col-compact">Conversation status</th><th>Ticket status</th>
       <th>First reply</th><th>Reply source</th><th>Business hrs to reply</th><th>Result</th><th>Counted</th>`;
     rowsHtml = sorted
       .map((t) => {
@@ -2235,10 +2253,10 @@ function renderSupportReportDebug() {
           t.frLabel === "Met" ? "numerator + denominator" : t.frLabel === "Not Met" ? "denominator" : "excluded";
         return `<tr>
           <td>${link(t)}</td>
-          <td>${escapeHtml(squadLabels[t.squad] || t.squad || "(none)")}</td>
-          <td>${formatDateTime(t.createdAt)}</td>
+          <td>${formatDateOnly(t.createdAt)}</td>
           <td>${escapeHtml(t.priority)}</td>
-          <td>${escapeHtml(t.state || "—")} / ${escapeHtml(t.ticketState || "—")}</td>
+          <td>${escapeHtml(supportReportConversationStatusLabel(t.state))}</td>
+          <td>${escapeHtml(t.ticketState || "—")}</td>
           <td>${t.firstReplyAt ? formatDateTime(t.firstReplyAt) : "none"}</td>
           <td>${escapeHtml(t.replySource || "—")}</td>
           <td class="num">${t.frBusinessHours}${t.firstReplyAt ? "" : " (so far)"}</td>
@@ -2248,39 +2266,54 @@ function renderSupportReportDebug() {
       })
       .join("");
   } else {
+    const result = (t) => t.resolutionLabel || "Not eligible";
     const eligible = tickets.filter((t) => t.resolutionEligible);
-    const breached = eligible.filter((t) => t.resolutionBreached);
-    const metRes = eligible.length - breached.length;
-    const matches = reported.resolutionEligible === eligible.length && reported.resolutionSlaMetCount === metRes;
+    const breached = tickets.filter((t) => result(t) === "Breached");
+    const metRes = tickets.filter((t) => result(t) === "Met");
+    const pendingRes = tickets.filter((t) => result(t) === "Pending");
+    const matches =
+      reported.resolutionEligible === eligible.length &&
+      reported.resolutionSlaMetCount === metRes.length &&
+      reported.resolutionPending === pendingRes.length;
+    const potentialMet = metRes.length + pendingRes.length;
     statsHtml = `
       <li>Tickets created this week (cohort): <strong>${tickets.length}</strong></li>
       <li>Not Urgent/High (not eligible — excluded): <strong>${tickets.length - eligible.length}</strong></li>
       <li>Eligible (Urgent/High) — denominator: <strong>${eligible.length}</strong></li>
+      <li>Met (closed within ${supportReportData.resTargetDays} days) — numerator: <strong>${metRes.length}</strong></li>
+      <li>Pending (still open, under ${supportReportData.resTargetDays} days — in the denominator, not yet in the numerator): <strong>${pendingRes.length}</strong></li>
       <li>Breached (took, or has so far taken, more than ${supportReportData.resTargetDays} days): <strong>${breached.length}</strong></li>
-      <li>Met (closed within ${supportReportData.resTargetDays} days, or still open and under it): <strong>${metRes}</strong></li>
       <li>Evaluated as of: <strong>${formatDateTime(week.evaluatedAt)}</strong></li>
-      <li>Recomputed: ${metRes} / ${eligible.length} = <strong>${pct(metRes, eligible.length)}</strong></li>`;
+      <li>Recomputed: ${metRes.length} / ${eligible.length} = <strong>${pct(metRes.length, eligible.length)}</strong>${
+        pendingRes.length ? ` (up to ${pct(potentialMet, eligible.length)} if every pending ticket is met)` : ""
+      }</li>`;
     reconcileHtml = `Chart reported ${reported.resolutionSlaMetCount ?? "—"} / ${
       reported.resolutionEligible ?? "—"
-    } = ${reported.pctResolutionSlaMet ?? "—"}% — ${
+    } = ${reported.pctResolutionSlaMet ?? "—"}% (${reported.resolutionPending ?? "—"} pending) — ${
       matches ? "✓ matches the listed tickets" : "⚠ does NOT match the listed tickets"
     }`;
-    const result = (t) => (!t.resolutionEligible ? "Not eligible" : t.resolutionBreached ? "Breached" : "Met");
-    const rank = { Breached: 0, Met: 1, "Not eligible": 2 };
+    const rank = { Breached: 0, Pending: 1, Met: 2, "Not eligible": 3 };
     const sorted = [...tickets].sort((a, b) => rank[result(a)] - rank[result(b)]);
-    headHtml = `<th>Ticket</th><th>Squad</th><th>Created</th><th>Priority</th><th>State</th>
+    headHtml = `<th>Ticket</th><th>Created</th><th>Priority</th><th class="col-compact">Conversation status</th><th>Ticket status</th>
       <th>Closed at</th><th>Close time source</th><th>Age at evaluation (days)</th><th>Result</th><th>Counted</th>`;
     rowsHtml = sorted
       .map((t) => {
         const r = result(t);
         const badge = r === "Met" ? "status-completed" : r === "Breached" ? "status-canceled" : "status-planned";
-        const counted = r === "Not eligible" ? "excluded" : r === "Met" ? "numerator + denominator" : "denominator";
+        const counted =
+          r === "Met"
+            ? "numerator + denominator"
+            : r === "Breached"
+              ? "denominator"
+              : r === "Pending"
+                ? "denominator (not yet met)"
+                : "excluded";
         return `<tr>
           <td>${link(t)}</td>
-          <td>${escapeHtml(squadLabels[t.squad] || t.squad || "(none)")}</td>
-          <td>${formatDateTime(t.createdAt)}</td>
+          <td>${formatDateOnly(t.createdAt)}</td>
           <td>${escapeHtml(t.priority)}</td>
-          <td>${escapeHtml(t.state || "—")} / ${escapeHtml(t.ticketState || "—")}</td>
+          <td>${escapeHtml(supportReportConversationStatusLabel(t.state))}</td>
+          <td>${escapeHtml(t.ticketState || "—")}</td>
           <td>${t.closedAt ? formatDateTime(t.closedAt) : "not closed (clock still running)"}</td>
           <td>${escapeHtml(t.closedSource || "—")}</td>
           <td class="num">${t.resolutionAgeDays ?? "—"}</td>
@@ -2293,9 +2326,9 @@ function renderSupportReportDebug() {
 
   return `
     <div class="squad-block support-debug">
-      <h3 class="block-title">Debug: ${escapeHtml(seriesLabel)} <span class="label-badge">${escapeHtml(
-    columnLabel
-  )} · week of ${escapeHtml(formatSupportReportCohortWeek(week.weekStartAt))}</span></h3>
+      <h3 class="block-title">${escapeHtml(columnLabel)}: ${escapeHtml(seriesLabel)} · week of ${escapeHtml(
+    formatSupportReportCohortWeek(week.weekStartAt)
+  )}</h3>
       <ul class="debug-stats">${statsHtml}</ul>
       <p class="debug-reconcile">${escapeHtml(reconcileHtml)}</p>
       <table class="data-table filter-table">
@@ -2314,15 +2347,18 @@ function selectSupportReportDebug(selection) {
   if (fresh) fresh.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-function supportReportWeeklyBarTooltip({ columnLabel, weekStartAt, seriesLabel, total, met, pct }) {
+function supportReportWeeklyBarTooltip({ columnLabel, weekStartAt, seriesLabel, total, met, pct, pending, potential }) {
+  const hasPending = typeof pending === "number" && pending > 0;
   const lines = [
     columnLabel,
     `Week of ${formatSupportReportCohortWeek(weekStartAt)}`,
-    `Total tickets: ${total}`,
+    typeof pending === "number" ? `Eligible tickets (Urgent/High): ${total}` : `Tickets graded (pending excluded): ${total}`,
     `Met SLA: ${met}`,
-    `${seriesLabel}: ${pct}%`,
-    "Click for calculation details",
   ];
+  if (typeof pending === "number") lines.push(`Pending (open, not yet past SLA): ${pending}`);
+  lines.push(`${seriesLabel}: ${pct}%${hasPending ? " so far" : ""}`);
+  if (hasPending && potential != null) lines.push(`Up to ${potential}% if every pending ticket is met`);
+  lines.push("Click for calculation details");
   return lines.join("\n");
 }
 
@@ -2642,6 +2678,8 @@ function renderSupportReportPerformanceSVG(weeklyCohorts, width, column, columnL
           pct: isRes ? col.pctResolutionSlaMet : col.pctFirstResponseSlaMet,
           total: isRes ? col.resolutionEligible : col.firstResponseGraded,
           met: isRes ? col.resolutionSlaMetCount : col.firstResponseSlaMetCount,
+          pending: isRes ? col.resolutionPending : undefined,
+          potential: isRes ? col.pctResolutionSlaPotential : undefined,
         };
       });
       let x = cx - groupWidth / 2;
@@ -2663,15 +2701,38 @@ function renderSupportReportPerformanceSVG(weeklyCohorts, width, column, columnL
               total: v.total,
               met: v.met,
               pct: v.pct,
+              pending: v.pending,
+              potential: v.potential,
             })
           );
+          // In-progress share (open tickets that could still be met): a
+          // hatched cap above the solid bar up to the best-case %.
+          const inProgress = typeof v.pending === "number" && v.pending > 0 && v.potential != null && v.potential > v.pct;
+          const yTop = inProgress ? yPct(v.potential) : y1;
+          const cap = inProgress
+            ? `<rect x="${bx.toFixed(1)}" y="${yTop.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${Math.max(
+                0,
+                y1 - yTop
+              ).toFixed(1)}" fill="url(#perf-hatch-${v.key})" stroke="${v.color}" stroke-width="1" stroke-dasharray="3 2" opacity="0.9" rx="2"></rect>`
+            : "";
           return (
             `<rect x="${bx.toFixed(1)}" y="${y1.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${h.toFixed(
               1
             )}" fill="${v.color}" opacity="0.75" rx="2"></rect>` +
-            `<text x="${(bx + barWidth / 2).toFixed(1)}" y="${(y1 - 4).toFixed(
-              1
-            )}" class="trend-axis-label" text-anchor="middle">${Math.round(v.pct)}%</text>` +
+            cap +
+            // In-progress bars: the % sits just under the line where the
+            // hatched cap starts, in dark text so it reads over the green
+            // (falls back to above the cap when the solid part is too short
+            // to hold it). Settled bars keep the label above the bar.
+            (inProgress && h >= 16
+              ? `<text x="${(bx + barWidth / 2).toFixed(1)}" y="${(y1 + 13).toFixed(
+                  1
+                )}" class="trend-axis-label" text-anchor="middle" style="fill:#0b2418;font-weight:700">${Math.round(
+                  v.pct
+                )}%</text>`
+              : `<text x="${(bx + barWidth / 2).toFixed(1)}" y="${(yTop - 4).toFixed(
+                  1
+                )}" class="trend-axis-label" text-anchor="middle">${Math.round(v.pct)}%${inProgress ? "↑" : ""}</text>`) +
             `<rect class="trend-bar-hit" x="${bx.toFixed(1)}" y="${paddingTop}" width="${barWidth.toFixed(
               1
             )}" height="${plotHeight}" fill="transparent" data-tooltip="${tip}" data-week="${escapeHtml(
@@ -2684,7 +2745,13 @@ function renderSupportReportPerformanceSVG(weeklyCohorts, width, column, columnL
     })
     .join("");
 
-  return `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" class="trend-svg">${gridLines}${groups}</svg>`;
+  const hatchDefs = visibleSeries
+    .map(
+      (s) =>
+        `<pattern id="perf-hatch-${s.key}" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="${s.color}" fill-opacity="0.12"></rect><line x1="0" y1="0" x2="0" y2="6" stroke="${s.color}" stroke-width="2" stroke-opacity="0.55"></line></pattern>`
+    )
+    .join("");
+  return `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" class="trend-svg"><defs>${hatchDefs}</defs>${gridLines}${groups}</svg>`;
 }
 
 let supportTrendResizeObserver = null;
@@ -2811,12 +2878,12 @@ function renderSupportReportPerformanceChart() {
     weeklyCohorts.length === 1 ? "" : "s"
   }</span></h3>
       <div class="trend-controls">
-        <div class="trend-legend">${renderSupportReportTrendLegend()}</div>
         <div class="trend-column-picker">${renderSupportReportColumnPicker()}</div>
       </div>
       <div class="trend-svg-wrap"></div>
+      <div class="trend-legend">${renderSupportReportTrendLegend()}</div>
       <p class="empty-note trend-cohort-note">
-        Last 6 Pacific calendar weeks (tickets created that week). Green = % Urgent/High that met resolution SLA; blue = % of that week's tickets (any state) whose first response came within the SLA window (tickets still awaiting a reply inside the window are excluded). Click a bar to see the tickets behind it.
+        Last 6 Pacific calendar weeks (tickets created that week). Green = % Urgent/High that met resolution SLA; blue = % of that week's tickets (any state) whose first response came within the SLA window (tickets still awaiting a reply inside the window are excluded). For the green bar, every Urgent/High ticket is in the denominator, so recent weeks start low: the solid part is the share already met, and the hatched part (↑) is open tickets still inside the 21-day window that could still be met. Click a bar to see the tickets behind it.
       </p>
     </div>`;
 }
@@ -2847,10 +2914,10 @@ function renderSupportReportTrendChart() {
     totalStored > points.length ? ` (${totalStored} stored)` : ""
   }</span></h3>
       <div class="trend-controls">
-        <div class="trend-legend">${legend}</div>
         <div class="trend-column-picker">${columnPicker}</div>
       </div>
       <div class="trend-svg-wrap"></div>
+      <div class="trend-legend">${legend}</div>
       <p class="empty-note trend-cohort-note">
         Last ${SUPPORT_REPORT_TREND_CHART_MAX_POINTS} daily refresh snapshots. Weekly SLA bars are on the Performance tab.
       </p>

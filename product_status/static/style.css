@@ -676,23 +676,37 @@ body {
 
 /* Compact Date Created / First Reply / Last Update / User Name columns:
    headers may wrap and the filter controls truncate instead of widening
-   the column. nth-child: 2 = created, 3 = first reply, 6 = last update,
-   7 = user name (see `renderSupportReportSortableHeaders`). */
+   the column. nth-child: 2 = created, 3 = first reply, 7 = last update,
+   8 = user name (see `renderSupportReportSortableHeaders`). */
 .filter-table thead tr:first-child th:nth-child(2),
 .filter-table thead tr:first-child th:nth-child(3),
-.filter-table thead tr:first-child th:nth-child(6),
-.filter-table thead tr:first-child th:nth-child(7) {
+.filter-table thead tr:first-child th:nth-child(7),
+.filter-table thead tr:first-child th:nth-child(8) {
   white-space: normal;
 }
 
 .filter-table .filter-row th:nth-child(2),
 .filter-table .filter-row th:nth-child(3),
-.filter-table .filter-row th:nth-child(6),
-.filter-table .filter-row th:nth-child(7) {
+.filter-table .filter-row th:nth-child(7),
+.filter-table .filter-row th:nth-child(8) {
   min-width: 5.5rem;
 }
 
-.filter-table .filter-row th:nth-child(7) .multi-select-filter {
+.filter-table th.col-compact {
+  white-space: normal;
+}
+
+/* Conversation Status filter: fill the cell without widening the column. */
+.filter-table .multi-select-filter[data-filter="conversationState"] {
+  width: 0;
+  min-width: 100%;
+}
+
+.filter-table .filter-row th:nth-child(5) {
+  min-width: 5rem;
+}
+
+.filter-table .filter-row th:nth-child(8) .multi-select-filter {
   width: 0;
   min-width: 100%;
 }
@@ -962,7 +976,7 @@ body {
   display: flex;
   flex-wrap: wrap;
   gap: 14px;
-  margin: 0;
+  margin: 10px 0 0;
 }
 
 .trend-column-picker {
