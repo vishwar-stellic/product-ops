@@ -2812,12 +2812,40 @@ function supportReportStatsBuckets(column) {
   return { buckets, ticketCount: tickets.length };
 }
 
-function renderSupportReportStatsSVG(buckets, width, columnLabel, hiddenSeriesKeys) {
-  const height = 220;
+// Stats view mode: null = by created month for the selected Total / squad
+// radio; "ASSIGNEE" = one bar per Intercom assignee (all squads), picked via
+// the extra "Assignee" radio on the Stats tab only.
+const SUPPORT_REPORT_STATS_ASSIGNEE = "ASSIGNEE";
+let supportReportStatsView = null;
+
+// One bucket per assignee across every squad's open tickets, biggest first
+// (by total across all priorities, so bar order doesn't jump when a priority
+// is hidden from the legend).
+function supportReportStatsAssigneeBuckets() {
+  const areas = (supportReportData && supportReportData.areas) || [];
+  const tickets = areas.flatMap((a) => (a.metrics && a.metrics.openKUTickets) || []);
+  const byName = new Map();
+  tickets.forEach((t) => {
+    const name = supportReportFilterLabel(t.assignee);
+    if (!byName.has(name)) byName.set(name, { label: name, tooltipLabel: name, counts: {}, all: 0 });
+    const bucket = byName.get(name);
+    const priority = SUPPORT_REPORT_PRIORITY_ORDER.includes(t.priority) ? t.priority : "(blank)";
+    bucket.counts[priority] = (bucket.counts[priority] || 0) + 1;
+    bucket.all += 1;
+  });
+  const buckets = [...byName.values()].sort((a, b) => b.all - a.all || a.label.localeCompare(b.label));
+  return { buckets, ticketCount: tickets.length };
+}
+
+function renderSupportReportStatsSVG(buckets, width, columnLabel, hiddenSeriesKeys, options = {}) {
+  // Many bars (one per assignee): slant the x labels so they stay readable.
+  const rotate = !!options.rotateLabels;
+  const height = rotate ? 280 : 220;
   const paddingLeft = 44;
   const paddingRight = 16;
   const paddingTop = 18;
-  const paddingBottom = 26;
+  const paddingBottom = rotate ? 86 : 26;
+  const truncate = (text, max) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
   const plotWidth = Math.max(1, width - paddingLeft - paddingRight);
   const plotHeight = height - paddingTop - paddingBottom;
 
@@ -2847,7 +2875,7 @@ function renderSupportReportStatsSVG(buckets, width, columnLabel, hiddenSeriesKe
     .join("");
 
   const slot = plotWidth / buckets.length;
-  const barWidth = Math.max(14, Math.min(64, slot * 0.6));
+  const barWidth = Math.max(rotate ? 8 : 14, Math.min(64, slot * 0.6));
 
   const bars = buckets
     .map((b, i) => {
@@ -2889,14 +2917,22 @@ function renderSupportReportStatsSVG(buckets, width, columnLabel, hiddenSeriesKe
             1
           )}" class="trend-axis-label" text-anchor="middle">${total}</text>`
         : "";
-      const axisLabel = `<text x="${cx.toFixed(1)}" y="${height - 6}" class="trend-axis-label" text-anchor="middle">${escapeHtml(
-        b.label
-      )}</text>`;
+      const axisLabel = rotate
+        ? `<text x="${cx.toFixed(1)}" y="${(paddingTop + plotHeight + 14).toFixed(
+            1
+          )}" class="trend-axis-label" text-anchor="end" transform="rotate(-40 ${cx.toFixed(1)} ${(
+            paddingTop +
+            plotHeight +
+            14
+          ).toFixed(1)})">${escapeHtml(truncate(b.label, 18))}</text>`
+        : `<text x="${cx.toFixed(1)}" y="${height - 6}" class="trend-axis-label" text-anchor="middle">${escapeHtml(
+            b.label
+          )}</text>`;
       return segments + totalLabel + axisLabel;
     })
     .join("");
 
-  return `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" class="trend-svg">${gridLines}${bars}</svg>`;
+  return `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" class="trend-svg" style="height:${height}px">${gridLines}${bars}</svg>`;
 }
 
 let supportTrendResizeObserver = null;
@@ -2913,12 +2949,20 @@ function mountSupportReportTrendChart() {
   const draw = () => {
     const width = Math.max(300, Math.round(wrap.clientWidth));
     wrap.innerHTML = stats
-      ? renderSupportReportStatsSVG(
-          supportReportStatsBuckets(supportReportTrendColumn).buckets,
-          width,
-          supportReportTrendColumnLabel(supportReportTrendColumn),
-          supportReportTrendHiddenSeries
-        )
+      ? supportReportStatsView === SUPPORT_REPORT_STATS_ASSIGNEE
+        ? renderSupportReportStatsSVG(
+            supportReportStatsAssigneeBuckets().buckets,
+            width,
+            "Assignee",
+            supportReportTrendHiddenSeries,
+            { rotateLabels: true }
+          )
+        : renderSupportReportStatsSVG(
+            supportReportStatsBuckets(supportReportTrendColumn).buckets,
+            width,
+            supportReportTrendColumnLabel(supportReportTrendColumn),
+            supportReportTrendHiddenSeries
+          )
       : performance
       ? renderSupportReportPerformanceSVG(
           weeklyCohorts,
@@ -3012,17 +3056,36 @@ function renderSupportReportTrendLegend() {
 }
 
 function renderSupportReportColumnPicker() {
-  return supportReportTrendColumnOptions()
-    .map(
-      (opt) => `
+  // The Stats tab adds an extra "Assignee" option (one bar per assignee).
+  const inStats = supportReportSubtab === "stats";
+  const assigneeOn = inStats && supportReportStatsView === SUPPORT_REPORT_STATS_ASSIGNEE;
+  const options = supportReportTrendColumnOptions();
+  if (inStats) options.push({ key: SUPPORT_REPORT_STATS_ASSIGNEE, label: "Assignee" });
+  return options
+    .map((opt) => {
+      const checked = assigneeOn ? opt.key === SUPPORT_REPORT_STATS_ASSIGNEE : opt.key === supportReportTrendColumn;
+      return `
       <label class="trend-column-option">
-        <input type="radio" name="trend-column" value="${escapeHtml(opt.key)}"${
-        opt.key === supportReportTrendColumn ? " checked" : ""
-      }>
+        <input type="radio" name="trend-column" value="${escapeHtml(opt.key)}"${checked ? " checked" : ""}>
         ${escapeHtml(opt.label)}
-      </label>`
-    )
+      </label>`;
+    })
     .join("");
+}
+
+// Stats-tab radio change: "Assignee" switches the chart to one bar per
+// assignee; a Total / squad option goes back to the by-month view for it.
+function selectSupportReportStatsView(value) {
+  if (value === SUPPORT_REPORT_STATS_ASSIGNEE) {
+    supportReportStatsView = SUPPORT_REPORT_STATS_ASSIGNEE;
+  } else {
+    supportReportStatsView = null;
+    if (value && value !== supportReportTrendColumn) {
+      supportReportTrendColumn = value;
+      syncTrendColumnSquadFilter();
+    }
+  }
+  if (supportReportData) renderSupportReport(supportReportData);
 }
 
 // Performance sub-tab: weekly SLA % bars only. Clicking a bar fills the debug
@@ -3055,11 +3118,20 @@ function renderSupportReportPerformanceChart() {
 // Stats sub-tab: histogram of currently open tickets by created month,
 // each bar stacked by priority.
 function renderSupportReportStatsChart() {
-  const column = supportReportTrendColumn;
-  const { ticketCount } = supportReportStatsBuckets(column);
+  const byAssignee = supportReportStatsView === SUPPORT_REPORT_STATS_ASSIGNEE;
+  const { ticketCount } = byAssignee
+    ? supportReportStatsAssigneeBuckets()
+    : supportReportStatsBuckets(supportReportTrendColumn);
+  const note = byAssignee
+    ? `Currently open Key User tickets (Intercom state open or snoozed) across all squads, one bar per Intercom
+        assignee (a team name with "(team)" when it's assigned to a team and not a person), biggest first and
+        stacked by priority. The number on top of each bar is its total. Click a legend item to hide a priority.`
+    : `Currently open Key User tickets (Intercom state open or snoozed), grouped by the month they were created
+        (last ${SUPPORT_REPORT_STATS_MONTHS} months; everything earlier is in "Older") and stacked by priority.
+        The number on top of each bar is its total. Click a legend item to hide a priority.`;
   return `
     <div class="squad-block support-trend-chart">
-      <h3 class="block-title">Open tickets by created month <span class="label-badge">${ticketCount} open ticket${
+      <h3 class="block-title">${byAssignee ? "Open tickets by assignee" : "Open tickets by created month"} <span class="label-badge">${ticketCount} open ticket${
     ticketCount === 1 ? "" : "s"
   }</span></h3>
       <div class="trend-controls">
@@ -3068,9 +3140,7 @@ function renderSupportReportStatsChart() {
       <div class="trend-svg-wrap"></div>
       <div class="trend-legend">${renderSupportReportTrendLegend()}</div>
       <p class="empty-note trend-cohort-note">
-        Currently open Key User tickets (Intercom state open or snoozed), grouped by the month they were created
-        (last ${SUPPORT_REPORT_STATS_MONTHS} months; everything earlier is in "Older") and stacked by priority.
-        The number on top of each bar is its total. Click a legend item to hide a priority.
+        ${note}
       </p>
     </div>`;
 }
@@ -3286,7 +3356,11 @@ if (els.supportReportContainer) {
 
   els.supportReportContainer.addEventListener("change", (event) => {
     if (event.target.name === "trend-column") {
-      selectSupportReportTrendColumn(event.target.value);
+      if (supportReportSubtab === "stats") {
+        selectSupportReportStatsView(event.target.value);
+      } else {
+        selectSupportReportTrendColumn(event.target.value);
+      }
       return;
     }
     const filterKey = event.target.dataset.filter;
