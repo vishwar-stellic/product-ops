@@ -2622,6 +2622,10 @@ function attachTrendTooltipHandlers(wrap) {
 // - deliberately scoped to these two pieces rather than the whole tab so the
 // ticket drilldown/filters below aren't blown away by an unrelated click.
 function refreshSupportReportTrendLegendAndChart() {
+  if (supportReportSubtab === "stats" && supportReportData) {
+    renderSupportReport(supportReportData);
+    return;
+  }
   const legendEl = els.supportReportContainer && els.supportReportContainer.querySelector(".trend-legend");
   if (legendEl) legendEl.innerHTML = renderSupportReportTrendLegend();
   mountSupportReportTrendChart();
@@ -2821,13 +2825,20 @@ let supportReportStatsView = null;
 // One bucket per assignee across every squad's open tickets, biggest first
 // (by total across all priorities, so bar order doesn't jump when a priority
 // is hidden from the legend).
+// Chart shows first names only; "(unassigned)" and "<Team> (team)" stay whole.
+function supportReportAssigneeFirstName(name) {
+  const text = String(name || "").trim();
+  if (!text || text.startsWith("(") || text.endsWith("(team)")) return text;
+  return text.split(/\s+/)[0];
+}
+
 function supportReportStatsAssigneeBuckets() {
   const areas = (supportReportData && supportReportData.areas) || [];
   const tickets = areas.flatMap((a) => (a.metrics && a.metrics.openKUTickets) || []);
   const byName = new Map();
   tickets.forEach((t) => {
     const name = supportReportFilterLabel(t.assignee);
-    if (!byName.has(name)) byName.set(name, { label: name, tooltipLabel: name, counts: {}, all: 0 });
+    if (!byName.has(name)) byName.set(name, { label: supportReportAssigneeFirstName(name), tooltipLabel: supportReportAssigneeFirstName(name), fullName: name, assignee: name, counts: {}, all: 0 });
     const bucket = byName.get(name);
     const priority = SUPPORT_REPORT_PRIORITY_ORDER.includes(t.priority) ? t.priority : "(blank)";
     bucket.counts[priority] = (bucket.counts[priority] || 0) + 1;
@@ -2835,6 +2846,75 @@ function supportReportStatsAssigneeBuckets() {
   });
   const buckets = [...byName.values()].sort((a, b) => b.all - a.all || a.label.localeCompare(b.label));
   return { buckets, ticketCount: tickets.length };
+}
+
+// Assignee whose ticket list is expanded under the chart (click a name or
+// bar in the by-assignee view; click again to collapse).
+let supportReportStatsSelectedAssignee = null;
+
+function supportReportStatsAssigneeTickets(name) {
+  const areas = (supportReportData && supportReportData.areas) || [];
+  const hidden = supportReportTrendHiddenSeries;
+  return areas
+    .flatMap((a) => (a.metrics && a.metrics.openKUTickets) || [])
+    .filter((t) => supportReportFilterLabel(t.assignee) === name)
+    .filter((t) => {
+      const priority = SUPPORT_REPORT_PRIORITY_ORDER.includes(t.priority) ? t.priority : "(blank)";
+      return !hidden.has(supportReportStatsHiddenKey(priority));
+    })
+    .sort(
+      (a, b) =>
+        SUPPORT_REPORT_PRIORITY_ORDER.indexOf(a.priority) - SUPPORT_REPORT_PRIORITY_ORDER.indexOf(b.priority) ||
+        new Date(a.createdAt) - new Date(b.createdAt)
+    );
+}
+
+function renderSupportReportStatsDetail() {
+  const name = supportReportStatsSelectedAssignee;
+  if (!name || supportReportStatsView !== SUPPORT_REPORT_STATS_ASSIGNEE) return "";
+  const tickets = supportReportStatsAssigneeTickets(name);
+  const rows = tickets.length
+    ? tickets
+        .map(
+          (t) => `
+        <tr>
+          <td><a href="${escapeHtml(t.url)}" target="_blank" rel="noopener">${escapeHtml(t.description)}</a></td>
+          <td>${escapeHtml(t.squadLabel)}</td>
+          <td>${formatDateOnly(t.createdAt)}</td>
+          <td>${escapeHtml(t.priority)}</td>
+          <td>${escapeHtml(supportReportConversationStatusLabel(t.conversationState))}</td>
+          <td>${escapeHtml(supportReportFilterLabel(t.ticketState))}</td>
+          <td><span class="status-badge ${slaStatusClass(t.firstResponseSLA)}">${escapeHtml(t.firstResponseSLA)}</span></td>
+          <td>${escapeHtml(t.partnerName)}</td>
+          <td>${escapeHtml(t.userName)}</td>
+        </tr>`
+        )
+        .join("")
+    : '<tr><td colspan="9"><p class="empty-note">No tickets for this assignee with the priorities currently shown.</p></td></tr>';
+  return `
+    <div class="squad-block support-stats-detail">
+      <h3 class="block-title">${escapeHtml(name)} <span class="label-badge">${tickets.length} open ticket${
+    tickets.length === 1 ? "" : "s"
+  }</span></h3>
+      <table class="data-table filter-table">
+        <thead><tr>
+          <th>Ticket</th><th>Squad</th><th>Created</th><th>Priority</th>
+          <th class="col-compact">Conversation status</th><th>Ticket status</th>
+          <th class="col-compact">First response SLA</th><th>Partner</th><th>User</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+function selectSupportReportStatsAssignee(name) {
+  supportReportStatsSelectedAssignee = supportReportStatsSelectedAssignee === name ? null : name;
+  if (!supportReportData) return;
+  renderSupportReport(supportReportData);
+  if (supportReportStatsSelectedAssignee) {
+    const detail = els.supportReportContainer.querySelector(".support-stats-detail");
+    if (detail) detail.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
 }
 
 function renderSupportReportStatsSVG(buckets, width, columnLabel, hiddenSeriesKeys, options = {}) {
@@ -2908,7 +2988,9 @@ function renderSupportReportStatsSVG(buckets, width, columnLabel, hiddenSeriesKe
             label +
             `<rect class="trend-stat-hit" x="${x.toFixed(1)}" y="${yTop.toFixed(1)}" width="${barWidth.toFixed(
               1
-            )}" height="${h.toFixed(1)}" fill="transparent" data-tooltip="${tip}"></rect>`
+            )}" height="${h.toFixed(1)}" fill="transparent" data-tooltip="${tip}"${
+              b.assignee ? ` data-assignee="${escapeHtml(b.assignee)}"` : ""
+            }></rect>`
           );
         })
         .join("");
@@ -2917,10 +2999,13 @@ function renderSupportReportStatsSVG(buckets, width, columnLabel, hiddenSeriesKe
             1
           )}" class="trend-axis-label" text-anchor="middle">${total}</text>`
         : "";
+      const selectedClass = b.assignee && b.assignee === options.selected ? " stats-assignee-selected" : "";
       const axisLabel = rotate
         ? `<text x="${cx.toFixed(1)}" y="${(paddingTop + plotHeight + 14).toFixed(
             1
-          )}" class="trend-axis-label" text-anchor="end" transform="rotate(-40 ${cx.toFixed(1)} ${(
+          )}" class="trend-axis-label${b.assignee ? " stats-assignee-label" : ""}${selectedClass}"${
+            b.assignee ? ` data-assignee="${escapeHtml(b.assignee)}"` : ""
+          } text-anchor="end" transform="rotate(-40 ${cx.toFixed(1)} ${(
             paddingTop +
             plotHeight +
             14
@@ -2955,7 +3040,7 @@ function mountSupportReportTrendChart() {
             width,
             "Assignee",
             supportReportTrendHiddenSeries,
-            { rotateLabels: true }
+            { rotateLabels: true, selected: supportReportStatsSelectedAssignee }
           )
         : renderSupportReportStatsSVG(
             supportReportStatsBuckets(supportReportTrendColumn).buckets,
@@ -3125,7 +3210,7 @@ function renderSupportReportStatsChart() {
   const note = byAssignee
     ? `Currently open Key User tickets (Intercom state open or snoozed) across all squads, one bar per Intercom
         assignee (a team name with "(team)" when it's assigned to a team and not a person), biggest first and
-        stacked by priority. The number on top of each bar is its total. Click a legend item to hide a priority.`
+        stacked by priority. The number on top of each bar is its total. Click a name or a bar to list that person's tickets below; click a legend item to hide a priority.`
     : `Currently open Key User tickets (Intercom state open or snoozed), grouped by the month they were created
         (last ${SUPPORT_REPORT_STATS_MONTHS} months; everything earlier is in "Older") and stacked by priority.
         The number on top of each bar is its total. Click a legend item to hide a priority.`;
@@ -3230,7 +3315,8 @@ function renderSupportReport(data) {
   if (supportReportSubtab === "stats") {
     els.supportReportContainer.innerHTML = `
     ${subtabBar}
-    ${renderSupportReportTrendChart()}`;
+    ${renderSupportReportTrendChart()}
+    ${renderSupportReportStatsDetail()}`;
     mountSupportReportTrendChart();
     updateSupportReportUpdatedAt(data);
     return;
@@ -3298,6 +3384,12 @@ if (els.supportReportContainer) {
     const sortHeader = event.target.closest(".support-drilldown th[data-sort-key]");
     if (sortHeader) {
       toggleSupportReportSort(sortHeader.dataset.sortKey);
+      return;
+    }
+
+    const assigneeTarget = event.target.closest("[data-assignee]");
+    if (assigneeTarget && supportReportSubtab === "stats") {
+      selectSupportReportStatsAssignee(assigneeTarget.dataset.assignee);
       return;
     }
 

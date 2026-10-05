@@ -1072,6 +1072,20 @@ body {
   height: 220px;
 }
 
+.stats-assignee-label,
+.trend-stat-hit[data-assignee] {
+  cursor: pointer;
+}
+
+.trend-svg .stats-assignee-label:hover {
+  fill: var(--accent);
+}
+
+.trend-svg .stats-assignee-selected {
+  fill: var(--accent);
+  font-weight: 700;
+}
+
 .trend-dot-hit,
 .trend-bar-hit {
   cursor: pointer;
