@@ -14,7 +14,7 @@ your workspace has one) with at least read access to Conversations, and set
 
 import os
 import time
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 import requests
 
@@ -112,3 +112,16 @@ class IntercomClient:
             if not pages.get("next") or page >= pages.get("total_pages", page):
                 return
             page += 1
+
+    def list_admins(self) -> List[Dict[str, Any]]:
+        """Every teammate (admin) in the workspace - used to turn a
+        conversation's `admin_assignee_id` into a name. `/admins` isn't
+        paginated."""
+        data = self._request("GET", "/admins")
+        return data.get("admins", [])
+
+    def list_teams(self) -> List[Dict[str, Any]]:
+        """Every Intercom team - fallback label for conversations assigned to
+        a team rather than a specific teammate (`team_assignee_id`)."""
+        data = self._request("GET", "/teams")
+        return data.get("teams", [])

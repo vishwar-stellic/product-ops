@@ -706,6 +706,25 @@ body {
   min-width: 5rem;
 }
 
+/* First Response SLA (col 4) and User Name (col 8): shrink to their narrowest
+   content instead of taking a share of the spare width (`width: 1%` makes the
+   column hug its minimum; Description absorbs the rest). Headers may wrap and
+   the filter dropdowns truncate rather than widen the column. */
+.filter-table thead tr:first-child th:nth-child(4) {
+  white-space: normal;
+}
+
+.filter-table .filter-row th:nth-child(4),
+.filter-table .filter-row th:nth-child(8) {
+  width: 1%;
+  min-width: 4.5rem;
+}
+
+.filter-table .multi-select-filter[data-filter="firstResponseSLA"] {
+  width: 0;
+  min-width: 100%;
+}
+
 .filter-table .filter-row th:nth-child(8) .multi-select-filter {
   width: 0;
   min-width: 100%;

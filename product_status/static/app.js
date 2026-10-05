@@ -1492,6 +1492,7 @@ const supportReportFilters = {
   firstResponseSLA: [],
   conversationState: [],
   ticketState: [],
+  assignee: [],
   updatedDateFrom: "",
   updatedDateTo: "",
   userName: [],
@@ -1827,6 +1828,7 @@ function supportReportFilteredTickets(tickets) {
     if (f.conversationState.length && !f.conversationState.includes(supportReportConversationStatusLabel(t.conversationState)))
       return false;
     if (f.ticketState.length && !f.ticketState.includes(supportReportFilterLabel(t.ticketState))) return false;
+    if (f.assignee.length && !f.assignee.includes(supportReportFilterLabel(t.assignee))) return false;
     if (f.userName.length && !f.userName.includes(supportReportFilterLabel(t.userName))) return false;
     if (f.partnerName.length && !f.partnerName.includes(supportReportFilterLabel(t.partnerName))) return false;
     if (f.description && !(t.description || "").toLowerCase().includes(f.description.toLowerCase())) return false;
@@ -1981,7 +1983,7 @@ function slaStatusClass(status) {
   return "status-planned"; // Pending
 }
 
-const SUPPORT_REPORT_TICKET_COLUMNS = 11;
+const SUPPORT_REPORT_TICKET_COLUMNS = 12;
 
 // Sortable columns of the drill-down table, in display order. Clicking a
 // header cycles ascending -> descending -> unsorted (original order).
@@ -1995,6 +1997,7 @@ const SUPPORT_REPORT_SORT_COLUMNS = [
   { key: "updatedAt", label: "Last Update", type: "date" },
   { key: "userName", label: "User Name" },
   { key: "partnerName", label: "Partner Name" },
+  { key: "assignee", label: "Assignee" },
   { key: "priority", label: "Priority", type: "priority" },
   { key: "description", label: "Ticket Description" },
 ];
@@ -2080,6 +2083,7 @@ function renderSupportReportTicketRows(tickets) {
         <td>${formatDateOnly(t.updatedAt)}</td>
         <td>${escapeHtml(t.userName)}</td>
         <td>${escapeHtml(t.partnerName)}</td>
+        <td>${escapeHtml(supportReportFilterLabel(t.assignee))}</td>
         <td>${escapeHtml(t.priority)}</td>
         <td><a href="${escapeHtml(t.url)}" target="_blank" rel="noopener">${escapeHtml(t.description)}</a></td>
       </tr>`
@@ -2118,6 +2122,7 @@ function renderSupportReportDrilldown() {
     ...new Set(allTickets.map((t) => supportReportConversationStatusLabel(t.conversationState))),
   ].sort();
   const ticketStateOptions = [...new Set(allTickets.map((t) => supportReportFilterLabel(t.ticketState)))].sort();
+  const assigneeOptions = [...new Set(allTickets.map((t) => supportReportFilterLabel(t.assignee)))].sort();
   const priorityOptions = [...new Set(allTickets.map((t) => t.priority))].sort(
     (a, b) => SUPPORT_REPORT_PRIORITY_ORDER.indexOf(a) - SUPPORT_REPORT_PRIORITY_ORDER.indexOf(b)
   );
@@ -2152,6 +2157,7 @@ function renderSupportReportDrilldown() {
               partnerNameOptions,
               supportReportFilters.partnerName
             )}</th>
+            <th>${renderSupportReportMultiSelect("assignee", assigneeOptions, supportReportFilters.assignee)}</th>
             <th>${renderSupportReportMultiSelect("priority", priorityOptions, supportReportFilters.priority)}</th>
             <th><input type="text" data-filter="description" placeholder="Filter…" value="${escapeHtml(
               supportReportFilters.description

@@ -113,6 +113,7 @@ the left.
 
 import html
 import re
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -132,7 +133,7 @@ SUPPORT_REPORT_CACHE_KEY = "dashboard-support-report"
 # Bump whenever this module's output shape or underlying metric logic
 # changes - see `milestones_report.py:MILESTONES_REPORT_CACHE_VERSION` for
 # why (same cache has no schema of its own).
-SUPPORT_REPORT_CACHE_VERSION = 17
+SUPPORT_REPORT_CACHE_VERSION = 18
 
 # Separate raw key (not versioned/aged like the main report - see
 # `cache.read_raw`) for the trend chart's accumulating history log.
@@ -598,6 +599,40 @@ def _user_name(conversation: Dict[str, Any], contact_name_map: Dict[str, str]) -
     return (contact_name_map.get(contact_id) if contact_id else None) or "(unknown)"
 
 
+def _build_assignee_map(client: IntercomClient) -> Dict[str, str]:
+    """`"admin:<id>"` / `"team:<id>"` -> display name, for resolving a
+    conversation's assignee. Best effort: if the token lacks permission to
+    read admins/teams (or the call fails), return what we have and let
+    `_assignee_name` fall back to a bare id rather than failing the whole
+    report."""
+    names: Dict[str, str] = {}
+    try:
+        for admin in client.list_admins():
+            if admin.get("id") is not None and admin.get("name"):
+                names[f"admin:{admin['id']}"] = admin["name"]
+    except Exception as exc:  # noqa: BLE001 - never fail the report over a label
+        print(f"[support_report] couldn't load Intercom admins: {exc}", file=sys.stderr)
+    try:
+        for team in client.list_teams():
+            if team.get("id") is not None and team.get("name"):
+                names[f"team:{team['id']}"] = team["name"]
+    except Exception as exc:  # noqa: BLE001
+        print(f"[support_report] couldn't load Intercom teams: {exc}", file=sys.stderr)
+    return names
+
+
+def _assignee_name(conversation: Dict[str, Any], assignee_map: Dict[str, str]) -> str:
+    """Who the conversation is assigned to in Intercom: the teammate if there
+    is one, else the team, else "(unassigned)"."""
+    admin_id = conversation.get("admin_assignee_id")
+    if admin_id:
+        return assignee_map.get(f"admin:{admin_id}") or f"Admin {admin_id}"
+    team_id = conversation.get("team_assignee_id")
+    if team_id:
+        return f"{assignee_map.get(f'team:{team_id}') or f'Team {team_id}'} (team)"
+    return "(unassigned)"
+
+
 def _epoch_to_iso(value: Optional[float]) -> Optional[str]:
     return datetime.fromtimestamp(value, timezone.utc).isoformat() if value else None
 
@@ -609,6 +644,7 @@ def _ticket_record(
     reply_overrides: Dict[str, Optional[float]],
     company_map: Dict[str, str],
     contact_name_map: Dict[str, str],
+    assignee_map: Dict[str, str],
     now: float,
 ) -> Dict[str, Any]:
     created = conversation.get("created_at")
@@ -631,6 +667,7 @@ def _ticket_record(
         "updatedAt": _epoch_to_iso(conversation.get("updated_at")),
         "userName": _user_name(conversation, contact_name_map),
         "partnerName": partner_name(conversation, company_map),
+        "assignee": _assignee_name(conversation, assignee_map),
         "priority": priority,
         "description": _ticket_description(conversation),
         "firstResponseSLA": _first_response_label(conversation, reply_overrides, now),
@@ -647,6 +684,7 @@ def _area_metrics(
     reply_overrides: Dict[str, Optional[float]],
     company_map: Dict[str, str],
     contact_name_map: Dict[str, str],
+    assignee_map: Dict[str, str],
     now: float,
     week_start: float,
 ) -> Dict[str, Any]:
@@ -675,7 +713,7 @@ def _area_metrics(
 
     def _records(conversations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return [
-            _ticket_record(c, squad, label, reply_overrides, company_map, contact_name_map, now)
+            _ticket_record(c, squad, label, reply_overrides, company_map, contact_name_map, assignee_map, now)
             for c in conversations
         ]
 
@@ -752,7 +790,7 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
     # concurrently rather than one after another (a full sequential pull
     # took ~185s in practice; see `vercel.json`'s maxDuration for the
     # resulting worst-case budget on the force-refresh endpoint).
-    with ThreadPoolExecutor(max_workers=6) as pool:
+    with ThreadPoolExecutor(max_workers=7) as pool:
         open_future = pool.submit(
             lambda: list(client.search_conversations({"field": "state", "operator": "=", "value": "open"}))
         )
@@ -777,12 +815,14 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
             )
         )
         company_map_future = pool.submit(lambda: build_company_map(client))
+        assignee_map_future = pool.submit(lambda: _build_assignee_map(client))
         open_raw = open_future.result()
         snoozed_raw = snoozed_future.result()
         created_raw = created_future.result()
         cohort_raw = cohort_future.result()
         closed_raw = closed_future.result()
         company_map = company_map_future.result()
+        assignee_map = assignee_map_future.result()
 
     # "Open" = open + snoozed, always (see module docstring); a ticket
     # marked Resolved at the ticket-state level is done even if Intercom
@@ -828,6 +868,7 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
                 reply_overrides,
                 company_map,
                 contact_name_map,
+                assignee_map,
                 now,
                 week_start,
             ),
