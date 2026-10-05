@@ -78,9 +78,10 @@ Whenever a run's LLM triage produces an item that's newly LIVE_FIRE or
 SMOLDERING - either a brand-new item, or an existing tracked item that
 just got escalated up from a lower severity (e.g. WATCH -> SMOLDERING) -
 `_notable_severity_changes` flags it, and `refresh_partner_escalations`
-sends one Slack message (`slack_client.send_message`) summarizing every such item
-across every partner processed in that run, best-effort (a Slack failure
-never breaks the refresh itself - see the try/except around that call).
+sends one Slack message per such item (`slack_client.send_message`, fire
+emoji for Live Fire, firecracker for Smoldering) across every partner
+processed in that run, best-effort (a Slack failure never breaks the
+refresh itself - see the try/except around each send).
 An item that stays at the same severity run-over-run (already-known
 Smoldering, still Smoldering) never re-alerts - only the moment it first
 crosses into Fire/Smoldering territory does. "Matching" a new item back
@@ -709,41 +710,43 @@ def _notable_severity_changes(
 
 
 _SEVERITY_SLACK_LABEL = {"LIVE_FIRE": "Live Fire", "SMOLDERING": "Smoldering"}
+# Slack emoji shortcodes: fire for Live Fire, firecracker for Smoldering.
+_SEVERITY_SLACK_EMOJI = {"LIVE_FIRE": ":fire:", "SMOLDERING": ":firecracker:"}
 
 
-def _format_slack_summary(notable_changes: List[Dict[str, Any]]) -> str:
-    """Slack mrkdwn text for one or more newly-notable items, grouped in
-    the order they were processed (partners run concurrently, so this
-    isn't a meaningful ranking - just stable enough to read). See module
-    docstring's "Slack alerting" section for what counts as "newly
-    notable"."""
-    noun = "escalation" if len(notable_changes) == 1 else "escalations"
-    lines = [f"*{len(notable_changes)} new {noun} flagged* (Partner Insights, automatic Vitally check):"]
-    for item in notable_changes:
-        label = _SEVERITY_SLACK_LABEL.get(item.get("severity"), item.get("severity"))
-        header = f"\u2022 *{label}* \u2014 *{item.get('partnerName')}*: {item.get('headline')}"
-        source_url = vitally_app_conversation_url(item.get("vitallyConversationId") or "")
-        if not source_url:
-            source_url = item.get("vitallyAccountUrl")
-        if source_url:
-            header += f" (<{source_url}|source>)"
-        lines.append(header)
-        evidence = item.get("evidence") or []
-        if evidence:
-            lines.append(f"    > {evidence[0].get('quote')}")
+def _format_slack_message(item: Dict[str, Any]) -> str:
+    """Slack mrkdwn text for ONE newly-notable item - each escalation is
+    posted as its own message (see module docstring's "Slack alerting"
+    section for what counts as "newly notable")."""
+    severity = item.get("severity")
+    label = _SEVERITY_SLACK_LABEL.get(severity, severity)
+    emoji = _SEVERITY_SLACK_EMOJI.get(severity, "")
+    prefix = f"{emoji} " if emoji else ""
+    header = f"{prefix}*{label}* \u2014 *{item.get('partnerName')}*: {item.get('headline')}"
+    source_url = vitally_app_conversation_url(item.get("vitallyConversationId") or "")
+    if not source_url:
+        source_url = item.get("vitallyAccountUrl")
+    if source_url:
+        header += f" (<{source_url}|source>)"
+    lines = [header]
+    evidence = item.get("evidence") or []
+    if evidence:
+        lines.append(f"> {evidence[0].get('quote')}")
     return "\n".join(lines)
 
 
 def _notify_slack(notable_changes: List[Dict[str, Any]]) -> None:
     """Best-effort - a Slack failure should never break the escalation
     refresh itself (mirrors this module's other "one bad thing shouldn't
-    break the batch" try/excepts)."""
+    break the batch" try/excepts). Sends one message per item, and a failure
+    on one doesn't stop the rest."""
     if not notable_changes or not slack_client.is_configured():
         return
-    try:
-        slack_client.send_message(_format_slack_summary(notable_changes))
-    except Exception as exc:  # noqa: BLE001
-        print(f"[escalation_report] Slack notification failed: {exc}")
+    for item in notable_changes:
+        try:
+            slack_client.send_message(_format_slack_message(item))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[escalation_report] Slack notification failed for {item.get('headline')!r}: {exc}")
 
 
 def _get_state() -> Dict[str, Any]:
