@@ -1480,6 +1480,7 @@ let supportReportActiveMetric = "totalOpenKU";
 const SUPPORT_REPORT_SUBTABS = [
   { key: "open", label: "Open Tickets" },
   { key: "performance", label: "Performance" },
+  { key: "stats", label: "Stats" },
 ];
 let supportReportSubtab = "open";
 const supportReportFilters = {
@@ -2600,7 +2601,7 @@ function attachTrendTooltipHandlers(wrap) {
     tooltip.style.display = "none";
   };
   hide();
-  wrap.querySelectorAll(".trend-dot-hit, .trend-bar-hit").forEach((dot) => {
+  wrap.querySelectorAll(".trend-dot-hit, .trend-bar-hit, .trend-stat-hit").forEach((dot) => {
     dot.addEventListener("mouseenter", (evt) => {
       tooltip.textContent = dot.getAttribute("data-tooltip") || "";
       positionTrendTooltip(tooltip, evt);
@@ -2754,6 +2755,144 @@ function renderSupportReportPerformanceSVG(weeklyCohorts, width, column, columnL
   return `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" class="trend-svg"><defs>${hatchDefs}</defs>${gridLines}${groups}</svg>`;
 }
 
+// ---- Stats sub-tab: open tickets by created month, stacked by priority ----
+const SUPPORT_REPORT_STATS_MONTHS = 6;
+const SUPPORT_REPORT_STATS_PRIORITY_COLORS = {
+  Urgent: "#f16565",
+  High: "#f2994a",
+  Medium: "#e5c15c",
+  Low: "#6e8bff",
+  "(blank)": "#8b93a7",
+};
+
+function supportReportStatsHiddenKey(priority) {
+  return `stats:${priority}`;
+}
+
+// One bucket per month for the last SUPPORT_REPORT_STATS_MONTHS months
+// (current month included), plus a leading "Older" bucket for everything
+// created before that - counts of currently open Key User tickets by
+// priority, scoped to the selected Total / squad radio.
+function supportReportStatsBuckets(column) {
+  const areas = (supportReportData && supportReportData.areas) || [];
+  const scopedAreas = column === "TOTAL" ? areas : areas.filter((a) => a.squad === column);
+  const tickets = scopedAreas.flatMap((a) => (a.metrics && a.metrics.openKUTickets) || []);
+
+  const now = new Date();
+  const months = [];
+  for (let i = SUPPORT_REPORT_STATS_MONTHS - 1; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    months.push({
+      index: d.getFullYear() * 12 + d.getMonth(),
+      label: d.toLocaleDateString(undefined, { month: "short", year: "2-digit" }),
+    });
+  }
+  const firstIndex = months[0].index;
+  const lastIndex = months[months.length - 1].index;
+  const buckets = [
+    { label: "Older", tooltipLabel: `Created before ${months[0].label}`, counts: {} },
+    ...months.map((m) => ({ label: m.label, tooltipLabel: `Created in ${m.label}`, counts: {}, index: m.index })),
+  ];
+
+  tickets.forEach((t) => {
+    const created = t.createdAt ? new Date(t.createdAt) : null;
+    if (!created || Number.isNaN(created.getTime())) return;
+    const idx = created.getFullYear() * 12 + created.getMonth();
+    const bucket =
+      idx < firstIndex ? buckets[0] : buckets[1 + Math.min(idx, lastIndex) - firstIndex];
+    const priority = SUPPORT_REPORT_PRIORITY_ORDER.includes(t.priority) ? t.priority : "(blank)";
+    bucket.counts[priority] = (bucket.counts[priority] || 0) + 1;
+  });
+  return { buckets, ticketCount: tickets.length };
+}
+
+function renderSupportReportStatsSVG(buckets, width, columnLabel, hiddenSeriesKeys) {
+  const height = 220;
+  const paddingLeft = 44;
+  const paddingRight = 16;
+  const paddingTop = 18;
+  const paddingBottom = 26;
+  const plotWidth = Math.max(1, width - paddingLeft - paddingRight);
+  const plotHeight = height - paddingTop - paddingBottom;
+
+  const priorities = SUPPORT_REPORT_PRIORITY_ORDER.filter(
+    (p) => !hiddenSeriesKeys || !hiddenSeriesKeys.has(supportReportStatsHiddenKey(p))
+  );
+  if (!priorities.length) {
+    return `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" class="trend-svg">
+      <text x="${width / 2}" y="${height / 2}" text-anchor="middle" class="trend-axis-label">Every priority is hidden — click a legend item to show it again.</text>
+    </svg>`;
+  }
+  const totalOf = (b) => priorities.reduce((sum, p) => sum + (b.counts[p] || 0), 0);
+  const maxTotal = Math.max(1, ...buckets.map(totalOf));
+  const maxValue = maxTotal <= 4 ? 4 : Math.ceil(maxTotal / 4) * 4;
+  const yFor = (v) => paddingTop + plotHeight - (v / maxValue) * plotHeight;
+
+  const gridLines = [0, 0.25, 0.5, 0.75, 1]
+    .map((t) => {
+      const y = paddingTop + plotHeight - t * plotHeight;
+      return `<line x1="${paddingLeft}" y1="${y.toFixed(1)}" x2="${width - paddingRight}" y2="${y.toFixed(
+        1
+      )}" class="trend-gridline" />
+        <text x="${paddingLeft - 8}" y="${(y + 4).toFixed(1)}" class="trend-axis-label" text-anchor="end">${Math.round(
+        t * maxValue
+      )}</text>`;
+    })
+    .join("");
+
+  const slot = plotWidth / buckets.length;
+  const barWidth = Math.max(14, Math.min(64, slot * 0.6));
+
+  const bars = buckets
+    .map((b, i) => {
+      const cx = paddingLeft + slot * (i + 0.5);
+      const x = cx - barWidth / 2;
+      const total = totalOf(b);
+      let cumulative = 0;
+      const segments = priorities
+        .map((p) => {
+          const count = b.counts[p] || 0;
+          if (!count) return "";
+          const yTop = yFor(cumulative + count);
+          const yBottom = yFor(cumulative);
+          cumulative += count;
+          const h = yBottom - yTop;
+          const tip = escapeHtml(
+            [columnLabel, b.tooltipLabel, `${p}: ${count} of ${total} open ticket${total === 1 ? "" : "s"}`].join("\n")
+          );
+          const color = SUPPORT_REPORT_STATS_PRIORITY_COLORS[p];
+          const label =
+            h >= 14
+              ? `<text x="${cx.toFixed(1)}" y="${(yTop + h / 2 + 4).toFixed(
+                  1
+                )}" class="trend-axis-label" text-anchor="middle" style="fill:#0b1218;font-weight:700;pointer-events:none">${count}</text>`
+              : "";
+          return (
+            `<rect x="${x.toFixed(1)}" y="${yTop.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${h.toFixed(
+              1
+            )}" fill="${color}" opacity="0.85" stroke="var(--surface)" stroke-width="1"></rect>` +
+            label +
+            `<rect class="trend-stat-hit" x="${x.toFixed(1)}" y="${yTop.toFixed(1)}" width="${barWidth.toFixed(
+              1
+            )}" height="${h.toFixed(1)}" fill="transparent" data-tooltip="${tip}"></rect>`
+          );
+        })
+        .join("");
+      const totalLabel = total
+        ? `<text x="${cx.toFixed(1)}" y="${(yFor(total) - 4).toFixed(
+            1
+          )}" class="trend-axis-label" text-anchor="middle">${total}</text>`
+        : "";
+      const axisLabel = `<text x="${cx.toFixed(1)}" y="${height - 6}" class="trend-axis-label" text-anchor="middle">${escapeHtml(
+        b.label
+      )}</text>`;
+      return segments + totalLabel + axisLabel;
+    })
+    .join("");
+
+  return `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" class="trend-svg">${gridLines}${bars}</svg>`;
+}
+
 let supportTrendResizeObserver = null;
 
 // Draws (or redraws, on container resize) the trend chart at the wrap
@@ -2762,11 +2901,19 @@ function mountSupportReportTrendChart() {
   const wrap = els.supportReportContainer && els.supportReportContainer.querySelector(".trend-svg-wrap");
   const points = supportReportTrendChartPoints();
   const performance = supportReportSubtab === "performance";
+  const stats = supportReportSubtab === "stats";
   const weeklyCohorts = (supportReportData && supportReportData.weeklyCohorts) || [];
-  if (!wrap || (performance ? !weeklyCohorts.length : points.length < 2)) return;
+  if (!wrap || (performance ? !weeklyCohorts.length : stats ? !supportReportData : points.length < 2)) return;
   const draw = () => {
     const width = Math.max(300, Math.round(wrap.clientWidth));
-    wrap.innerHTML = performance
+    wrap.innerHTML = stats
+      ? renderSupportReportStatsSVG(
+          supportReportStatsBuckets(supportReportTrendColumn).buckets,
+          width,
+          supportReportTrendColumnLabel(supportReportTrendColumn),
+          supportReportTrendHiddenSeries
+        )
+      : performance
       ? renderSupportReportPerformanceSVG(
           weeklyCohorts,
           width,
@@ -2844,6 +2991,17 @@ function renderSupportReportTrendLegend() {
       SUPPORT_REPORT_WEEKLY_BAR_COLORS[idx]
     }"></span>${escapeHtml(row.label)}</span>`;
   }).join("");
+  const priorityLegend = SUPPORT_REPORT_PRIORITY_ORDER.map((p) => {
+    const hidden = supportReportTrendHiddenSeries.has(supportReportStatsHiddenKey(p));
+    return `<span class="trend-legend-item${
+      hidden ? " trend-legend-item-hidden" : ""
+    }" data-series-key="${escapeHtml(supportReportStatsHiddenKey(p))}" title="Click to ${
+      hidden ? "show" : "hide"
+    } this priority" role="button"><span class="trend-legend-swatch" style="background:${
+      SUPPORT_REPORT_STATS_PRIORITY_COLORS[p]
+    }"></span>${escapeHtml(p)}</span>`;
+  }).join("");
+  if (supportReportSubtab === "stats") return priorityLegend;
   return supportReportSubtab === "performance" ? barLegend : lineLegend;
 }
 
@@ -2888,7 +3046,31 @@ function renderSupportReportPerformanceChart() {
     </div>`;
 }
 
+// Stats sub-tab: histogram of currently open tickets by created month,
+// each bar stacked by priority.
+function renderSupportReportStatsChart() {
+  const column = supportReportTrendColumn;
+  const { ticketCount } = supportReportStatsBuckets(column);
+  return `
+    <div class="squad-block support-trend-chart">
+      <h3 class="block-title">Open tickets by created month <span class="label-badge">${ticketCount} open ticket${
+    ticketCount === 1 ? "" : "s"
+  }</span></h3>
+      <div class="trend-controls">
+        <div class="trend-column-picker">${renderSupportReportColumnPicker()}</div>
+      </div>
+      <div class="trend-svg-wrap"></div>
+      <div class="trend-legend">${renderSupportReportTrendLegend()}</div>
+      <p class="empty-note trend-cohort-note">
+        Currently open Key User tickets (Intercom state open or snoozed), grouped by the month they were created
+        (last ${SUPPORT_REPORT_STATS_MONTHS} months; everything earlier is in "Older") and stacked by priority.
+        The number on top of each bar is its total. Click a legend item to hide a priority.
+      </p>
+    </div>`;
+}
+
 function renderSupportReportTrendChart() {
+  if (supportReportSubtab === "stats") return renderSupportReportStatsChart();
   if (supportReportSubtab === "performance") return renderSupportReportPerformanceChart();
   const points = supportReportTrendChartPoints();
   const totalStored =
@@ -2968,6 +3150,15 @@ function renderSupportReport(data) {
           t.key === supportReportSubtab ? " active" : ""
         }" data-support-subtab="${t.key}">${escapeHtml(t.label)}</button>`
     ).join("")}</div>`;
+
+  if (supportReportSubtab === "stats") {
+    els.supportReportContainer.innerHTML = `
+    ${subtabBar}
+    ${renderSupportReportTrendChart()}`;
+    mountSupportReportTrendChart();
+    updateSupportReportUpdatedAt(data);
+    return;
+  }
 
   if (supportReportSubtab === "performance") {
     els.supportReportContainer.innerHTML = `
