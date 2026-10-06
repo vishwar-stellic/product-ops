@@ -78,6 +78,25 @@ cp .env.example .env.local   # fill in; leave SLACK_* unset to dry-run (alerts a
 State goes to `.state/` locally (no `BLOB_READ_WRITE_TOKEN`). `ESCALATION_IGNORE_WINDOW=1` runs the sweep
 outside the Eastern business-hours slots; `ESCALATION_DRY_RUN=1` logs alerts instead of posting.
 
+## Running on demand
+
+The schedule follows the Python job (every 2 hours, Mon-Fri 8am-6pm ET). To run a sweep at any other
+time, call the authenticated endpoint with the same `CRON_SECRET` the dashboard uses:
+
+```sh
+# start a sweep now (returns 202 immediately; the sweep finishes in the background)
+curl -X POST https://<deployment>/escalation/run -H "Authorization: Bearer $CRON_SECRET"
+# same, but only log what would be posted
+curl -X POST https://<deployment>/escalation/run -H "Authorization: Bearer $CRON_SECRET" \
+  -H "content-type: application/json" -d '{"dryRun": true}'
+# is one running? what did the last run do?
+curl https://<deployment>/escalation/run -H "Authorization: Bearer $CRON_SECRET"
+```
+
+Manual and scheduled runs share one lock, so they never overlap (a second request gets `409`; a lock
+older than 30 minutes is treated as abandoned). A manual run can ask for a dry run, but it can never
+turn `ESCALATION_DRY_RUN=1` off. Manual runs don't change the schedule.
+
 ## Comparing against the Python job
 
 Both run at the same slots against the same partners with the same model, so differences come from the

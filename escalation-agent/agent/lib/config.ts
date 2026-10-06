@@ -23,6 +23,9 @@ export const PARTNER_CONCURRENCY = 8;
 export const ESCALATION_RUN_HOURS = [8, 10, 12, 14, 16, 18] as const;
 export const ESCALATION_TIMEZONE = "America/New_York";
 
+/** A sweep lock older than this is treated as abandoned (the run crashed or timed out). */
+export const SWEEP_LOCK_TTL_MS = 30 * 60_000;
+
 export const DEFAULT_OPENAI_MODEL = "gpt-5-mini";
 export const DEFAULT_OPENAI_BASE_URL = "https://us.api.openai.com/v1";
 
