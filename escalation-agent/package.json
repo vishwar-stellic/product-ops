@@ -1,0 +1,30 @@
+{
+  "name": "escalation-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "eve dev",
+    "build": "eve build",
+    "deploy": "eve deploy",
+    "eval": "eve eval",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "calibrate": "LIVE_CALIBRATION=1 vitest run tests/calibration.live.test.ts"
+  },
+  "dependencies": {
+    "@vercel/blob": "^2.8.0",
+    "ai": "^7.0.128",
+    "eve": "^0.71.2",
+    "just-bash": "^3.6.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3"
+  }
+}
