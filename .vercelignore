@@ -1,0 +1,3 @@
+# The eve escalation agent is a separate Vercel project (root directory: escalation-agent/).
+# Keep it out of the dashboard (Python) deployment.
+escalation-agent

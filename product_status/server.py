@@ -101,6 +101,15 @@ Endpoints:
                                           `Authorization: Bearer
                                           <CRON_SECRET>` gate as the
                                           Support Report cron above.
+    GET  /api/internal/partner-registry -> machine-to-machine: the partner
+                                          set the escalation triage covers
+                                          (`partnerId`, `name`,
+                                          `vitallyAccountId`), for the
+                                          parallel eve escalation agent in
+                                          `escalation-agent/`. Requires
+                                          `Authorization: Bearer
+                                          <CRON_SECRET>`; fails closed (503)
+                                          if CRON_SECRET is unset.
     GET  /api/notion/status       -> whether Notion is connected (OAuth) and
                                       to which workspace, plus
                                       defaultParentPageUrl
@@ -165,6 +174,7 @@ from .partner_insights import (
     PARTNER_INSIGHTS_CACHE_KEY,
     PARTNER_INSIGHTS_CACHE_VERSION,
     build_partner_insights_report,
+    list_triage_partners,
     refresh_single_partner,
 )
 from .projects import DEFAULT_SUMMIT_LABEL, build_dashboard_projects_report, build_summit_projects_report
@@ -198,6 +208,9 @@ _AUTH_PUBLIC_PATHS = {
     # independently of this Google-login middleware.
     "/api/cron/refresh-support-report",
     "/api/cron/refresh-escalations",
+    # Machine-to-machine: the parallel eve escalation agent reads the partner
+    # list here - see `_require_internal_secret` for the real gate.
+    "/api/internal/partner-registry",
     # Linked from each squad section in a published EPD Report Notion page.
     "/notion/refresh-squad",
 }
@@ -821,6 +834,47 @@ def cron_refresh_escalations(request: Request):
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     return {"skipped": False, "fetchedAt": report.get("fetchedAt")}
+
+
+def _require_internal_secret(request: Request) -> None:
+    """Stricter sibling of `_require_cron_secret` for machine-to-machine
+    routes that return partner data: fails CLOSED. A 401 unless
+    `Authorization: Bearer <CRON_SECRET>` matches, and a 503 (not open
+    access) when `CRON_SECRET` isn't configured at all."""
+    secret = os.environ.get("CRON_SECRET")
+    if not secret:
+        raise HTTPException(status_code=503, detail="CRON_SECRET is not configured")
+    if request.headers.get("authorization") != f"Bearer {secret}":
+        raise HTTPException(status_code=401, detail="Not authorized")
+
+
+PARTNER_REGISTRY_CACHE_KEY = "triage-partner-registry"
+PARTNER_REGISTRY_CACHE_VERSION = 1
+# Short TTL: building the registry hits Intercom, Linear and Vitally, and the
+# eve agent asks for it on every sweep (every 2 hours).
+PARTNER_REGISTRY_MAX_AGE_SECONDS = 60 * 60
+
+
+@app.get("/api/internal/partner-registry")
+def internal_partner_registry(request: Request):
+    """The partner set the escalation triage covers (`partnerId`, `name`,
+    `vitallyAccountId`) - same registry and filter as the Partner Insights
+    tab, see `partner_insights.list_triage_partners`. Consumed by the
+    parallel eve escalation agent (`escalation-agent/`). Gated by
+    `_require_internal_secret`; cached for an hour."""
+    _require_internal_secret(request)
+    try:
+        entry = cache.get_or_refresh(
+            PARTNER_REGISTRY_CACHE_KEY,
+            list_triage_partners,
+            max_age_seconds=PARTNER_REGISTRY_MAX_AGE_SECONDS,
+            version=PARTNER_REGISTRY_CACHE_VERSION,
+        )
+    except LinearGraphQLError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"fetchedAt": entry["fetchedAt"], "partners": entry["data"]}
 
 
 def _require_partner_insights_access(request: Request) -> None:

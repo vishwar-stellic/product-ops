@@ -416,6 +416,29 @@ def build_partner_insights_report(force: bool = False) -> Dict[str, Any]:
     }
 
 
+def list_triage_partners() -> List[Dict[str, Any]]:
+    """The exact partner set the escalation triage covers: the same
+    `build_partner_registry` call and the same "has a Vitally account"
+    filter as `build_partner_insights_report`, trimmed to the three fields
+    an external triage worker needs (`partnerId`, `name`,
+    `vitallyAccountId`). Served to the parallel eve escalation agent via
+    `/api/internal/partner-registry` so both triage jobs cover identical
+    partners."""
+    intercom_client = IntercomClient()
+    linear_client = LinearClient()
+    vitally_client = VitallyClient() if vitally_configured() else None
+    registry = build_partner_registry(intercom_client, linear_client, vitally_client)
+    return [
+        {
+            "partnerId": p["partnerId"],
+            "name": p["name"],
+            "vitallyAccountId": p["vitallyAccountId"],
+        }
+        for p in registry
+        if p.get("vitallyAccountId")
+    ]
+
+
 def refresh_single_partner(partner_id: str) -> Dict[str, Any]:
     """Force-refresh exactly one partner's row (Product score + escalation
     triage) - the Partner Insights table's per-partner Update button.
