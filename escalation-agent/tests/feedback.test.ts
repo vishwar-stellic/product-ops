@@ -42,7 +42,7 @@ describe("verdictForReaction", () => {
     expect(verdictForReaction("-1")).toBe("false_alarm");
     expect(verdictForReaction("arrow_down")).toBe("too_severe");
     expect(verdictForReaction("arrow_up")).toBe("under_rated");
-    expect(verdictForReaction("white_check_mark")).toBe("resolved");
+    expect(verdictForReaction("white_check_mark")).toBeNull(); // no "resolved" emoji
     expect(verdictForReaction("eyes")).toBeNull();
   });
   it("handles skin-tone variants", () => {
@@ -87,20 +87,6 @@ describe("applyReaction", () => {
     saved = (await store.getJson<AlertRecord>(alertKey("C1", "100.1")))!;
     expect(currentVerdict(saved)).toBeNull();
   });
-
-  it("a resolved verdict drops the item from the partner's tracked list", async () => {
-    const store = memoryStore();
-    await store.putJson(alertKey("C1", "100.1"), record());
-    await store.putJson(partnerStateKey("p1"), {
-      items: [item(), item({ headline: "Another issue" })],
-      lastMessageAt: "x",
-      checkedAt: "y",
-    });
-    await applyReaction(store, { ...base, reaction: "white_check_mark", added: true, at: 5 });
-    const state = await store.getJson<{ items: TrackedItem[]; lastMessageAt: string }>(partnerStateKey("p1"));
-    expect(state?.items.map((i) => i.headline)).toEqual(["Another issue"]);
-    expect(state?.lastMessageAt).toBe("x");
-  });
 });
 
 describe("selectBalanced / renderFeedbackBlock", () => {
@@ -122,9 +108,9 @@ describe("selectBalanced / renderFeedbackBlock", () => {
     expect(picked.length).toBe(5);
   });
 
-  it("excludes resolved verdicts and orders newest first", () => {
-    const picked = selectBalanced([ex("resolved", 9), ex("correct", 1), ex("false_alarm", 5)], 10);
-    expect(picked.map((p) => p.verdict.at)).toEqual([5, 1]);
+  it("orders the picked examples newest first", () => {
+    const picked = selectBalanced([ex("correct", 1), ex("under_rated", 9), ex("false_alarm", 5)], 10);
+    expect(picked.map((p) => p.verdict.at)).toEqual([9, 5, 1]);
   });
 
   it("renders a bounded, rubric-subordinate block", () => {
@@ -148,7 +134,7 @@ describe("selectBalanced / renderFeedbackBlock", () => {
 });
 
 describe("loadFeedbackSnapshot", () => {
-  it("builds the block from reviewed alerts and collects resolved headlines per partner", async () => {
+  it("builds the block from reviewed alerts only", async () => {
     const store = memoryStore();
     await store.putJson(
       alertKey("C1", "1.1"),
@@ -159,17 +145,16 @@ describe("loadFeedbackSnapshot", () => {
       record({
         ts: "2.2",
         partnerId: "p2",
-        item: item({ headline: "Done now" }),
-        reactions: reaction("U1", "white_check_mark", "resolved", 11),
+        item: item({ headline: "Too loud" }),
+        reactions: reaction("U1", "arrow_down", "too_severe", 11),
       }),
     );
     await store.putJson(alertKey("C1", "3.3"), record({ ts: "3.3", item: item({ headline: "No reaction yet" }) }));
     const snapshot = await loadFeedbackSnapshot(store);
-    expect(snapshot.exampleCount).toBe(1);
+    expect(snapshot.exampleCount).toBe(2);
     expect(snapshot.block).toContain("Bad call");
-    expect(snapshot.block).not.toContain("Done now");
+    expect(snapshot.block).toContain("Too loud");
     expect(snapshot.block).not.toContain("No reaction yet");
-    expect([...(snapshot.resolvedHeadlines.get("p2") ?? [])]).toEqual(["Done now"]);
   });
   it("is empty when nothing has been reviewed", async () => {
     const snapshot = await loadFeedbackSnapshot(memoryStore());

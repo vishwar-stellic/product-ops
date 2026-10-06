@@ -24,6 +24,14 @@ export function memoryStore(): Store & { data: Map<string, string> } {
         .reverse()
         .slice(0, limit);
     },
+    async deleteByPrefix(prefix) {
+      const keys = order.filter((k) => k.startsWith(prefix));
+      for (const key of keys) {
+        data.delete(key);
+        order.splice(order.indexOf(key), 1);
+      }
+      return keys.length;
+    },
   };
 }
 

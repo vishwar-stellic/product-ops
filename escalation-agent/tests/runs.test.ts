@@ -84,3 +84,29 @@ describe("startRun lock", () => {
     expect(await startRun(store, meta)).toBeNull();
   });
 });
+
+describe("dry-run store and reset", () => {
+  it("dry-run store reads real data but persists nothing", async () => {
+    const { createDryRunStore } = await import("../agent/lib/store");
+    const base = memoryStore();
+    await base.putJson("partners/a.json", { n: 1 });
+    const dry = createDryRunStore(base);
+    expect(await dry.getJson("partners/a.json")).toEqual({ n: 1 });
+    await dry.putJson("partners/a.json", { n: 2 });
+    await dry.putJson("alerts/C/1.json", { x: 1 });
+    expect(await dry.getJson("partners/a.json")).toEqual({ n: 2 }); // visible within the run
+    expect(await base.getJson("partners/a.json")).toEqual({ n: 1 }); // never persisted
+    expect(await base.getJson("alerts/C/1.json")).toBeNull();
+    await expect(dry.deleteByPrefix("partners/")).rejects.toThrow();
+  });
+
+  it("deleteByPrefix removes only that prefix", async () => {
+    const store = memoryStore();
+    await store.putJson("partners/a.json", 1);
+    await store.putJson("partners/b.json", 2);
+    await store.putJson("alerts/C/1.json", 3);
+    expect(await store.deleteByPrefix("partners/")).toBe(2);
+    expect(await store.getJson("partners/a.json")).toBeNull();
+    expect(await store.getJson("alerts/C/1.json")).toBe(3);
+  });
+});

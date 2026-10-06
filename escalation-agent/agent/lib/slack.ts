@@ -7,6 +7,20 @@ const SEVERITY_LABEL: Record<string, string> = { LIVE_FIRE: "Live Fire", SMOLDER
 // Fire for Live Fire, firecracker for Smoldering - same as the Python alerts.
 const SEVERITY_EMOJI: Record<string, string> = { LIVE_FIRE: ":fire:", SMOLDERING: ":firecracker:" };
 
+/**
+ * Slack's required escaping for message text. Without it a partner email
+ * containing "<!channel>" or "<@U123>" would trigger a real mention, and a
+ * literal "&" can garble the message. Applied only to untrusted text, never to
+ * our own `<url|source>` link.
+ */
+export function slackEscape(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/** Posted once at the end of a sweep that raised alerts (not repeated on every alert). */
+export const REACTION_LEGEND =
+  "React: :+1: right call, :-1: false alarm, :arrow_down: too severe, :arrow_up: under-rated";
+
 export interface AlertContext {
   partnerName: string;
   vitallyAccountUrl: string | null;
@@ -22,13 +36,12 @@ export function formatSlackMessage(item: TrackedItem, ctx: AlertContext): string
   const label = SEVERITY_LABEL[severity] ?? severity;
   const emoji = SEVERITY_EMOJI[severity];
   const prefix = emoji ? `${emoji} ` : "";
-  let header = `${prefix}*${label}* \u2014 *${ctx.partnerName}*: ${item.headline}`;
+  let header = `${prefix}*${label}* \u2014 *${slackEscape(ctx.partnerName)}*: ${slackEscape(item.headline)}`;
   const sourceUrl = vitallyConversationUrl(item.vitallyConversationId ?? "") ?? ctx.vitallyAccountUrl;
   if (sourceUrl) header += ` (<${sourceUrl}|source>)`;
   const lines = [header];
   const quote = item.evidence[0]?.quote;
-  if (quote) lines.push(`> ${quote}`);
-  lines.push("_React: :+1: right call, :-1: false alarm, :arrow_down: too severe, :arrow_up: under-rated, :white_check_mark: resolved_");
+  if (quote) lines.push(`> ${slackEscape(quote)}`);
   return lines.join("\n");
 }
 

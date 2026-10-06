@@ -35,7 +35,8 @@ PYTHONPATH=. .venv/bin/python escalation-agent/scripts/export-rubric.py
 
 ## Slack feedback
 
-React to an alert in the channel:
+React to an alert in the channel. A one-line legend of these reactions is posted once at the end of each
+sweep that raised alerts (not on every alert):
 
 | Reaction | Meaning | Calibration example says |
 |---|---|---|
@@ -43,7 +44,6 @@ React to an alert in the channel:
 | `:-1:` | false alarm | should have scored 0-2 |
 | `:arrow_down:` | real, but too severe | one level lower (5 -> 4, 4 -> 3) |
 | `:arrow_up:` | under-rated | one level higher |
-| `:white_check_mark:` | resolved | not a calibration example; the item is dropped from the tracked list |
 
 Rules: the **latest** reaction on an alert wins (removing it reveals the previous one); unknown emoji are
 ignored; reactions on any other message are ignored. At the start of each sweep, the 20 most recent
@@ -96,6 +96,10 @@ curl https://<deployment>/escalation/run -H "Authorization: Bearer $CRON_SECRET"
 Manual and scheduled runs share one lock, so they never overlap (a second request gets `409`; a lock
 older than 30 minutes is treated as abandoned). A manual run can ask for a dry run, but it can never
 turn `ESCALATION_DRY_RUN=1` off. Manual runs don't change the schedule.
+
+`POST /escalation/reset` with `{"confirm": true}` clears every partner's saved state (the next live sweep
+re-triages the whole 3-day window and re-alerts); add `"includeAlerts": true` to also delete the stored
+alert records and their reaction feedback (test data).
 
 ## Comparing against the Python job
 

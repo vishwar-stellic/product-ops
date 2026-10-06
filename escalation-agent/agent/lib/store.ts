@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-import { get as blobGet, list as blobList, put as blobPut } from "@vercel/blob";
+import { del as blobDel, get as blobGet, list as blobList, put as blobPut } from "@vercel/blob";
 
 /**
  * Tiny JSON key/value store. Backed by a (private) Vercel Blob store when
@@ -14,6 +14,8 @@ export interface Store {
   putJson(key: string, value: unknown): Promise<void>;
   /** Keys under `prefix`, newest first, capped at `limit`. */
   listKeys(prefix: string, limit?: number): Promise<string[]>;
+  /** Deletes every key under `prefix`; returns how many were removed. */
+  deleteByPrefix(prefix: string): Promise<number>;
 }
 
 const STATE_DIR = path.resolve(process.cwd(), ".state");
@@ -65,6 +67,11 @@ export function createFileStore(dir = STATE_DIR): Store {
         .slice(0, limit)
         .map((f) => f.key);
     },
+    async deleteByPrefix(prefix) {
+      const keys = await this.listKeys(prefix, Number.MAX_SAFE_INTEGER);
+      await Promise.all(keys.map((key) => fs.rm(fileFor(key), { force: true })));
+      return keys.length;
+    },
   };
 }
 
@@ -95,6 +102,33 @@ export function createBlobStore(): Store {
         .sort((a, b) => b.uploadedAt.getTime() - a.uploadedAt.getTime())
         .slice(0, limit)
         .map((b) => b.pathname);
+    },
+    async deleteByPrefix(prefix) {
+      const keys = await this.listKeys(prefix, Number.MAX_SAFE_INTEGER);
+      for (let i = 0; i < keys.length; i += 100) await blobDel(keys.slice(i, i + 100));
+      return keys.length;
+    },
+  };
+}
+
+/**
+ * A store for dry runs: reads see the real data (plus anything this run has
+ * "written"), but nothing is persisted and nothing is deleted. A dry run
+ * therefore never advances a partner's "last email seen" marker or records
+ * alerts, so it can be repeated and a later live run still posts everything.
+ */
+export function createDryRunStore(base: Store): Store {
+  const overlay = new Map<string, unknown>();
+  return {
+    async getJson<T>(key: string) {
+      return overlay.has(key) ? (overlay.get(key) as T) : base.getJson<T>(key);
+    },
+    async putJson(key, value) {
+      overlay.set(key, JSON.parse(JSON.stringify(value)));
+    },
+    listKeys: (prefix, limit) => base.listKeys(prefix, limit),
+    async deleteByPrefix() {
+      throw new Error("deleteByPrefix is not allowed on a dry-run store");
     },
   };
 }

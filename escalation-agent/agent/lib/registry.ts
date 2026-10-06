@@ -1,3 +1,5 @@
+import { decodeHtmlEntities } from "./filters";
+
 export interface TriagePartner {
   partnerId: string;
   name: string;
@@ -27,7 +29,10 @@ export async function fetchPartnerRegistry(
     throw new Error(`Partner registry request failed: ${response.status} ${(await response.text()).slice(0, 200)}`);
   }
   const payload = (await response.json()) as { partners?: TriagePartner[] };
-  const partners = (payload.partners ?? []).filter((p) => p.partnerId && p.vitallyAccountId);
+  // Some account names arrive HTML-escaped ("S&amp;T", "St. Mary&#39;s"); store the real text.
+  const partners = (payload.partners ?? [])
+    .filter((p) => p.partnerId && p.vitallyAccountId)
+    .map((p) => ({ ...p, name: decodeHtmlEntities(p.name ?? "") }));
   if (partners.length === 0) throw new Error("Partner registry returned no partners");
   return partners;
 }

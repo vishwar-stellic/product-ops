@@ -12,7 +12,7 @@ import type { TrackedItem } from "./triage";
  * rubric text itself is never edited.
  */
 
-export type VerdictLabel = "correct" | "false_alarm" | "too_severe" | "under_rated" | "resolved";
+export type VerdictLabel = "correct" | "false_alarm" | "too_severe" | "under_rated";
 
 /** Slack reaction name -> verdict. Edit here to change the vocabulary. */
 export const EMOJI_VERDICTS: Record<string, VerdictLabel> = {
@@ -26,8 +26,6 @@ export const EMOJI_VERDICTS: Record<string, VerdictLabel> = {
   arrow_up: "under_rated",
   arrow_up_small: "under_rated",
   small_red_triangle: "under_rated",
-  white_check_mark: "resolved",
-  heavy_check_mark: "resolved",
 };
 
 /** Slack sends skin-tone variants as "+1::skin-tone-3"; the verdict only depends on the base name. */
@@ -55,8 +53,10 @@ export interface AlertRecord {
   reactions: Record<string, ReactionEntry>;
 }
 
-export const alertKey = (channel: string, ts: string) => `alerts/${channel}/${ts}.json`;
-export const partnerStateKey = (partnerId: string) => `partners/${encodeURIComponent(partnerId)}.json`;
+export const alertKey = (channel: string, ts: string) => `${ALERT_PREFIX}${channel}/${ts}.json`;
+export const PARTNER_STATE_PREFIX = "partners/";
+export const ALERT_PREFIX = "alerts/";
+export const partnerStateKey = (partnerId: string) => `${PARTNER_STATE_PREFIX}${encodeURIComponent(partnerId)}.json`;
 
 /** The latest still-present reaction wins. */
 export function currentVerdict(record: AlertRecord): ReactionEntry | null {
@@ -82,9 +82,7 @@ export type ReactionResult =
 /**
  * Applies one reaction_added / reaction_removed to the matching alert record.
  * Ignores reactions on messages that aren't tracked alerts and emojis that
- * aren't part of the vocabulary. A new `resolved` verdict also removes the
- * item from the partner's tracked list immediately (best effort - the next
- * sweep drops it again from the feedback snapshot).
+ * aren't part of the vocabulary.
  */
 export async function applyReaction(store: Store, change: ReactionChange): Promise<ReactionResult> {
   const label = verdictForReaction(change.reaction);
@@ -102,21 +100,7 @@ export async function applyReaction(store: Store, change: ReactionChange): Promi
   }
   await store.putJson(key, record);
 
-  const verdict = currentVerdict(record);
-  if (verdict?.label === "resolved") {
-    await dropResolvedItem(store, record).catch((error) =>
-      console.error(`[escalation-agent] failed to drop resolved item: ${String(error)}`),
-    );
-  }
-  return { status: "updated", record, verdict };
-}
-
-async function dropResolvedItem(store: Store, record: AlertRecord): Promise<void> {
-  const key = partnerStateKey(record.partnerId);
-  const state = await store.getJson<{ items?: TrackedItem[] } & Record<string, unknown>>(key);
-  if (!state?.items) return;
-  const items = state.items.filter((i) => i.headline !== record.item.headline);
-  if (items.length !== state.items.length) await store.putJson(key, { ...state, items });
+  return { status: "updated", record, verdict: currentVerdict(record) };
 }
 
 // ---------------------------------------------------------------------------
@@ -144,8 +128,6 @@ export function correctedScoreText(label: VerdictLabel, agentScore: number): str
       return `true score ${agentScore >= 5 ? 4 : 3} (real, but less severe than ${agentScore})`;
     case "under_rated":
       return `true score ${Math.min(agentScore + 1, 5)} (should have been rated higher)`;
-    case "resolved":
-      return "resolved";
   }
 }
 
@@ -154,18 +136,15 @@ const VERDICT_TEXT: Record<VerdictLabel, string> = {
   false_alarm: "FALSE ALARM - this should not have been flagged",
   too_severe: "TOO SEVERE - real, but over-scored",
   under_rated: "UNDER-RATED - should have scored higher",
-  resolved: "RESOLVED",
 };
 
 /**
  * Newest-first, round-robin across labels so one frequent verdict can't crowd
- * out the rest. `resolved` is excluded: it says the issue is over, not that
- * the scoring was right or wrong.
+ * out the rest.
  */
 export function selectBalanced(examples: FeedbackExample[], max = FEEDBACK_MAX_EXAMPLES): FeedbackExample[] {
   const byLabel = new Map<VerdictLabel, FeedbackExample[]>();
   for (const ex of examples) {
-    if (ex.verdict.label === "resolved") continue;
     const list = byLabel.get(ex.verdict.label) ?? [];
     list.push(ex);
     byLabel.set(ex.verdict.label, list);
@@ -207,8 +186,6 @@ export function renderFeedbackBlock(examples: FeedbackExample[]): string {
 export interface FeedbackSnapshot {
   /** Text to inject into the prompt ("" when there is no usable feedback). */
   block: string;
-  /** partnerId -> headlines the team marked resolved; those items are dropped from the tracked list. */
-  resolvedHeadlines: Map<string, Set<string>>;
   exampleCount: number;
 }
 
@@ -224,18 +201,11 @@ export async function loadFeedbackSnapshot(store: Store): Promise<FeedbackSnapsh
     for (const record of batch) if (record) records.push(record);
   }
   const examples: FeedbackExample[] = [];
-  const resolvedHeadlines = new Map<string, Set<string>>();
   for (const record of records) {
     const verdict = currentVerdict(record);
     if (!verdict) continue;
-    if (verdict.label === "resolved") {
-      const set = resolvedHeadlines.get(record.partnerId) ?? new Set<string>();
-      set.add(record.item.headline);
-      resolvedHeadlines.set(record.partnerId, set);
-    } else {
-      examples.push({ record, verdict });
-    }
+    examples.push({ record, verdict });
   }
   const selected = selectBalanced(examples);
-  return { block: renderFeedbackBlock(selected), resolvedHeadlines, exampleCount: selected.length };
+  return { block: renderFeedbackBlock(selected), exampleCount: selected.length };
 }

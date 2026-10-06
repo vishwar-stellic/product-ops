@@ -8,7 +8,7 @@ import {
 } from "./feedback";
 import type { LlmFn } from "./llm";
 import type { TriagePartner } from "./registry";
-import { formatSlackMessage, type PostedMessage } from "./slack";
+import { formatSlackMessage, REACTION_LEGEND, type PostedMessage } from "./slack";
 import type { Store } from "./store";
 import {
   enrichItemsWithConversations,
@@ -77,7 +77,7 @@ export async function runSweep(deps: SweepDeps): Promise<SweepSummary> {
   const nowIso = now.toISOString();
   const lookbackCutoffIso = new Date(now.getTime() - ESCALATION_LOOKBACK_DAYS * 86_400_000).toISOString();
 
-  let feedback: FeedbackSnapshot = { block: "", resolvedHeadlines: new Map(), exampleCount: 0 };
+  let feedback: FeedbackSnapshot = { block: "", exampleCount: 0 };
   try {
     feedback = await loadFeedbackSnapshot(deps.store);
   } catch (error) {
@@ -95,6 +95,8 @@ export async function runSweep(deps: SweepDeps): Promise<SweepSummary> {
     feedbackExamples: feedback.exampleCount,
   };
 
+  let dryRunAlerts = 0;
+
   async function processPartner(partner: TriagePartner): Promise<void> {
     const stateKey = partnerStateKey(partner.partnerId);
     const prior = (await deps.store.getJson<PartnerState>(stateKey)) ?? {
@@ -102,8 +104,7 @@ export async function runSweep(deps: SweepDeps): Promise<SweepSummary> {
       lastMessageAt: null,
       checkedAt: nowIso,
     };
-    const resolved = feedback.resolvedHeadlines.get(partner.partnerId);
-    const priorItems = (prior.items ?? []).filter((i) => !resolved?.has(i.headline));
+    const priorItems = prior.items ?? [];
     // Never reach back further than the lookback window, never re-fetch what's already incorporated.
     const sinceIso = latestIso(prior.lastMessageAt, lookbackCutoffIso);
 
@@ -157,6 +158,8 @@ export async function runSweep(deps: SweepDeps): Promise<SweepSummary> {
     await deps.store.putJson(stateKey, payload);
 
     const notable = notableSeverityChanges(priorItems, items);
+    let postedForPartner = 0;
+    let failedForPartner = 0;
     for (const item of notable) {
       const text = formatSlackMessage(item, {
         partnerName: partner.name,
@@ -164,6 +167,7 @@ export async function runSweep(deps: SweepDeps): Promise<SweepSummary> {
       });
       if (!deps.post) {
         console.log(`[escalation-agent] (dry run) would post:\n${text}`);
+        dryRunAlerts += 1;
         continue;
       }
       try {
@@ -179,10 +183,20 @@ export async function runSweep(deps: SweepDeps): Promise<SweepSummary> {
         };
         await deps.store.putJson(alertKey(posted.channel, posted.ts), record);
         summary.alertsPosted += 1;
+        postedForPartner += 1;
       } catch (error) {
         summary.alertFailures += 1;
+        failedForPartner += 1;
         console.error(`[escalation-agent] Slack alert failed for ${JSON.stringify(item.headline)}: ${String(error)}`);
       }
+    }
+
+    // Nothing reached Slack for this partner (e.g. bad token, bot not in the channel):
+    // put the previous state back so the same emails are re-read and the alerts retried
+    // next run instead of being silently lost. (If some alerts did post, keep the new
+    // state - retrying would duplicate them.)
+    if (failedForPartner > 0 && postedForPartner === 0) {
+      await deps.store.putJson(stateKey, prior);
     }
   }
 
@@ -195,6 +209,17 @@ export async function runSweep(deps: SweepDeps): Promise<SweepSummary> {
       console.error(`[escalation-agent] unexpected error for ${partner.name}: ${String(error)}`);
     }
   });
+
+  // One reaction legend per sweep, after the alerts, instead of a footer on every message.
+  if (summary.alertsPosted > 0 && deps.post) {
+    try {
+      await deps.post(REACTION_LEGEND);
+    } catch (error) {
+      console.error(`[escalation-agent] failed to post the reaction legend: ${String(error)}`);
+    }
+  } else if (dryRunAlerts > 0) {
+    console.log(`[escalation-agent] (dry run) would post:\n${REACTION_LEGEND}`);
+  }
 
   return summary;
 }

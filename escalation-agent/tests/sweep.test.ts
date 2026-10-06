@@ -44,10 +44,11 @@ describe("runSweep", () => {
     const { deps, store, posts } = setup();
     const summary = await runSweep(deps);
     expect(summary).toMatchObject({ partners: 1, withNewEmails: 1, alertsPosted: 1, llmFailures: 0, fetchFailures: 0 });
-    expect(posts).toHaveLength(1);
+    expect(posts).toHaveLength(2); // the alert + the once-per-sweep legend
     expect(posts[0]).toContain(":fire: *Live Fire* \u2014 *Acme University*: Registration blocked in Prod");
     expect(posts[0]).toContain("https://stellic.vitally.io/conversations/active/conv1|source");
     expect(posts[0]).toContain("> Students cannot register and the deadline passed");
+    expect(posts[0]).not.toContain("React:"); // the legend is posted once per sweep, not on each alert
     const state = (await store.getJson<PartnerState>(partnerStateKey("p1")))!;
     expect(state.items).toHaveLength(1);
     expect(state.items[0]?.vitallyConversationId).toBe("conv1");
@@ -91,7 +92,7 @@ describe("runSweep", () => {
       ],
     });
     await runSweep({ ...deps, vitally: vit, now: new Date("2026-10-05T18:00:00Z") });
-    expect(post).toHaveBeenCalledTimes(1);
+    expect(post).toHaveBeenCalledTimes(2); // the escalated alert + the legend
 
     const vit2 = fakeVitally({
       acct1: [
@@ -101,7 +102,7 @@ describe("runSweep", () => {
       ],
     });
     await runSweep({ ...deps, vitally: vit2, now: new Date("2026-10-05T20:00:00Z") });
-    expect(post).toHaveBeenCalledTimes(1); // same severity -> no re-alert
+    expect(post).toHaveBeenCalledTimes(2); // same severity -> no re-alert, and so no new legend
   });
 
   it("keeps prior items and does not advance lastMessageAt when the LLM fails", async () => {
@@ -141,6 +142,72 @@ describe("runSweep", () => {
   });
 });
 
+describe("reaction legend", () => {
+  const LEGEND = "React: :+1: right call, :-1: false alarm, :arrow_down: too severe, :arrow_up: under-rated";
+
+  it("is posted once after the alerts, and is not an alert record", async () => {
+    const { deps, posts, store } = setup({ llmReplies: [reply(itemJson(), itemJson({ headline: "Second fire" }))] });
+    const summary = await runSweep(deps);
+    expect(summary.alertsPosted).toBe(2);
+    expect(posts).toHaveLength(3);
+    expect(posts.filter((p) => p === LEGEND)).toHaveLength(1);
+    expect(posts[2]).toBe(LEGEND);
+    expect(posts[2]).not.toContain("resolved");
+    expect((await store.listKeys("alerts/")).length).toBe(2); // the legend is not tracked
+  });
+
+  it("is not posted when the sweep raised no alerts", async () => {
+    const { deps, posts } = setup({ llmReplies: [reply(itemJson({ severity: "WATCH", score: 3 }))] });
+    await runSweep(deps);
+    expect(posts).toEqual([]);
+  });
+
+  it("is not posted in a dry run (only logged)", async () => {
+    const { deps } = setup();
+    const post = vi.fn();
+    await runSweep({ ...deps, post: null });
+    expect(post).not.toHaveBeenCalled();
+  });
+});
+
+describe("failed alerts are retried", () => {
+  it("restores the previous state when no alert for the partner reached Slack, so the next run retries", async () => {
+    const { deps, store } = setup();
+    const failingPost = vi.fn().mockRejectedValue(new Error("not_in_channel"));
+    const first = await runSweep({ ...deps, post: failingPost });
+    expect(first).toMatchObject({ alertsPosted: 0, alertFailures: 1 });
+    const state = await store.getJson<PartnerState>(partnerStateKey("p1"));
+    expect(state?.lastMessageAt).toBeNull(); // not advanced
+    expect(state?.items).toEqual([]);
+
+    const second = await runSweep({ ...deps, now: new Date("2026-10-05T18:00:00Z") }); // Slack now works
+    expect(second).toMatchObject({ alertsPosted: 1, alertFailures: 0 });
+  });
+
+  it("keeps the new state when at least one alert posted (retrying would duplicate it)", async () => {
+    const { deps, store } = setup({ llmReplies: [reply(itemJson(), itemJson({ headline: "Second fire" }))] });
+    const post = vi
+      .fn()
+      .mockResolvedValueOnce({ channel: "CALERT", ts: "1.1" })
+      .mockRejectedValueOnce(new Error("rate_limited"));
+    await runSweep({ ...deps, post });
+    const state = await store.getJson<PartnerState>(partnerStateKey("p1"));
+    expect(state?.items).toHaveLength(2);
+    expect(state?.lastMessageAt).toBe("2026-10-05T14:00:00Z");
+  });
+
+  it("a dry run (via the dry-run store) leaves state untouched so a live run still alerts", async () => {
+    const { createDryRunStore } = await import("../agent/lib/store");
+    const { deps, store, post } = setup();
+    const dry = await runSweep({ ...deps, store: createDryRunStore(store), post: null });
+    expect(dry.withNewEmails).toBe(1);
+    expect(await store.getJson(partnerStateKey("p1"))).toBeNull();
+    const live = await runSweep({ ...deps, now: new Date("2026-10-05T18:00:00Z") });
+    expect(live.alertsPosted).toBe(1);
+    expect(post).toHaveBeenCalledTimes(2); // the alert + the legend
+  });
+});
+
 describe("feedback loop", () => {
   it("injects reviewed alerts into the next prompt, and not before any review exists", async () => {
     const { deps, prompts, store } = setup({
@@ -162,8 +229,8 @@ describe("feedback loop", () => {
     expect(prompts[1]).toContain("Registration blocked in Prod");
   });
 
-  it("drops a resolved item from what the model sees and from state", async () => {
-    const { deps, prompts, store } = setup({ llmReplies: [reply(itemJson()), reply()] });
+  it("ignores a white_check_mark reaction (there is no resolved emoji)", async () => {
+    const { deps, store } = setup();
     await runSweep(deps);
     await applyReaction(store, {
       channel: "CALERT",
@@ -173,16 +240,10 @@ describe("feedback loop", () => {
       added: true,
       at: 60,
     });
-    const afterReaction = (await store.getJson<PartnerState>(partnerStateKey("p1")))!;
-    expect(afterReaction.items).toEqual([]); // dropped immediately by the reaction handler
-
-    const vit = fakeVitally({
-      acct1: [conversation("conv9", "Another", "2026-10-05T19:00:00Z", [inbound("2026-10-05T19:00:00Z", "fyi")])],
-    });
-    await runSweep({ ...deps, vitally: vit, now: new Date("2026-10-05T20:00:00Z") });
-    const secondPrompt = prompts[1]!;
-    const tracked = secondPrompt.slice(secondPrompt.indexOf("PREVIOUSLY TRACKED ITEMS"), secondPrompt.indexOf("NEW EMAILS FOR"));
-    expect(tracked).not.toContain("Registration blocked in Prod");
+    const state = (await store.getJson<PartnerState>(partnerStateKey("p1")))!;
+    expect(state.items).toHaveLength(1); // item is still tracked
+    const record = (await store.getJson<AlertRecord>(alertKey("CALERT", "1001.0001")))!;
+    expect(record.reactions).toEqual({});
   });
 
   it("still triages when the feedback store cannot be read", async () => {
@@ -190,7 +251,7 @@ describe("feedback loop", () => {
     const broken = { ...store, listKeys: async () => { throw new Error("blob down"); } };
     const summary = await runSweep({ ...deps, store: broken as any });
     expect(summary.alertsPosted).toBe(1);
-    expect(posts).toHaveLength(1);
+    expect(posts).toHaveLength(2); // the alert + the legend
   });
 });
 

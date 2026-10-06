@@ -42,9 +42,37 @@ const AUTO_GENERATED_BODY_MARKERS = [
   "google meet joining info",
 ];
 
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  nbsp: " ",
+  rsquo: "\u2019",
+  lsquo: "\u2018",
+  rdquo: "\u201d",
+  ldquo: "\u201c",
+  ndash: "\u2013",
+  mdash: "\u2014",
+  hellip: "\u2026",
+};
+
+/** Decodes the common named and numeric HTML entities (`&amp;`, `&#39;`, `&#x27;`, ...). Unknown ones are left as-is. */
+export function decodeHtmlEntities(value: string): string {
+  return value.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (match, body: string) => {
+    if (body[0] === "#") {
+      const code = body[1]?.toLowerCase() === "x" ? parseInt(body.slice(2), 16) : parseInt(body.slice(1), 10);
+      return Number.isFinite(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : match;
+    }
+    return NAMED_ENTITIES[body.toLowerCase()] ?? match;
+  });
+}
+
 export function stripHtml(value: string | null | undefined): string {
   if (!value) return "";
-  return value.replace(/<[^>]+>/g, " ").trim();
+  // Strip tags first, then decode, so an escaped "&lt;b&gt;" is never mistaken for markup.
+  return decodeHtmlEntities(value.replace(/<[^>]+>/g, " ")).trim();
 }
 
 /**

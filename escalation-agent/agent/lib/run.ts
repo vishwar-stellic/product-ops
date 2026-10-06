@@ -2,7 +2,7 @@ import { createOpenAiLlm } from "./llm";
 import { fetchPartnerRegistry } from "./registry";
 import { startRun, type RunRecord, type RunTrigger } from "./runs";
 import { postSlackMessage } from "./slack";
-import { getStore } from "./store";
+import { createDryRunStore, getStore } from "./store";
 import { runSweep, type SweepSummary } from "./sweep";
 import { createVitallyClient } from "./vitally";
 
@@ -30,7 +30,8 @@ export async function runConfiguredSweep(options: { dryRun?: boolean } = {}): Pr
     console.warn("[escalation-agent] Slack not configured - running as a dry run (alerts are logged only)");
   }
   const summary = await runSweep({
-    store: getStore(),
+    // A dry run reads the real state but persists nothing (see createDryRunStore).
+    store: dryRun ? createDryRunStore(getStore()) : getStore(),
     vitally: createVitallyClient(),
     llm: createOpenAiLlm(),
     post: dryRun ? null : (text) => postSlackMessage(text),
