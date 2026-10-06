@@ -36,6 +36,19 @@ const reaction = (user: string, name: string, label: VerdictLabel, at: number) =
   [`${user}:${name}`]: { user, reaction: name, label, at },
 });
 
+describe("partnerStateKey", () => {
+  it("round-trips through the store for real partner ids (colons, uuids)", async () => {
+    for (const id of ["intercom:6746b2e7d40195d79e968cfe", "linear:77ff5ef8-1b63-4040-a94f-f9699872a62f", "p1"]) {
+      const key = partnerStateKey(id);
+      expect(key).toMatch(/^partners\/[A-Za-z0-9._-]+\.json$/);
+      const store = memoryStore();
+      await store.putJson(key, { ok: id });
+      expect(await store.getJson(key)).toEqual({ ok: id });
+    }
+    expect(partnerStateKey("intercom:abc")).not.toBe(partnerStateKey("linear:abc"));
+  });
+});
+
 describe("verdictForReaction", () => {
   it("maps the vocabulary and ignores unknown emoji", () => {
     expect(verdictForReaction("+1")).toBe("correct");

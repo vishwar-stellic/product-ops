@@ -56,7 +56,9 @@ export interface AlertRecord {
 export const alertKey = (channel: string, ts: string) => `${ALERT_PREFIX}${channel}/${ts}.json`;
 export const PARTNER_STATE_PREFIX = "partners/";
 export const ALERT_PREFIX = "alerts/";
-export const partnerStateKey = (partnerId: string) => `${PARTNER_STATE_PREFIX}${encodeURIComponent(partnerId)}.json`;
+/** Partner ids look like "intercom:6746..."; anything outside [A-Za-z0-9._-] becomes "_" so the key round-trips through Blob. */
+export const partnerStateKey = (partnerId: string) =>
+  `${PARTNER_STATE_PREFIX}${partnerId.replace(/[^A-Za-z0-9._-]/g, "_")}.json`;
 
 /** The latest still-present reaction wins. */
 export function currentVerdict(record: AlertRecord): ReactionEntry | null {

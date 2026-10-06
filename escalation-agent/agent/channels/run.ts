@@ -14,6 +14,7 @@ import { getStore } from "../lib/store";
  *
  *   POST /escalation/run            start a sweep now  -> 202 { runId, dryRun }
  *   POST /escalation/run  {"dryRun": true}   same, but log alerts instead of posting
+ *   POST /escalation/run  {"seed": true}     triage and SAVE state, post nothing (baseline)
  *   GET  /escalation/run            status of the current / last run
  *   POST /escalation/reset {"confirm": true}   forget all partner state (see below)
  *   POST /escalation/reset {"confirm": true, "includeAlerts": true}   ...and the stored alerts + reaction feedback
@@ -35,21 +36,23 @@ export default defineChannel({
       if (denied) return denied;
 
       let dryRun = false;
+      let seed = false;
       try {
-        const body = (await request.json()) as { dryRun?: unknown } | null;
+        const body = (await request.json()) as { dryRun?: unknown; seed?: unknown } | null;
         dryRun = body?.dryRun === true;
+        seed = body?.seed === true;
       } catch {
         // No / invalid JSON body: run with defaults.
       }
 
-      const run = await startConfiguredRun("manual", dryRun);
+      const run = await startConfiguredRun("manual", dryRun, seed);
       if (!run) {
         return Response.json({ error: "a sweep is already running" }, { status: 409 });
       }
       // The sweep takes minutes; answer now and let it finish in the background.
       waitUntil(run.finished());
       return Response.json(
-        { runId: run.record.runId, dryRun: run.record.dryRun, startedAt: run.record.startedAt, status: "running" },
+        { runId: run.record.runId, dryRun: run.record.dryRun, seed: run.record.seed ?? false, startedAt: run.record.startedAt, status: "running" },
         { status: 202 },
       );
     }),

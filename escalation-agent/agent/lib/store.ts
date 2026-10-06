@@ -20,8 +20,16 @@ export interface Store {
 
 const STATE_DIR = path.resolve(process.cwd(), ".state");
 
+/**
+ * Keys must be plain path-safe text. Vercel Blob stores a pathname literally
+ * but reads it back through a URL, so a key containing "%" or ":" (e.g. an
+ * encodeURIComponent'd id) is written under one name and looked up under
+ * another - the read silently returns nothing. Fail loudly instead.
+ */
+const SAFE_KEY = /^[A-Za-z0-9._\-/]+$/;
+
 function safeKey(key: string): string {
-  if (key.includes("..") || key.startsWith("/")) throw new Error(`Invalid store key: ${key}`);
+  if (key.includes("..") || key.startsWith("/") || !SAFE_KEY.test(key)) throw new Error(`Invalid store key: ${key}`);
   return key;
 }
 

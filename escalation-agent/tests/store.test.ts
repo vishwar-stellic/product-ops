@@ -15,8 +15,8 @@ describe("file store", () => {
     dir = await mkdtemp(path.join(tmpdir(), "esc-store-"));
     const store = createFileStore(dir);
     expect(await store.getJson("nope.json")).toBeNull();
-    await store.putJson("partners/a%2Fb.json", { n: 1 });
-    expect(await store.getJson("partners/a%2Fb.json")).toEqual({ n: 1 });
+    await store.putJson("partners/intercom_ab12.json", { n: 1 });
+    expect(await store.getJson("partners/intercom_ab12.json")).toEqual({ n: 1 });
   });
 
   it("lists keys under a prefix, newest first, honoring the limit", async () => {
@@ -30,6 +30,13 @@ describe("file store", () => {
     expect(await store.listKeys("alerts/")).toEqual(["alerts/C1/2.json", "alerts/C1/1.json"]);
     expect(await store.listKeys("alerts/", 1)).toEqual(["alerts/C1/2.json"]);
     expect(await store.listKeys("missing/")).toEqual([]);
+  });
+
+  it("rejects keys Blob cannot round-trip (percent-encoding, colons)", async () => {
+    dir = await mkdtemp(path.join(tmpdir(), "esc-store-"));
+    const store = createFileStore(dir);
+    await expect(store.putJson("partners/intercom%3Aabc.json", 1)).rejects.toThrow(/Invalid store key/);
+    await expect(store.getJson("partners/intercom:abc.json")).rejects.toThrow(/Invalid store key/);
   });
 
   it("rejects path traversal", async () => {

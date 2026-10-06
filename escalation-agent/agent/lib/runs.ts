@@ -11,6 +11,8 @@ export interface RunRecord {
   runId: string;
   trigger: RunTrigger;
   dryRun: boolean;
+  /** Saved state but posted nothing (baseline run). */
+  seed?: boolean;
   startedAt: string;
   finishedAt?: string;
   status: "running" | "succeeded" | "failed";
@@ -43,7 +45,7 @@ export interface ActiveRun {
  */
 export async function startRun(
   store: Store,
-  meta: { trigger: RunTrigger; dryRun: boolean },
+  meta: { trigger: RunTrigger; dryRun: boolean; seed?: boolean },
   now: Date = new Date(),
   ttlMs: number = SWEEP_LOCK_TTL_MS,
 ): Promise<ActiveRun | null> {
@@ -56,7 +58,14 @@ export async function startRun(
   const confirmed = await store.getJson<LockRecord>(LOCK_KEY);
   if (confirmed?.runId !== runId) return null;
 
-  const record: RunRecord = { runId, trigger: meta.trigger, dryRun: meta.dryRun, startedAt, status: "running" };
+  const record: RunRecord = {
+    runId,
+    trigger: meta.trigger,
+    dryRun: meta.dryRun,
+    ...(meta.seed ? { seed: true } : {}),
+    startedAt,
+    status: "running",
+  };
   await store.putJson(LAST_RUN_KEY, record);
 
   return {
