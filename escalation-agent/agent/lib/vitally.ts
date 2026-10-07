@@ -82,6 +82,29 @@ export function createVitallyClient(accessToken = process.env.VITALLY_ACCESS_TOK
   };
 }
 
+/**
+ * Vitally links a conversation to EVERY account of every participant, so one
+ * thread started by Chadron State that CCs a Nebraska System person shows up
+ * under both Chadron State and University of Nebraska-Lincoln - and the same
+ * issue would be alerted under both partners. When a conversation touches
+ * several accounts it is attributed only to the account(s) of whoever started
+ * it (the earliest partner-authored message's sender). If that sender can't
+ * be resolved, or has no account info, the conversation is kept (old behaviour).
+ */
+export function conversationBelongsToAccount(conversation: VitallyConversation, accountId: string): boolean {
+  if ((conversation.accounts ?? []).length <= 1) return true;
+  const starters = (conversation.messages ?? []).filter(
+    (message) => isPartnerAuthored(message, conversation) && (message.timestamp || message.createdAt),
+  );
+  if (starters.length === 0) return true;
+  const stamp = (m: (typeof starters)[number]) => m.timestamp || m.createdAt || "";
+  const first = starters.reduce((a, b) => (stamp(b) < stamp(a) ? b : a));
+  const sender = (conversation.users ?? []).find((user) => user.id === first.from?.id);
+  if (!sender) return true;
+  const senderAccountIds = (sender.accounts ?? []).map((account) => account.id);
+  return senderAccountIds.length === 0 || senderAccountIds.includes(accountId);
+}
+
 const toMs = (iso: string | undefined): number => {
   const ms = iso ? Date.parse(iso) : NaN;
   return Number.isNaN(ms) ? NaN : ms;
@@ -109,6 +132,7 @@ export async function collectNewHumanEmails(
     const updatedMs = toMs(summary.updatedAt);
     if (!Number.isNaN(updatedMs) && !Number.isNaN(sinceMs) && updatedMs < sinceMs) break;
     const full = await vitally.getConversation(summary.id);
+    if (!conversationBelongsToAccount(full, accountId)) continue; // another partner's thread that just CCs someone from this account
     const subject = full.subject || "(no subject)";
     for (const message of full.messages ?? []) {
       if (!isPartnerAuthored(message, full)) continue;

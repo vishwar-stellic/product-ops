@@ -65,4 +65,35 @@ describe("collectNewHumanEmails", () => {
     const [email] = await collectNewHumanEmails(api, "acct", since);
     expect(email?.body.length).toBe(4000);
   });
+
+  describe("threads linked to several accounts", () => {
+    // Vitally links a thread to every participant's account: Chadron's thread CCs a Nebraska System person.
+    const shared = () => ({
+      ...conversation("shared", "Registration Issue?", "2026-10-05T12:00:00Z", [
+        inbound("2026-10-05T10:00:00Z", "Chadron reports registration problem", "chadron-user"),
+        inbound("2026-10-05T12:00:00Z", "System person weighs in", "nebraska-user"),
+      ]),
+      accounts: [{ id: "unl" }, { id: "csc" }],
+      users: [
+        { id: "chadron-user", name: "Jessyca", accounts: [{ id: "csc" }] },
+        { id: "nebraska-user", name: "Paul", accounts: [{ id: "unl" }] },
+      ],
+    });
+
+    it("attributes the thread only to the account of whoever started it", async () => {
+      const api = fakeVitally({ unl: [shared()], csc: [shared()] });
+      expect(await collectNewHumanEmails(api, "unl", since)).toEqual([]);
+      const emails = await collectNewHumanEmails(api, "csc", since);
+      expect(emails.map((e) => e.body)).toEqual([
+        "Chadron reports registration problem",
+        "System person weighs in",
+      ]);
+    });
+
+    it("keeps the thread when the starter has no account info", async () => {
+      const thread = { ...shared(), users: [{ id: "chadron-user", name: "Jessyca" }, { id: "nebraska-user", name: "Paul" }] };
+      const api = fakeVitally({ unl: [thread] });
+      expect((await collectNewHumanEmails(api, "unl", since)).length).toBe(2);
+    });
+  });
 });

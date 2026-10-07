@@ -281,6 +281,36 @@ def _is_partner_authored(message: Dict[str, Any], full_conversation: Dict[str, A
     return any(user.get("id") == sender_id for user in full_conversation.get("users") or [])
 
 
+def _conversation_belongs_to_account(full_conversation: Dict[str, Any], account_id: str) -> bool:
+    """Whether a conversation should be attributed to `account_id`.
+
+    Vitally links a conversation to *every* account of every participant, so
+    one thread started by Chadron State that CCs a Nebraska System person
+    shows up under both Chadron State and University of Nebraska-Lincoln -
+    and the same issue would then be alerted under both partners. When a
+    conversation touches several accounts, it's attributed only to the
+    account(s) of whoever *started* it (the earliest partner-authored
+    message's sender). If that sender can't be resolved (or has no account
+    info), fall back to the old behaviour and keep it."""
+    accounts = full_conversation.get("accounts") or []
+    if len(accounts) <= 1:
+        return True
+    starters = [
+        m
+        for m in full_conversation.get("messages") or []
+        if _is_partner_authored(m, full_conversation) and (m.get("timestamp") or m.get("createdAt"))
+    ]
+    if not starters:
+        return True
+    first = min(starters, key=lambda m: m.get("timestamp") or m.get("createdAt") or "")
+    sender_id = (first.get("from") or {}).get("id")
+    for user in full_conversation.get("users") or []:
+        if user.get("id") == sender_id:
+            sender_account_ids = {a.get("id") for a in user.get("accounts") or []}
+            return not sender_account_ids or account_id in sender_account_ids
+    return True
+
+
 def _collect_new_human_emails(
     vitally_client: VitallyClient,
     account_id: str,
@@ -306,6 +336,8 @@ def _collect_new_human_emails(
             break  # sorted desc - nothing further back can be newer than since_iso either
         conversation_id = summary["id"]
         full = vitally_client.get_conversation(conversation_id)
+        if not _conversation_belongs_to_account(full, account_id):
+            continue  # another partner's thread that just CCs someone from this account
         subject = full.get("subject") or "(no subject)"
         for message in full.get("messages") or []:
             if not _is_partner_authored(message, full):

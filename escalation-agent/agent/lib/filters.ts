@@ -23,7 +23,9 @@ export interface VitallyConversation {
   subject?: string | null;
   source?: string;
   updatedAt?: string;
-  users?: Array<{ id?: string; name?: string; email?: string }>;
+  users?: Array<{ id?: string; name?: string; email?: string; accounts?: Array<{ id?: string }> }>;
+  /** Every Vitally account the conversation is linked to (all participants' accounts). */
+  accounts?: Array<{ id?: string; name?: string }>;
   messages?: VitallyMessage[];
   [key: string]: unknown;
 }
