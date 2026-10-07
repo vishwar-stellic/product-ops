@@ -1073,7 +1073,7 @@ body {
 }
 
 .stats-assignee-label,
-.trend-stat-hit[data-assignee] {
+.trend-stat-hit {
   cursor: pointer;
 }
 

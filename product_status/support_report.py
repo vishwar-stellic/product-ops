@@ -109,6 +109,18 @@ landed within the SLA window, graded like the drill-down table; tickets still
 "Pending" (no reply yet, clock not run out) are excluded. Bars use
 the chart's right axis (0–100%); the existing refresh history lines stay on
 the left.
+
+## Daily Stellic engagement series
+`dailyEngagement` has one row per Pacific calendar day (from the start of the
+cohort window through today, today partial): `byColumn[col].stellicResponses`
+/ `ticketsResponded` plus the `tickets` behind them - how many customer-facing
+replies Stellic *sent* on Key User tickets that day, whether or not those
+tickets ever close. It's by reply date, not ticket-creation cohort, and covers
+every Key User ticket touched in the window (the cohort pull is derived from
+an `updated_at` search for this reason). A response = a human teammate's
+non-note part with a body (`_stellic_response_times`; bots excluded unless
+`ENGAGEMENT_COUNT_BOTS`). Reply times come from `conversation_parts`, cached
+per ticket by `updated_at` (`_collect_stellic_responses`).
 """
 
 import html
@@ -133,7 +145,7 @@ SUPPORT_REPORT_CACHE_KEY = "dashboard-support-report"
 # Bump whenever this module's output shape or underlying metric logic
 # changes - see `milestones_report.py:MILESTONES_REPORT_CACHE_VERSION` for
 # why (same cache has no schema of its own).
-SUPPORT_REPORT_CACHE_VERSION = 18
+SUPPORT_REPORT_CACHE_VERSION = 20
 
 # Separate raw key (not versioned/aged like the main report - see
 # `cache.read_raw`) for the trend chart's accumulating history log.
@@ -145,6 +157,20 @@ SUPPORT_REPORT_TREND_CHART_MAX_POINTS = 36
 
 # Pacific Monday weeks for the trend chart's SLA cohort bars (one point per week).
 SUPPORT_REPORT_WEEKLY_COHORT_WEEKS = 6
+
+# Weekly "Stellic responses" engagement series (see `_collect_stellic_responses`).
+# Per-ticket reply timestamps are cached here (raw, unversioned) keyed by the
+# ticket's `updated_at`, so only tickets that changed get re-fetched.
+ENGAGEMENT_CACHE_KEY = "dashboard-support-report-replies"
+# Count automated (bot / Fin) replies as Stellic responses? Default no: the
+# series is meant to show human engagement.
+ENGAGEMENT_COUNT_BOTS = False
+# Stop fetching new ticket parts once the whole refresh has been running this
+# long (cold-cache protection: `vercel.json` caps the function at 300s and the
+# Intercom searches alone can take ~200s, so the first refresh after deploy
+# may only get partway; later refreshes finish the job from the cache).
+ENGAGEMENT_DEADLINE_SECONDS = 235.0
+ENGAGEMENT_FETCH_CHUNK = 64
 
 INTERCOM_INBOX_PREFIX = "g60t55rg"
 
@@ -500,6 +526,171 @@ def _verify_replies(client: IntercomClient, conversations: List[Dict[str, Any]])
         return dict(pool.map(_fetch, conversations))
 
 
+def _stellic_response_times(conversation_parts: List[Dict[str, Any]]) -> List[float]:
+    """Epoch of every genuine Stellic response in `conversation_parts`: a
+    human teammate (author `admin`; `bot` too only if `ENGAGEMENT_COUNT_BOTS`),
+    not an internal note, with a non-empty body - the same bar as
+    `_first_customer_facing_reply_at`, but every part rather than the first."""
+    allowed = ("admin", "bot") if ENGAGEMENT_COUNT_BOTS else ("admin",)
+    times: List[float] = []
+    for part in conversation_parts or []:
+        author = part.get("author") or {}
+        if author.get("type") not in allowed:
+            continue
+        if part.get("part_type") == "note":
+            continue
+        if not (part.get("body") or "").strip():
+            continue
+        created_at = part.get("created_at")
+        if created_at:
+            times.append(float(created_at))
+    return sorted(times)
+
+
+def _collect_stellic_responses(
+    client: IntercomClient,
+    conversations: List[Dict[str, Any]],
+    since_ts: float,
+    now: float,
+    deadline: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Stellic response timestamps (>= `since_ts`) per Key User ticket, for
+    the weekly engagement series. Reply times only exist in
+    `conversation_parts` (one `get_conversation` call per ticket), so they're
+    cached per ticket keyed by its `updated_at`: a ticket is re-fetched only
+    when Intercom says it changed (any new reply bumps `updated_at`), which
+    makes every refresh after the first cheap. A deadline keeps a cold
+    cache from blowing the function's max duration - whatever isn't fetched
+    in time falls back to its previous cache entry (or is skipped) and is
+    picked up on the next refresh; `complete` is False meanwhile.
+
+    Returns {"byTicket": {conversation_id: [epoch, ...]}, "complete": bool,
+    "notFetched": int}."""
+    stored = cache.read_raw(ENGAGEMENT_CACHE_KEY) or {}
+    cached: Dict[str, Any] = stored.get("tickets") or {}
+
+    by_ticket: Dict[str, List[float]] = {}
+    fresh: Dict[str, Any] = {}
+    to_fetch: List[Dict[str, Any]] = []
+    for conversation in conversations:
+        cid = str(conversation["id"])
+        entry = cached.get(cid)
+        if entry and entry.get("updatedAt") == conversation.get("updated_at"):
+            fresh[cid] = entry
+            by_ticket[cid] = [t for t in entry.get("replies") or [] if t >= since_ts]
+        else:
+            to_fetch.append(conversation)
+
+    def _fetch(conversation: Dict[str, Any]) -> Optional[tuple]:
+        try:
+            full = client.get_conversation(conversation["id"])
+        except Exception as exc:  # one bad ticket must not sink the report
+            print(f"support_report: parts fetch failed for {conversation.get('id')}: {exc}", file=sys.stderr)
+            return None
+        parts = ((full.get("conversation_parts") or {}).get("conversation_parts")) or []
+        return str(conversation["id"]), conversation.get("updated_at"), _stellic_response_times(parts)
+
+    if deadline is None:
+        deadline = time.time() + ENGAGEMENT_DEADLINE_SECONDS
+    not_fetched = 0
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        for start in range(0, len(to_fetch), ENGAGEMENT_FETCH_CHUNK):
+            chunk = to_fetch[start : start + ENGAGEMENT_FETCH_CHUNK]
+            if time.time() > deadline:
+                for conversation in chunk + to_fetch[start + ENGAGEMENT_FETCH_CHUNK :]:
+                    cid = str(conversation["id"])
+                    stale = cached.get(cid)
+                    if stale:
+                        # Last known replies beat nothing; keep the old entry
+                        # (and its old updatedAt) so it refetches next time.
+                        fresh[cid] = stale
+                        by_ticket[cid] = [t for t in stale.get("replies") or [] if t >= since_ts]
+                    not_fetched += 1
+                break
+            for result in pool.map(_fetch, chunk):
+                if result is None:
+                    not_fetched += 1
+                    continue
+                cid, updated_at, times = result
+                replies = [t for t in times if t >= since_ts]
+                fresh[cid] = {"updatedAt": updated_at, "replies": replies}
+                by_ticket[cid] = replies
+
+    try:
+        cache.write_raw(ENGAGEMENT_CACHE_KEY, {"updatedAt": now, "tickets": fresh})
+    except Exception as exc:  # best-effort, like the trend history
+        print(f"support_report: could not save engagement cache: {exc}", file=sys.stderr)
+    return {"byTicket": by_ticket, "complete": not_fetched == 0, "notFetched": not_fetched}
+
+
+def _build_daily_engagement(
+    conversations: List[Dict[str, Any]],
+    engagement: Dict[str, Any],
+    since_ts: float,
+    now: float,
+) -> List[Dict[str, Any]]:
+    """One row per Pacific calendar day from `since_ts` through today: per
+    Total/squad, how many Stellic responses went out on Key User tickets that
+    day - by when the response was *sent*, regardless of when the ticket was
+    created or whether it ever closes - and on how many distinct tickets,
+    plus the tickets themselves for the dashboard's drill-down. Today is
+    partial (so far)."""
+    column_keys = ["TOTAL"] + [a["squad"] for a in AREAS]
+    by_id = {str(c["id"]): c for c in conversations}
+
+    # {pacific date: {conversation id: responses that day}}
+    per_day: Dict[Any, Dict[str, List[float]]] = {}
+    for cid, times in engagement["byTicket"].items():
+        for t in times:
+            if t < since_ts or t > now:
+                continue
+            day = datetime.fromtimestamp(t, _PACIFIC).date()
+            per_day.setdefault(day, {}).setdefault(cid, []).append(t)
+
+    rows: List[Dict[str, Any]] = []
+    day = datetime.fromtimestamp(since_ts, _PACIFIC).date()
+    today = datetime.fromtimestamp(now, _PACIFIC).date()
+    while day <= today:
+        day_start = datetime(day.year, day.month, day.day, tzinfo=_PACIFIC)
+        tickets: List[Dict[str, Any]] = []
+        for cid, times in (per_day.get(day) or {}).items():
+            c = by_id.get(cid)
+            if not c:
+                continue
+            tickets.append(
+                {
+                    "id": c.get("id"),
+                    "url": _conversation_url(c.get("id")),
+                    "description": _ticket_description(c),
+                    "squad": _squad_for(c) or "",
+                    "createdAt": _epoch_to_iso(c.get("created_at")),
+                    "priority": _priority(c) or "(blank)",
+                    "state": c.get("state"),
+                    "ticketState": _ticket_state(c),
+                    "responses": len(times),
+                    "lastResponseAt": _epoch_to_iso(max(times)),
+                }
+            )
+        by_column: Dict[str, Dict[str, int]] = {}
+        for col in column_keys:
+            scoped = tickets if col == "TOTAL" else [t for t in tickets if t["squad"] == col]
+            by_column[col] = {
+                "stellicResponses": sum(t["responses"] for t in scoped),
+                "ticketsResponded": len(scoped),
+            }
+        rows.append(
+            {
+                "date": day.isoformat(),
+                "dayStartAt": day_start.astimezone(timezone.utc).isoformat(),
+                "partial": day == today,
+                "byColumn": by_column,
+                "tickets": tickets,
+            }
+        )
+        day += timedelta(days=1)
+    return rows
+
+
 def _fr_breach(conversation: Dict[str, Any], reply_overrides: Dict[str, Optional[float]], now: float) -> bool:
     created = conversation.get("created_at")
     if not created:
@@ -777,7 +968,7 @@ def get_support_report_history() -> Dict[str, Any]:
 
 def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, Any]:
     client = client or IntercomClient()
-    now = time.time()
+    started = now = time.time()
     week_start = _current_week_start(now)
     cohort_since = _list_week_starts(now, SUPPORT_REPORT_WEEKLY_COHORT_WEEKS)[0]
 
@@ -802,9 +993,15 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
                 client.search_conversations({"field": "created_at", "operator": ">=", "value": int(week_start)})
             )
         )
-        cohort_future = pool.submit(
+        # Everything *updated* in the cohort window. Every conversation
+        # created in the window was also updated in it, so this is a strict
+        # superset of the "created >= cohort_since" pull it replaces (the
+        # cohort is derived from it below) - and it additionally catches
+        # older tickets that got a Stellic reply this window, which the
+        # weekly-engagement series needs. No extra search cost.
+        updated_future = pool.submit(
             lambda: list(
-                client.search_conversations({"field": "created_at", "operator": ">=", "value": int(cohort_since)})
+                client.search_conversations({"field": "updated_at", "operator": ">=", "value": int(cohort_since)})
             )
         )
         closed_future = pool.submit(
@@ -819,10 +1016,13 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
         open_raw = open_future.result()
         snoozed_raw = snoozed_future.result()
         created_raw = created_future.result()
-        cohort_raw = cohort_future.result()
+        updated_raw = updated_future.result()
         closed_raw = closed_future.result()
         company_map = company_map_future.result()
         assignee_map = assignee_map_future.result()
+
+    # Weekly cohort = tickets *created* in the window (any state today).
+    cohort_raw = [c for c in updated_raw if (c.get("created_at") or 0) >= cohort_since]
 
     # "Open" = open + snoozed, always (see module docstring); a ticket
     # marked Resolved at the ticket-state level is done even if Intercom
@@ -847,13 +1047,23 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
             needs_verification.append(c)
     # These two extra lookups are independent of each other, so run them
     # side by side rather than one after another.
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    ku_updated = [c for c in updated_raw if _is_key_user(c) and c.get("id")]
+    with ThreadPoolExecutor(max_workers=3) as pool:
         reply_future = pool.submit(_verify_replies, client, needs_verification)
         contact_name_future = pool.submit(
             _build_contact_name_map, client, open_register + created_raw + closed_raw
         )
+        engagement_future = pool.submit(
+            _collect_stellic_responses,
+            client,
+            ku_updated,
+            cohort_since,
+            now,
+            started + ENGAGEMENT_DEADLINE_SECONDS,
+        )
         reply_overrides = reply_future.result()
         contact_name_map = contact_name_future.result()
+        engagement = engagement_future.result()
 
     areas = [
         {
@@ -887,6 +1097,13 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
         "frTargetHours": FR_TARGET_HOURS,
         "resTargetDays": RES_TARGET_DAYS,
         "weeklyCohorts": _build_weekly_sla_cohorts(cohort_raw, reply_overrides, now),
+        "dailyEngagement": _build_daily_engagement(ku_updated, engagement, cohort_since, now),
+        "engagement": {
+            "complete": engagement["complete"],
+            "ticketsTracked": len(engagement["byTicket"]),
+            "ticketsNotYetFetched": engagement["notFetched"],
+            "countsBots": ENGAGEMENT_COUNT_BOTS,
+        },
         "areas": areas,
     }
     _record_history(report)

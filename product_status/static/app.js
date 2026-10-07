@@ -1605,6 +1605,24 @@ const SUPPORT_REPORT_DATE_FILTER_FIELDS = {
   updated: { fromKey: "updatedDateFrom", toKey: "updatedDateTo" },
 };
 
+// Date filters on the other (generic) Support Report tables - see
+// `initSupportReportFilterTable` - register themselves here at render time so
+// they reuse the exact same range picker; `listeners[field]` re-applies that
+// table's filters whenever its range changes.
+const supportReportDateFieldListeners = {};
+function supportReportRegisterDateField(field, onChange) {
+  const fromKey = `${field}From`;
+  const toKey = `${field}To`;
+  SUPPORT_REPORT_DATE_FILTER_FIELDS[field] = { fromKey, toKey };
+  supportReportFilters[fromKey] = "";
+  supportReportFilters[toKey] = "";
+  supportReportDateFieldListeners[field] = onChange;
+}
+function supportReportNotifyDateField(field) {
+  const listener = supportReportDateFieldListeners[field];
+  if (listener) listener();
+}
+
 function supportReportDateFilterRange(field) {
   const spec = SUPPORT_REPORT_DATE_FILTER_FIELDS[field];
   return { from: supportReportFilters[spec.fromKey], to: supportReportFilters[spec.toKey] };
@@ -1782,6 +1800,7 @@ function handleSupportReportDateMenuClick(event) {
     supportReportDateDraftAnchor = null;
     updateSupportReportDateTriggers();
     updateSupportReportDrilldownRows();
+    supportReportNotifyDateField(field);
     refreshSupportReportDateMenu();
     return;
   }
@@ -1808,6 +1827,7 @@ function handleSupportReportDateMenuClick(event) {
   supportReportDateDraftAnchor = null;
   updateSupportReportDateTriggers();
   updateSupportReportDrilldownRows();
+  supportReportNotifyDateField(field);
   closeSupportReportDateMenu();
 }
 
@@ -1918,6 +1938,15 @@ function handleSupportReportMultiSelectChange(checkbox) {
   if (!menu) return;
   const wrap = menu._multiSelectWrap || checkbox.closest(".multi-select-filter");
   if (!wrap) return;
+  // Generic-table multi-select (see `initSupportReportFilterTable`): it owns
+  // its own state through this callback instead of `supportReportFilters`.
+  if (wrap._sfOnChange) {
+    const values = [...menu.querySelectorAll('input[type="checkbox"]:checked')].map((input) => input.value);
+    const trigger = wrap.querySelector(".multi-select-trigger");
+    if (trigger) trigger.textContent = supportReportMultiSelectTriggerLabel(values);
+    wrap._sfOnChange(values);
+    return;
+  }
   const filterKey = wrap.dataset.filter;
   if (!filterKey || !Array.isArray(supportReportFilters[filterKey])) return;
   supportReportFilters[filterKey] = [...menu.querySelectorAll('input[type="checkbox"]:checked')].map(
@@ -2181,6 +2210,11 @@ const SUPPORT_REPORT_WEEKLY_BAR_SERIES = [
   { key: "weeklyPctFirstResponseMet", label: "% first response SLA met (weekly cohort)" },
 ];
 const SUPPORT_REPORT_WEEKLY_BAR_COLORS = ["#3ecf8e", "#6e8bff"];
+// Count series (Stellic responses sent per Pacific day on Key User tickets): a
+// line on the Open Tickets chart, sharing its left count axis. Not part of
+// SUPPORT_REPORT_WEEKLY_BAR_SERIES because it's a count, not a % of a cohort.
+const SUPPORT_REPORT_RESPONSES_SERIES = { key: "dailyStellicResponses", label: "Stellic responses sent" };
+const SUPPORT_REPORT_RESPONSES_COLOR = "#f2994a";
 // Matches support_report.py `SUPPORT_REPORT_TREND_CHART_MAX_POINTS` (history API returns this many).
 const SUPPORT_REPORT_TREND_CHART_MAX_POINTS = 36;
 
@@ -2201,20 +2235,248 @@ function formatSupportReportCohortWeek(isoString) {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
+// ---- Sortable / filterable tables ----
+// Generic enhancer for the Support Report's read-only ticket tables (the SLA
+// details panel and the Stats tab's ticket lists - anything marked
+// `table.sf-table`): clicking a header cycles ascending -> descending ->
+// original order, and a filter row under the headers narrows rows by column
+// using the same controls as the Open Tickets drill-down: a multi-select
+// checkbox dropdown for ordinary columns, the date-range picker for date
+// columns, and a "contains" text box for the ticket-link column. Works on the
+// rendered cell text, so each table just needs to render plain rows. (The main
+// drill-down table has its own filter state - see `renderSupportReportDrilldown`.)
+const SF_RANK = { Urgent: 0, High: 1, Medium: 2, Low: 3, "(blank)": 4 };
+const SF_BLANKS = new Set(["", "—", "-", "none", "n/a"]);
+
+// Comparable value for one cell's text: number (also "12%", "5.3 (so far)"),
+// timestamp ("Oct 5, 2026[, 3:45 PM]"), priority rank, else lowercased text;
+// null for blank-ish cells (always sorted to the bottom).
+function sfSortValue(text) {
+  const t = (text || "").trim();
+  if (SF_BLANKS.has(t.toLowerCase()) || /^not closed/i.test(t)) return null;
+  if (Object.prototype.hasOwnProperty.call(SF_RANK, t)) return { kind: "rank", value: SF_RANK[t] };
+  if (/^-?\d+(\.\d+)?%?(\s*\(.*\))?$/.test(t)) return { kind: "number", value: parseFloat(t) };
+  if (/^[A-Za-z]{3,9}\.? \d{1,2},? \d{4}/.test(t)) {
+    const ms = Date.parse(t);
+    if (!Number.isNaN(ms)) return { kind: "number", value: ms };
+  }
+  return { kind: "text", value: t.toLowerCase() };
+}
+
+const SF_DATE_RE = /^[A-Za-z]{3,9}\.? \d{1,2},? \d{4}/;
+let sfTableCounter = 0;
+
+function initSupportReportFilterTable(table) {
+  if (table.dataset.sfReady) return;
+  const thead = table.tHead;
+  const tbody = table.tBodies[0];
+  if (!thead || !tbody || !thead.rows.length) return;
+  const headers = [...thead.rows[0].cells];
+  const rows = [...tbody.rows].filter((r) => r.cells.length === headers.length);
+  if (!rows.length) return;
+  table.dataset.sfReady = "1";
+  const tableId = ++sfTableCounter;
+  rows.forEach((r, i) => {
+    r.dataset.sfIndex = String(i);
+  });
+
+  const cellText = (row, c) => (row.cells[c].textContent || "").replace(/\s+/g, " ").trim();
+  const sortValues = rows.map((r) => headers.map((_, c) => sfSortValue(cellText(r, c))));
+  // Per column: "text" (ticket link column -> contains), "date" (range picker,
+  // same as Open Tickets) or "multi" (checkbox dropdown, same as Open Tickets).
+  const kinds = headers.map((_, c) => {
+    if (rows.some((r) => r.cells[c].querySelector("a"))) return "text";
+    const texts = rows.map((r) => cellText(r, c)).filter((t) => sfSortValue(t) !== null);
+    if (texts.length && texts.every((t) => SF_DATE_RE.test(t) && !Number.isNaN(Date.parse(t)))) return "date";
+    return "multi";
+  });
+  const state = {
+    col: null,
+    dir: "asc",
+    text: headers.map(() => ""),
+    multi: headers.map(() => []),
+    dateField: headers.map(() => null),
+  };
+
+  const emptyRow = document.createElement("tr");
+  emptyRow.hidden = true;
+  emptyRow.innerHTML = `<td colspan="${headers.length}"><p class="empty-note">No rows match these filters.</p></td>`;
+  tbody.appendChild(emptyRow);
+
+  const rowMatches = (row) =>
+    headers.every((_, c) => {
+      const text = cellText(row, c);
+      if (kinds[c] === "text") return !state.text[c] || text.toLowerCase().includes(state.text[c].toLowerCase());
+      if (kinds[c] === "multi") return !state.multi[c].length || state.multi[c].includes(text);
+      const { from, to } = supportReportDateFilterRange(state.dateField[c]);
+      if (!from && !to) return true;
+      const ms = Date.parse(text);
+      return Number.isNaN(ms) ? false : supportReportTicketInDateFilter(new Date(ms).toISOString(), from, to);
+    });
+
+  const apply = () => {
+    let ordered = rows.map((row, i) => ({ row, vals: sortValues[i] }));
+    if (state.col !== null) {
+      const sign = state.dir === "desc" ? -1 : 1;
+      const c = state.col;
+      const allNumeric = ordered.every(({ vals }) => !vals[c] || vals[c].kind === "number" || vals[c].kind === "rank");
+      ordered.sort((a, b) => {
+        const va = a.vals[c];
+        const vb = b.vals[c];
+        if (!va && !vb) return 0;
+        if (!va) return 1; // blanks sink either direction
+        if (!vb) return -1;
+        if (allNumeric) return sign * (va.value - vb.value);
+        return sign * String(va.value).localeCompare(String(vb.value), undefined, { numeric: true });
+      });
+    }
+    let visible = 0;
+    ordered.forEach(({ row }) => {
+      const show = rowMatches(row);
+      row.hidden = !show;
+      if (show) visible += 1;
+      tbody.insertBefore(row, emptyRow);
+    });
+    emptyRow.hidden = visible > 0;
+    headers.forEach((th, c) => {
+      const ind = th.querySelector(".sort-indicator");
+      if (ind) ind.textContent = state.col === c ? (state.dir === "asc" ? " ▲" : " ▼") : "";
+    });
+  };
+
+  const filterRow = thead.insertRow();
+  filterRow.className = "filter-row";
+  headers.forEach((th, c) => {
+    th.classList.add("sortable");
+    th.title = "Click to sort";
+    const indicator = document.createElement("span");
+    indicator.className = "sort-indicator";
+    th.appendChild(indicator);
+    th.addEventListener("click", () => {
+      if (state.col !== c) {
+        state.col = c;
+        state.dir = "asc";
+      } else if (state.dir === "asc") {
+        state.dir = "desc";
+      } else {
+        state.col = null;
+        state.dir = "asc";
+      }
+      apply();
+    });
+
+    const cell = document.createElement("th");
+    if (kinds[c] === "text") {
+      const input = document.createElement("input");
+      input.type = "text";
+      input.placeholder = "Filter…";
+      input.addEventListener("input", () => {
+        state.text[c] = input.value.trim();
+        apply();
+      });
+      cell.appendChild(input);
+    } else if (kinds[c] === "date") {
+      const field = `sf${tableId}c${c}`;
+      state.dateField[c] = field;
+      supportReportRegisterDateField(field, apply);
+      cell.innerHTML = renderSupportReportDatePicker(field);
+    } else {
+      const options = [...new Set(rows.map((r) => cellText(r, c)))].sort((a, b) =>
+        a.localeCompare(b, undefined, { numeric: true })
+      );
+      cell.innerHTML = renderSupportReportMultiSelect(`sf${tableId}c${c}`, options, []);
+      cell.querySelector(".multi-select-filter")._sfOnChange = (values) => {
+        state.multi[c] = values;
+        apply();
+      };
+    }
+    filterRow.appendChild(cell);
+  });
+}
+
+function enhanceSupportReportTables() {
+  if (!els.supportReportContainer) return;
+  els.supportReportContainer.querySelectorAll("table.sf-table").forEach(initSupportReportFilterTable);
+}
+
 // ---- Debug panel (filled when a weekly cohort bar is clicked) ----
 // Shows the counts and the exact tickets (with links) behind one bar, using
 // the per-ticket detail the backend ships in `weeklyCohorts[].tickets` (see
 // support_report.py `_cohort_ticket_debug`).
-let supportReportDebugSelection = null; // { weekStartAt, seriesKey, column }
+let supportReportDebugSelection = null; // { weekStartAt (or dayStartAt, for responses), seriesKey, column }
 
-function renderSupportReportDebug() {
+// Open Tickets tab: the tickets Stellic responded to on one Pacific day (from
+// `dailyEngagement`, see support_report.py `_build_daily_engagement`).
+function renderSupportReportResponsesDebug(sel) {
+  const day = ((supportReportData && supportReportData.dailyEngagement) || []).find(
+    (d) => d.dayStartAt === sel.weekStartAt
+  );
+  if (!day) return `<div class="support-debug"></div>`;
+  const columnLabel = supportReportTrendColumnLabel(sel.column);
+  const reported = (day.byColumn && day.byColumn[sel.column]) || {};
+  const respTickets = (day.tickets || []).filter((t) => sel.column === "TOTAL" || t.squad === sel.column);
+  const total = respTickets.reduce((sum, t) => sum + t.responses, 0);
+  const matches = reported.stellicResponses === total && reported.ticketsResponded === respTickets.length;
+  const link = (t) => `<a href="${escapeHtml(t.url)}" target="_blank" rel="noopener">${escapeHtml(t.description)}</a>`;
+  const sorted = [...respTickets].sort((a, b) => b.responses - a.responses);
+  const rowsHtml = sorted
+    .map(
+      (t) => `<tr>
+          <td>${link(t)}</td>
+          <td>${formatDateOnly(t.createdAt)}</td>
+          <td>${escapeHtml(t.priority)}</td>
+          <td>${escapeHtml(supportReportConversationStatusLabel(t.state))}</td>
+          <td>${escapeHtml(t.ticketState || "—")}</td>
+          <td class="num">${t.responses}</td>
+          <td>${t.lastResponseAt ? formatDateTime(t.lastResponseAt) : "—"}</td>
+        </tr>`
+    )
+    .join("");
+  return `
+    <div class="squad-block support-debug">
+      <h3 class="block-title">${escapeHtml(columnLabel)}: ${escapeHtml(SUPPORT_REPORT_RESPONSES_SERIES.label)} · ${escapeHtml(
+    formatSupportReportCohortWeek(day.dayStartAt)
+  )}${day.partial ? " (so far today)" : ""}</h3>
+      <ul class="debug-stats">
+        <li>Stellic responses sent ${day.partial ? "so far today" : "that day"}: <strong>${total}</strong></li>
+        <li>Key User tickets responded to: <strong>${respTickets.length}</strong></li>
+        <li>Average responses per ticket: <strong>${respTickets.length ? (total / respTickets.length).toFixed(1) : "—"}</strong></li>
+        <li>Counted: customer-facing replies by a Stellic teammate (internal notes${
+          supportReportData.engagement && supportReportData.engagement.countsBots ? "" : " and bot/Fin replies"
+        } excluded), by the Pacific day they were sent — regardless of when the ticket was created or whether it closed.</li>
+      </ul>
+      <p class="debug-reconcile">${escapeHtml(
+        `Chart reported ${reported.stellicResponses ?? "—"} responses on ${reported.ticketsResponded ?? "—"} tickets — ${
+          matches ? "✓ matches the listed tickets" : "⚠ does NOT match the listed tickets"
+        }`
+      )}</p>
+      <table class="data-table filter-table sf-table">
+        <thead><tr><th>Ticket</th><th>Created</th><th>Priority</th><th class="col-compact">Conversation status</th><th>Ticket status</th>
+          <th>Stellic responses that day</th><th>Last response</th></tr></thead>
+        <tbody>${rowsHtml || '<tr><td colspan="7"><p class="empty-note">No responses.</p></td></tr>'}</tbody>
+      </table>
+    </div>`;
+}
+
+function renderSupportReportDebug(options = {}) {
+  // `responsesOnly` (Open Tickets tab): only the Stellic-responses dots open a
+  // panel there, so render an empty hook (for `selectSupportReportDebug`)
+  // until one is clicked.
+  const sel0 = supportReportDebugSelection;
+  if (options.responsesOnly && !(sel0 && sel0.seriesKey === SUPPORT_REPORT_RESPONSES_SERIES.key)) {
+    return `<div class="support-debug"></div>`;
+  }
   const placeholder = `
     <div class="squad-block support-debug">
-      <h3 class="block-title">Debug: SLA calculation</h3>
+      <h3 class="block-title">SLA details</h3>
       <p class="empty-note">Click a bar in the chart above to list the counts and tickets used to calculate it.</p>
     </div>`;
   const sel = supportReportDebugSelection;
   if (!sel || !supportReportData) return placeholder;
+  // A responses selection made on the Open Tickets tab has no bar to match here.
+  if (sel.seriesKey === SUPPORT_REPORT_RESPONSES_SERIES.key) {
+    return options.responsesOnly ? renderSupportReportResponsesDebug(sel) : placeholder;
+  }
   const week = (supportReportData.weeklyCohorts || []).find((w) => w.weekStartAt === sel.weekStartAt);
   if (!week) return placeholder;
 
@@ -2338,7 +2600,7 @@ function renderSupportReportDebug() {
   )}</h3>
       <ul class="debug-stats">${statsHtml}</ul>
       <p class="debug-reconcile">${escapeHtml(reconcileHtml)}</p>
-      <table class="data-table filter-table">
+      <table class="data-table filter-table sf-table">
         <thead><tr>${headHtml}</tr></thead>
         <tbody>${rowsHtml || '<tr><td colspan="10"><p class="empty-note">No tickets in this cohort.</p></td></tr>'}</tbody>
       </table>
@@ -2349,9 +2611,32 @@ function selectSupportReportDebug(selection) {
   supportReportDebugSelection = selection;
   const el = els.supportReportContainer && els.supportReportContainer.querySelector(".support-debug");
   if (!el) return;
-  el.outerHTML = renderSupportReportDebug();
+  el.outerHTML = renderSupportReportDebug({ responsesOnly: supportReportSubtab !== "performance" });
+  enhanceSupportReportTables();
   const fresh = els.supportReportContainer.querySelector(".support-debug");
   if (fresh) fresh.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+// "YYYY-MM-DD" of an ISO timestamp in Pacific time (matches `dailyEngagement[].date`).
+function supportReportPacificDate(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(d);
+}
+
+function supportReportResponsesTooltip({ columnLabel, dayStartAt, partial, responses, tickets }) {
+  return [
+    columnLabel,
+    `${formatSupportReportCohortWeek(dayStartAt)}${partial ? " (so far today)" : ""}`,
+    `Stellic responses sent: ${responses}`,
+    `Across ${tickets} Key User ticket${tickets === 1 ? "" : "s"}`,
+    "Click for the tickets",
+  ].join("\n");
 }
 
 function supportReportWeeklyBarTooltip({ columnLabel, weekStartAt, seriesLabel, total, met, pct, pending, potential }) {
@@ -2375,7 +2660,7 @@ function supportReportWeeklyBarTooltip({ columnLabel, weekStartAt, seriesLabel, 
 // pixels - avoids the classic responsive-SVG trap where a fixed viewBox
 // scaled to fill a flexible-width container via `preserveAspectRatio="none"`
 // stretches circles into ellipses and warps text.
-function renderSupportReportTrendSVG(points, width, column, columnLabel, hiddenSeriesKeys, weeklyCohorts) {
+function renderSupportReportTrendSVG(points, width, column, columnLabel, hiddenSeriesKeys, weeklyCohorts, engagementDays) {
   const height = 220;
   const paddingLeft = 44;
   const paddingRight = 44;
@@ -2417,13 +2702,37 @@ function renderSupportReportTrendSVG(points, width, column, columnLabel, hiddenS
     weeklyCohorts &&
     weeklyCohorts.length &&
     SUPPORT_REPORT_WEEKLY_BAR_SERIES.some((s) => !hiddenSeriesKeys || !hiddenSeriesKeys.has(s.key));
-  if (series.length === 0 && !showBars) {
+  // Stellic responses: counts, so they share the left axis with the other
+  // count lines. One point per refresh snapshot, at the snapshot's own x - the
+  // value is the number of responses sent on that snapshot's Pacific calendar
+  // day (final figure from the latest report, so it isn't cut off at the time
+  // of day the snapshot was taken). Days with no snapshot get no point, so the
+  // line lines up with, and spans the same range as, the other series.
+  const showResponses =
+    !!(engagementDays && engagementDays.length) &&
+    (!hiddenSeriesKeys || !hiddenSeriesKeys.has(SUPPORT_REPORT_RESPONSES_SERIES.key));
+  const responseDays = showResponses
+    ? points
+        .map((p, i) => {
+          const d = engagementDays.find((day) => day.date === supportReportPacificDate(p.at));
+          if (!d) return null;
+          const col = (d.byColumn && d.byColumn[column]) || {};
+          return {
+            d,
+            x: xFor(i),
+            v: typeof col.stellicResponses === "number" ? col.stellicResponses : null,
+            tickets: col.ticketsResponded || 0,
+          };
+        })
+        .filter((p) => p && p.v != null)
+    : [];
+  if (series.length === 0 && !showBars && !responseDays.length) {
     return `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" class="trend-svg">
       <text x="${width / 2}" y="${height / 2}" text-anchor="middle" class="trend-axis-label">Every series is hidden — click a legend item to show it again.</text>
     </svg>`;
   }
 
-  const maxValue = series.length ? Math.max(1, ...series.flatMap((s) => s.values)) : 1;
+  const maxValue = Math.max(1, ...series.flatMap((s) => s.values), ...responseDays.map((p) => p.v));
   const yFor = (v) => paddingTop + plotHeight - (v / maxValue) * plotHeight;
   const yPct = (pct) => paddingTop + plotHeight - (pct / 100) * plotHeight;
 
@@ -2562,7 +2871,37 @@ function renderSupportReportTrendSVG(points, width, column, columnLabel, hiddenS
     })
     .join("");
 
-  return `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" class="trend-svg">${gridLines}${rightAxis || ""}${barsSvg}${seriesSvg}${xLabels}</svg>`;
+  let responsesSvg = "";
+  if (responseDays.length) {
+    const color = SUPPORT_REPORT_RESPONSES_COLOR;
+    const path = responseDays
+      .map((p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(1)},${yFor(p.v).toFixed(1)}`)
+      .join(" ");
+    const dots = responseDays
+      .map((p) => {
+        const cx = p.x.toFixed(1);
+        const cy = yFor(p.v).toFixed(1);
+        const tip = escapeHtml(
+          supportReportResponsesTooltip({
+            columnLabel,
+            dayStartAt: p.d.dayStartAt,
+            partial: !!p.d.partial,
+            responses: p.v,
+            tickets: p.tickets,
+          })
+        );
+        return (
+          `<circle cx="${cx}" cy="${cy}" r="3" fill="${color}" style="pointer-events:none"></circle>` +
+          `<circle class="trend-bar-hit" cx="${cx}" cy="${cy}" r="8" fill="transparent" data-tooltip="${tip}" data-week="${escapeHtml(
+            p.d.dayStartAt
+          )}" data-series="${escapeHtml(SUPPORT_REPORT_RESPONSES_SERIES.key)}" data-column="${escapeHtml(column)}" style="cursor:pointer"></circle>`
+        );
+      })
+      .join("");
+    responsesSvg = `<path d="${path}" fill="none" stroke="${color}" stroke-width="2" style="pointer-events:none" />${dots}`;
+  }
+
+  return `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" class="trend-svg">${gridLines}${rightAxis || ""}${barsSvg}${seriesSvg}${responsesSvg}${xLabels}</svg>`;
 }
 
 let trendTooltipEl = null;
@@ -2800,8 +3139,15 @@ function supportReportStatsBuckets(column) {
   const firstIndex = months[0].index;
   const lastIndex = months[months.length - 1].index;
   const buckets = [
-    { label: "Older", tooltipLabel: `Created before ${months[0].label}`, counts: {} },
-    ...months.map((m) => ({ label: m.label, tooltipLabel: `Created in ${m.label}`, counts: {}, index: m.index })),
+    { label: "Older", tooltipLabel: `Created before ${months[0].label}`, counts: {}, monthKey: "older", tickets: [] },
+    ...months.map((m) => ({
+      label: m.label,
+      tooltipLabel: `Created in ${m.label}`,
+      counts: {},
+      index: m.index,
+      monthKey: String(m.index),
+      tickets: [],
+    })),
   ];
 
   tickets.forEach((t) => {
@@ -2812,6 +3158,7 @@ function supportReportStatsBuckets(column) {
       idx < firstIndex ? buckets[0] : buckets[1 + Math.min(idx, lastIndex) - firstIndex];
     const priority = SUPPORT_REPORT_PRIORITY_ORDER.includes(t.priority) ? t.priority : "(blank)";
     bucket.counts[priority] = (bucket.counts[priority] || 0) + 1;
+    bucket.tickets.push(t);
   });
   return { buckets, ticketCount: tickets.length };
 }
@@ -2852,27 +3199,48 @@ function supportReportStatsAssigneeBuckets() {
 // bar in the by-assignee view; click again to collapse).
 let supportReportStatsSelectedAssignee = null;
 
-function supportReportStatsAssigneeTickets(name) {
-  const areas = (supportReportData && supportReportData.areas) || [];
-  const hidden = supportReportTrendHiddenSeries;
-  return areas
-    .flatMap((a) => (a.metrics && a.metrics.openKUTickets) || [])
-    .filter((t) => supportReportFilterLabel(t.assignee) === name)
-    .filter((t) => {
-      const priority = SUPPORT_REPORT_PRIORITY_ORDER.includes(t.priority) ? t.priority : "(blank)";
-      return !hidden.has(supportReportStatsHiddenKey(priority));
-    })
-    .sort(
-      (a, b) =>
-        SUPPORT_REPORT_PRIORITY_ORDER.indexOf(a.priority) - SUPPORT_REPORT_PRIORITY_ORDER.indexOf(b.priority) ||
-        new Date(a.createdAt) - new Date(b.createdAt)
-    );
+// Month whose ticket list is expanded under the chart in the by-month view
+// (click a bar or its label; click again to collapse). `monthKey` as on
+// `supportReportStatsBuckets` buckets ("older" or a month index).
+let supportReportStatsSelectedMonth = null;
+
+function supportReportStatsPriorityVisible(t) {
+  const priority = SUPPORT_REPORT_PRIORITY_ORDER.includes(t.priority) ? t.priority : "(blank)";
+  return !supportReportTrendHiddenSeries.has(supportReportStatsHiddenKey(priority));
 }
 
-function renderSupportReportStatsDetail() {
-  const name = supportReportStatsSelectedAssignee;
-  if (!name || supportReportStatsView !== SUPPORT_REPORT_STATS_ASSIGNEE) return "";
-  const tickets = supportReportStatsAssigneeTickets(name);
+function supportReportStatsSortTickets(tickets) {
+  return tickets.sort(
+    (a, b) =>
+      SUPPORT_REPORT_PRIORITY_ORDER.indexOf(a.priority) - SUPPORT_REPORT_PRIORITY_ORDER.indexOf(b.priority) ||
+      new Date(a.createdAt) - new Date(b.createdAt)
+  );
+}
+
+function supportReportStatsAssigneeTickets(name) {
+  const areas = (supportReportData && supportReportData.areas) || [];
+  return supportReportStatsSortTickets(
+    areas
+      .flatMap((a) => (a.metrics && a.metrics.openKUTickets) || [])
+      .filter((t) => supportReportFilterLabel(t.assignee) === name)
+      .filter(supportReportStatsPriorityVisible)
+  );
+}
+
+// The selected month's bucket for the current Total / squad radio, plus its
+// tickets (respecting priorities hidden via the legend).
+function supportReportStatsMonthSelection() {
+  const key = supportReportStatsSelectedMonth;
+  if (!key) return null;
+  const bucket = supportReportStatsBuckets(supportReportTrendColumn).buckets.find((b) => b.monthKey === key);
+  if (!bucket) return null;
+  return { bucket, tickets: supportReportStatsSortTickets(bucket.tickets.filter(supportReportStatsPriorityVisible)) };
+}
+
+// Ticket table shared by the by-assignee and by-month detail blocks. Columns
+// are sortable/filterable via `enhanceSupportReportTables` (the `sf-table` class).
+function renderSupportReportStatsTicketsBlock(title, tickets, emptyMessage, showAssignee) {
+  const colCount = showAssignee ? 10 : 9;
   const rows = tickets.length
     ? tickets
         .map(
@@ -2886,25 +3254,60 @@ function renderSupportReportStatsDetail() {
           <td>${escapeHtml(supportReportFilterLabel(t.ticketState))}</td>
           <td><span class="status-badge ${slaStatusClass(t.firstResponseSLA)}">${escapeHtml(t.firstResponseSLA)}</span></td>
           <td>${escapeHtml(t.partnerName)}</td>
-          <td>${escapeHtml(t.userName)}</td>
+          <td>${escapeHtml(t.userName)}</td>${
+            showAssignee ? `\n          <td>${escapeHtml(supportReportFilterLabel(t.assignee))}</td>` : ""
+          }
         </tr>`
         )
         .join("")
-    : '<tr><td colspan="9"><p class="empty-note">No tickets for this assignee with the priorities currently shown.</p></td></tr>';
+    : `<tr><td colspan="${colCount}"><p class="empty-note">${escapeHtml(emptyMessage)}</p></td></tr>`;
   return `
     <div class="squad-block support-stats-detail">
-      <h3 class="block-title">${escapeHtml(name)} <span class="label-badge">${tickets.length} open ticket${
+      <h3 class="block-title">${escapeHtml(title)} <span class="label-badge">${tickets.length} open ticket${
     tickets.length === 1 ? "" : "s"
   }</span></h3>
-      <table class="data-table filter-table">
+      <table class="data-table filter-table sf-table">
         <thead><tr>
           <th>Ticket</th><th>Squad</th><th>Created</th><th>Priority</th>
           <th class="col-compact">Conversation status</th><th>Ticket status</th>
-          <th class="col-compact">First response SLA</th><th>Partner</th><th>User</th>
+          <th class="col-compact">First response SLA</th><th>Partner</th><th>User</th>${
+            showAssignee ? "<th>Assignee</th>" : ""
+          }
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>`;
+}
+
+function renderSupportReportStatsDetail() {
+  if (supportReportStatsView === SUPPORT_REPORT_STATS_ASSIGNEE) {
+    const name = supportReportStatsSelectedAssignee;
+    if (!name) return "";
+    return renderSupportReportStatsTicketsBlock(
+      name,
+      supportReportStatsAssigneeTickets(name),
+      "No tickets for this assignee with the priorities currently shown.",
+      false
+    );
+  }
+  const selection = supportReportStatsMonthSelection();
+  if (!selection) return "";
+  return renderSupportReportStatsTicketsBlock(
+    `${supportReportTrendColumnLabel(supportReportTrendColumn)}: ${selection.bucket.tooltipLabel}`,
+    selection.tickets,
+    "No open tickets from this month with the priorities currently shown.",
+    true
+  );
+}
+
+function selectSupportReportStatsMonth(key) {
+  supportReportStatsSelectedMonth = supportReportStatsSelectedMonth === key ? null : key;
+  if (!supportReportData) return;
+  renderSupportReport(supportReportData);
+  if (supportReportStatsSelectedMonth) {
+    const detail = els.supportReportContainer.querySelector(".support-stats-detail");
+    if (detail) detail.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
 }
 
 function selectSupportReportStatsAssignee(name) {
@@ -2988,9 +3391,9 @@ function renderSupportReportStatsSVG(buckets, width, columnLabel, hiddenSeriesKe
             label +
             `<rect class="trend-stat-hit" x="${x.toFixed(1)}" y="${yTop.toFixed(1)}" width="${barWidth.toFixed(
               1
-            )}" height="${h.toFixed(1)}" fill="transparent" data-tooltip="${tip}"${
+            )}" height="${h.toFixed(1)}" fill="transparent" style="cursor:pointer" data-tooltip="${tip}"${
               b.assignee ? ` data-assignee="${escapeHtml(b.assignee)}"` : ""
-            }></rect>`
+            }${b.monthKey ? ` data-month="${escapeHtml(b.monthKey)}"` : ""}></rect>`
           );
         })
         .join("");
@@ -2999,7 +3402,10 @@ function renderSupportReportStatsSVG(buckets, width, columnLabel, hiddenSeriesKe
             1
           )}" class="trend-axis-label" text-anchor="middle">${total}</text>`
         : "";
-      const selectedClass = b.assignee && b.assignee === options.selected ? " stats-assignee-selected" : "";
+      const selectedClass =
+        (b.assignee && b.assignee === options.selected) || (b.monthKey && b.monthKey === options.selectedMonth)
+          ? " stats-assignee-selected"
+          : "";
       const axisLabel = rotate
         ? `<text x="${cx.toFixed(1)}" y="${(paddingTop + plotHeight + 14).toFixed(
             1
@@ -3010,10 +3416,33 @@ function renderSupportReportStatsSVG(buckets, width, columnLabel, hiddenSeriesKe
             plotHeight +
             14
           ).toFixed(1)})">${escapeHtml(truncate(b.label, 18))}</text>`
-        : `<text x="${cx.toFixed(1)}" y="${height - 6}" class="trend-axis-label" text-anchor="middle">${escapeHtml(
+        : `<text x="${cx.toFixed(1)}" y="${height - 6}" class="trend-axis-label${
+            b.monthKey ? " stats-assignee-label" : ""
+          }${selectedClass}"${b.monthKey ? ` data-month="${escapeHtml(b.monthKey)}"` : ""} text-anchor="middle">${escapeHtml(
             b.label
           )}</text>`;
-      return segments + totalLabel + axisLabel;
+      // Full-height click target for the whole bar column (segments for tiny
+      // counts are only a pixel or two tall), under the per-priority hits so
+      // their tooltips still win on hover. Opens the ticket list below.
+      const columnTip = escapeHtml(
+        [
+          columnLabel,
+          b.tooltipLabel,
+          ...priorities.filter((p) => b.counts[p]).map((p) => `${p}: ${b.counts[p]}`),
+          `Total: ${total} open ticket${total === 1 ? "" : "s"}`,
+          "Click to list these tickets",
+        ].join("\n")
+      );
+      const columnHit =
+        b.assignee || b.monthKey
+          ? `<rect class="trend-stat-hit" x="${(cx - Math.max(barWidth, slot * 0.8) / 2).toFixed(1)}" y="${paddingTop}" width="${Math.max(
+              barWidth,
+              slot * 0.8
+            ).toFixed(1)}" height="${plotHeight.toFixed(1)}" fill="transparent" style="cursor:pointer" data-tooltip="${columnTip}"${
+              b.assignee ? ` data-assignee="${escapeHtml(b.assignee)}"` : ""
+            }${b.monthKey ? ` data-month="${escapeHtml(b.monthKey)}"` : ""}></rect>`
+          : "";
+      return columnHit + segments + totalLabel + axisLabel;
     })
     .join("");
 
@@ -3046,7 +3475,8 @@ function mountSupportReportTrendChart() {
             supportReportStatsBuckets(supportReportTrendColumn).buckets,
             width,
             supportReportTrendColumnLabel(supportReportTrendColumn),
-            supportReportTrendHiddenSeries
+            supportReportTrendHiddenSeries,
+            { selectedMonth: supportReportStatsSelectedMonth }
           )
       : performance
       ? renderSupportReportPerformanceSVG(
@@ -3063,7 +3493,8 @@ function mountSupportReportTrendChart() {
           supportReportTrendColumn,
           supportReportTrendColumnLabel(supportReportTrendColumn),
           supportReportTrendHiddenSeries,
-          null
+          null,
+          (supportReportData && supportReportData.dailyEngagement) || []
         );
     attachTrendTooltipHandlers(wrap);
   };
@@ -3126,6 +3557,14 @@ function renderSupportReportTrendLegend() {
       SUPPORT_REPORT_WEEKLY_BAR_COLORS[idx]
     }"></span>${escapeHtml(row.label)}</span>`;
   }).join("");
+  const responsesHidden = supportReportTrendHiddenSeries.has(SUPPORT_REPORT_RESPONSES_SERIES.key);
+  const responsesLegend = `<span class="trend-legend-item${
+    responsesHidden ? " trend-legend-item-hidden" : ""
+  }" data-series-key="${escapeHtml(SUPPORT_REPORT_RESPONSES_SERIES.key)}" title="Click to ${
+    responsesHidden ? "show" : "hide"
+  } this line" role="button"><span class="trend-legend-swatch" style="background:${
+    SUPPORT_REPORT_RESPONSES_COLOR
+  }"></span>${escapeHtml(SUPPORT_REPORT_RESPONSES_SERIES.label)}</span>`;
   const priorityLegend = SUPPORT_REPORT_PRIORITY_ORDER.map((p) => {
     const hidden = supportReportTrendHiddenSeries.has(supportReportStatsHiddenKey(p));
     return `<span class="trend-legend-item${
@@ -3137,7 +3576,7 @@ function renderSupportReportTrendLegend() {
     }"></span>${escapeHtml(p)}</span>`;
   }).join("");
   if (supportReportSubtab === "stats") return priorityLegend;
-  return supportReportSubtab === "performance" ? barLegend : lineLegend;
+  return supportReportSubtab === "performance" ? barLegend : lineLegend + responsesLegend;
 }
 
 function renderSupportReportColumnPicker() {
@@ -3213,7 +3652,7 @@ function renderSupportReportStatsChart() {
         stacked by priority. The number on top of each bar is its total. Click a name or a bar to list that person's tickets below; click a legend item to hide a priority.`
     : `Currently open Key User tickets (Intercom state open or snoozed), grouped by the month they were created
         (last ${SUPPORT_REPORT_STATS_MONTHS} months; everything earlier is in "Older") and stacked by priority.
-        The number on top of each bar is its total. Click a legend item to hide a priority.`;
+        The number on top of each bar is its total. Click a month's bar or label to list that month's tickets below; click a legend item to hide a priority.`;
   return `
     <div class="squad-block support-trend-chart">
       <h3 class="block-title">${byAssignee ? "Open tickets by assignee" : "Open tickets by created month"} <span class="label-badge">${ticketCount} open ticket${
@@ -3263,6 +3702,11 @@ function renderSupportReportTrendChart() {
       <div class="trend-legend">${legend}</div>
       <p class="empty-note trend-cohort-note">
         Last ${SUPPORT_REPORT_TREND_CHART_MAX_POINTS} daily refresh snapshots. Weekly SLA bars are on the Performance tab.
+        The orange line has one point per snapshot, showing the number of customer-facing replies Stellic sent on Key User tickets during that snapshot's Pacific calendar day (the latest day is partial) — counted by the day the reply was sent, on any Key User ticket whether or not it closed (human teammates only; internal notes and bot replies excluded). Click a dot to see which tickets were responded to.${
+          supportReportData && supportReportData.engagement && supportReportData.engagement.complete === false
+            ? ` <strong>Still filling in:</strong> ${supportReportData.engagement.ticketsNotYetFetched} ticket(s) haven't been scanned yet, so recent counts may be low until the next refresh.`
+            : ""
+        }
       </p>
     </div>`;
 }
@@ -3318,6 +3762,7 @@ function renderSupportReport(data) {
     ${renderSupportReportTrendChart()}
     ${renderSupportReportStatsDetail()}`;
     mountSupportReportTrendChart();
+    enhanceSupportReportTables();
     updateSupportReportUpdatedAt(data);
     return;
   }
@@ -3328,6 +3773,7 @@ function renderSupportReport(data) {
     ${renderSupportReportTrendChart()}
     ${renderSupportReportDebug()}`;
     mountSupportReportTrendChart();
+    enhanceSupportReportTables();
     updateSupportReportUpdatedAt(data);
     return;
   }
@@ -3335,6 +3781,7 @@ function renderSupportReport(data) {
   els.supportReportContainer.innerHTML = `
     ${subtabBar}
     ${renderSupportReportTrendChart()}
+    ${renderSupportReportDebug({ responsesOnly: true })}
     <div class="squad-block">
       <p class="quality-definitions" style="list-style: none; padding-left: 0;">
         Key User tickets only. "Open" means Intercom state open or snoozed. First response SLA is
@@ -3357,6 +3804,7 @@ function renderSupportReport(data) {
     ${renderSupportReportDrilldown()}`;
 
   mountSupportReportTrendChart();
+  enhanceSupportReportTables();
   updateSupportReportUpdatedAt(data);
 }
 
@@ -3390,6 +3838,12 @@ if (els.supportReportContainer) {
     const assigneeTarget = event.target.closest("[data-assignee]");
     if (assigneeTarget && supportReportSubtab === "stats") {
       selectSupportReportStatsAssignee(assigneeTarget.dataset.assignee);
+      return;
+    }
+
+    const monthTarget = event.target.closest("[data-month]");
+    if (monthTarget && supportReportSubtab === "stats") {
+      selectSupportReportStatsMonth(monthTarget.dataset.month);
       return;
     }
 
