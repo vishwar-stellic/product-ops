@@ -72,7 +72,8 @@ describe("runSweep", () => {
     post.mockClear();
     const summary = await runSweep({ ...deps, now: new Date("2026-10-05T18:00:00Z") });
     expect(llm).not.toHaveBeenCalled();
-    expect(post).not.toHaveBeenCalled();
+    expect(post).toHaveBeenCalledTimes(1); // only the "nothing new" message, no alert
+    expect(post.mock.calls[0]?.[0]).toContain("no new Live Fire or Smoldering escalations");
     expect(summary).toMatchObject({ withNewEmails: 0, alertsPosted: 0 });
   });
 
@@ -90,8 +91,8 @@ describe("runSweep", () => {
       evidence: fresh("Still broken", "2026-10-05T19:00:00Z"),
     });
     const { deps, post } = setup({ llmReplies: [reply(watch), reply(smolder), reply(smolderAgain)] });
-    await runSweep(deps); // WATCH: no alert
-    expect(post).not.toHaveBeenCalled();
+    await runSweep(deps); // WATCH: no alert, just the "nothing new" message
+    expect(post).toHaveBeenCalledTimes(1);
 
     const vit = fakeVitally({
       acct1: [
@@ -102,7 +103,7 @@ describe("runSweep", () => {
       ],
     });
     await runSweep({ ...deps, vitally: vit, now: new Date("2026-10-05T18:00:00Z") });
-    expect(post).toHaveBeenCalledTimes(2); // the escalated alert + the legend
+    expect(post).toHaveBeenCalledTimes(3); // + the escalated alert and the legend
 
     const vit2 = fakeVitally({
       acct1: [
@@ -112,7 +113,8 @@ describe("runSweep", () => {
       ],
     });
     await runSweep({ ...deps, vitally: vit2, now: new Date("2026-10-05T20:00:00Z") });
-    expect(post).toHaveBeenCalledTimes(2); // same severity -> no re-alert, and so no new legend
+    expect(post).toHaveBeenCalledTimes(4); // same severity -> no re-alert and no legend, just the "nothing new" message
+    expect(post.mock.calls[3]?.[0]).toContain("no new Live Fire or Smoldering escalations");
   });
 
   it("does not re-alert a saved item the model rewords, re-links and re-scores on stale evidence (UW-Oshkosh case)", async () => {
@@ -146,7 +148,8 @@ describe("runSweep", () => {
     });
     const { deps: deps2 } = setup({ llmReplies: [reply(reworded)] });
     await runSweep({ ...deps, vitally: vit, llm: deps2.llm, now: new Date("2026-10-06T16:00:00Z") });
-    expect(posts).toHaveLength(0);
+    expect(posts).toHaveLength(1); // no alert; only the "nothing new" message
+    expect(posts[0]).toContain("no new Live Fire or Smoldering escalations");
     const state = (await store.getJson<PartnerState>(partnerStateKey("p1")))!;
     expect(state.items[0]).toMatchObject({ id: savedId, vitallyConversationId: "conv1" });
   });
@@ -212,10 +215,35 @@ describe("reaction legend", () => {
     expect((await store.listKeys("alerts/")).length).toBe(2); // the legend is not tracked
   });
 
-  it("is not posted when the sweep raised no alerts", async () => {
+  it("is not posted when the sweep raised no alerts (a 'nothing new' message goes out instead)", async () => {
     const { deps, posts } = setup({ llmReplies: [reply(itemJson({ severity: "WATCH", score: 3 }))] });
     await runSweep(deps);
-    expect(posts).toEqual([]);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]).not.toContain("React:");
+    expect(posts[0]).toBe(
+      ":white_check_mark: Sweep complete: no new Live Fire or Smoldering escalations. Checked 1 partners, 1 with new email.",
+    );
+  });
+
+  it("the 'nothing new' message flags partners that could not be checked, and is not an alert record", async () => {
+    const { deps, posts, store } = setup({ llmReplies: [new Error("timeout")] });
+    await runSweep(deps);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]).toContain(":warning: 1 could not be checked this run");
+    expect((await store.listKeys("alerts/")).length).toBe(0);
+  });
+
+  it("no 'nothing new' message when Slack posting itself failed, or in a seed/dry run", async () => {
+    const { deps } = setup({ llmReplies: [reply(itemJson())] });
+    const failing = vi.fn(async () => {
+      throw new Error("channel_not_found");
+    });
+    const summary = await runSweep({ ...deps, post: failing });
+    expect(summary.alertFailures).toBe(1);
+    expect(failing).toHaveBeenCalledTimes(1); // the alert only; no status message on top of a Slack failure
+    const quiet = setup({ llmReplies: [reply(itemJson({ severity: "WATCH", score: 3 }))] });
+    await runSweep({ ...quiet.deps, post: null });
+    expect(quiet.post).not.toHaveBeenCalled();
   });
 
   it("is not posted in a dry run (only logged)", async () => {

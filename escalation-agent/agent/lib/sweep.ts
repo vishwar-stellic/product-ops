@@ -8,7 +8,7 @@ import {
 } from "./feedback";
 import type { LlmFn } from "./llm";
 import type { TriagePartner } from "./registry";
-import { formatSlackMessage, REACTION_LEGEND, type PostedMessage } from "./slack";
+import { formatQuietSweepMessage, formatSlackMessage, REACTION_LEGEND, type PostedMessage } from "./slack";
 import type { Store } from "./store";
 import {
   assignItemIds,
@@ -71,7 +71,7 @@ async function mapWithConcurrency<T>(items: T[], limit: number, fn: (item: T) =>
  * to update the tracked items (with the team's feedback calibration injected),
  * persist, and post one Slack message per item that newly reached Live Fire /
  * Smoldering. State is saved per partner and BEFORE that partner's alerts are
- * posted (matching the Python job), so a timeout midway never re-reads or
+ * posted, so a timeout midway never re-reads or
  * double-alerts the partners already done.
  */
 export async function runSweep(deps: SweepDeps): Promise<SweepSummary> {
@@ -226,6 +226,13 @@ export async function runSweep(deps: SweepDeps): Promise<SweepSummary> {
     }
   } else if (dryRunAlerts > 0) {
     console.log(`[escalation-agent] (dry run) would post:\n${REACTION_LEGEND}`);
+  } else if (deps.post && summary.alertFailures === 0) {
+    // Nothing to alert on: say so, so a quiet channel is distinguishable from a run that never happened.
+    try {
+      await deps.post(formatQuietSweepMessage(summary));
+    } catch (error) {
+      console.error(`[escalation-agent] failed to post the "nothing new" message: ${String(error)}`);
+    }
   }
 
   return summary;

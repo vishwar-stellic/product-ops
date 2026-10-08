@@ -4,7 +4,7 @@ import { vitallyConversationUrl } from "./vitally";
 const SLACK_API_BASE = "https://slack.com/api";
 
 const SEVERITY_LABEL: Record<string, string> = { LIVE_FIRE: "Live Fire", SMOLDERING: "Smoldering" };
-// Fire for Live Fire, firecracker for Smoldering - same as the Python alerts.
+// Fire for Live Fire, firecracker for Smoldering.
 const SEVERITY_EMOJI: Record<string, string> = { LIVE_FIRE: ":fire:", SMOLDERING: ":firecracker:" };
 
 /**
@@ -21,15 +21,29 @@ export function slackEscape(text: string): string {
 export const REACTION_LEGEND =
   "React: :+1: right call, :-1: false alarm, :arrow_down: too severe, :arrow_up: under-rated";
 
+/**
+ * Posted when a sweep raised no alert, so a quiet channel means "nothing new" and not "the run didn't happen".
+ * Partners that couldn't be checked are called out, since "nothing new" isn't true for them.
+ */
+export function formatQuietSweepMessage(summary: {
+  partners: number;
+  withNewEmails: number;
+  llmFailures: number;
+  fetchFailures: number;
+}): string {
+  const unchecked = summary.llmFailures + summary.fetchFailures;
+  const checked = `Checked ${summary.partners} partners, ${summary.withNewEmails} with new email.`;
+  const note = unchecked > 0 ? ` :warning: ${unchecked} could not be checked this run and will be retried.` : "";
+  return `:white_check_mark: Sweep complete: no new Live Fire or Smoldering escalations. ${checked}${note}`;
+}
+
 export interface AlertContext {
   partnerName: string;
   vitallyAccountUrl: string | null;
 }
 
 /**
- * Slack mrkdwn for ONE newly-notable item - same layout as the Python
- * `_format_slack_message`, plus a small footer so people comparing the two
- * channels can tell which job posted it.
+ * Slack mrkdwn for ONE newly-notable item.
  */
 export function formatSlackMessage(item: TrackedItem, ctx: AlertContext): string {
   const severity: Severity = item.severity;
