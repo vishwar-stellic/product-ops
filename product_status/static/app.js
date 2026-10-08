@@ -2641,6 +2641,19 @@ function supportReportPacificDate(iso) {
   }).format(d);
 }
 
+// "Oct 8, 2026" for the Pacific calendar day a snapshot belongs to (the same
+// day the daily trend points and the Stellic responses series are keyed on).
+function supportReportPacificDayLabel(iso) {
+  const d = new Date(iso);
+  if (!iso || Number.isNaN(d.getTime())) return "";
+  return d.toLocaleDateString("en-US", {
+    timeZone: "America/Los_Angeles",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
 function supportReportResponsesTooltip({ columnLabel, dayStartAt, partial, responses, tickets }) {
   return [
     columnLabel,
@@ -2866,7 +2879,8 @@ function renderSupportReportTrendSVG(points, width, column, columnLabel, hiddenS
         .map((v, i) => {
           const cx = xFor(i).toFixed(1);
           const cy = yFor(v).toFixed(1);
-          const tooltip = `${escapeHtml(columnLabel)} — ${escapeHtml(s.label)}: ${v}`;
+          const day = supportReportPacificDayLabel(points[i] && points[i].at);
+          const tooltip = `${escapeHtml(columnLabel)} — ${escapeHtml(s.label)}: ${v}${day ? `\n${escapeHtml(day)}` : ""}`;
           // Two circles per point: a small visible dot, plus a larger
           // invisible one layered on top purely to give the mouse a bigger,
           // more reliable hit target (see `attachTrendTooltipHandlers` -
