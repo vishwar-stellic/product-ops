@@ -1,6 +1,7 @@
 import { defineChannel, GET, POST } from "eve/channels";
 
 import { checkBearer } from "../lib/auth";
+import { debugConversation } from "../lib/debug";
 import { ALERT_PREFIX, PARTNER_STATE_PREFIX } from "../lib/feedback";
 import { startConfiguredRun } from "../lib/run";
 import { readRunStatus } from "../lib/runs";
@@ -16,6 +17,7 @@ import { getStore } from "../lib/store";
  *   POST /escalation/run  {"dryRun": true}   same, but log alerts instead of posting
  *   POST /escalation/run  {"seed": true}     triage and SAVE state, post nothing (baseline)
  *   GET  /escalation/run            status of the current / last run
+ *   GET  /escalation/debug?conversation=<vitally id>   read-only: alerts + saved state linked to a conversation
  *   POST /escalation/reset {"confirm": true}   forget all partner state (see below)
  *   POST /escalation/reset {"confirm": true, "includeAlerts": true}   ...and the stored alerts + reaction feedback
  *
@@ -88,6 +90,16 @@ export default defineChannel({
         `[escalation-agent] reset: ${deleted} partner records, ${deletedAlerts} alert records deleted`,
       );
       return Response.json({ deleted, deletedAlerts });
+    }),
+
+    // Read-only: why was this Vitally conversation flagged? Returns the alerts it caused
+    // (score, reason, evidence) and the partner's saved state around it.
+    GET("/escalation/debug", async (request) => {
+      const denied = reject(request);
+      if (denied) return denied;
+      const conversationId = new URL(request.url).searchParams.get("conversation")?.trim();
+      if (!conversationId) return Response.json({ error: "pass ?conversation=<vitally conversation id>" }, { status: 400 });
+      return Response.json(await debugConversation(getStore(), conversationId));
     }),
 
     GET("/escalation/run", async (request) => {
