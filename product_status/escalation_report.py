@@ -416,6 +416,8 @@ Score 4 - FIRE. Requires at least ONE of:
       risk: advisor training on a date, a go-live, a production cutover, a
       scheduled student notification, a scheduled key or credential rotation.
       The event must be named and dated. "Before the semester" is not a date.
+      A meeting being requested, scheduled, rescheduled, or at risk of moving
+      does NOT count as such an event - see MEETINGS below.
   (c) The partner is visibly escalating: asking for commitments and dates,
       requesting an urgent meeting, saying they are losing confidence, or
       pulling in someone senior on their side to force movement.
@@ -438,7 +440,8 @@ Score 3 - REAL, NOT A FIRE. This is the default for a genuine problem.
   - A bug with a working workaround in place.
 
 Score 0-2 - NOT AN ESCALATION AT ALL.
-  - Meeting logistics: cannot attend, rescheduling, sending invites, confirming times.
+  - Meeting logistics: cannot attend, rescheduling, sending invites, confirming
+    times - unless one of the MEETINGS signals below is present.
   - A process step proceeding normally - a security review underway, an InfoSec
     questionnaire submitted and now with their legal team. Normal process is not
     an escalation just because it says "legal" or "security".
@@ -463,6 +466,24 @@ Use them ONLY like this:
   - They can NEVER lift a 3 to a 4 on their own.
   - They can NEVER lift a 0-2 at all. A partner following up three times about
     a meeting time is still a meeting time.
+
+MEETINGS
+A meeting that is merely requested, scheduled, rescheduled, or at risk of moving
+is logistics. It does not make a thread a fire, even when the meeting is dated,
+well attended, or is about fixing the platform. Never treat the meeting itself
+as the "named, partner-facing event at risk" in 4(b).
+Two things turn a meeting thread into a real signal instead of logistics:
+  - A pattern of missed meetings: the same meeting or recurring check-in has been
+    missed, cancelled, or pushed (especially by Stellic) several weeks in a row.
+  - Sentiment about the meetings or our engagement: the partner voices
+    frustration, lost confidence, or demands accountability about missed or
+    postponed meetings or a lack of follow-through.
+When either is present the thread is no longer "meeting logistics": score it as a
+real item (at least a 3) and treat the pattern or sentiment as a modifier. It can
+lift a 3 to a 4 only when the item ALREADY has Production impact or a named dated
+event; a partner who is explicitly escalating is covered by 4(c). Both signals
+need evidence - quote the dates of the misses or the partner's own words. A single
+reschedule, even one Stellic requested, is neither.
 
 CALIBRATION EXAMPLES - these are real, human-scored
   5  Students cannot enroll or add classes in Prod; add deadline has passed.
@@ -497,6 +518,10 @@ Note the pairs that look similar and score differently:
     "Training Sept 11 at risk over unresolved definitions" = 4. Proximity and
     whether the blocker is live, not just anticipated.
   - "Security review underway" = 0. "Partner says they are losing confidence" = 4.
+  - "Meeting moved for a holiday, partner confirming new times" = 0. "Stellic has
+    missed the weekly check-in three weeks running and the partner says they are
+    losing confidence" = 4. A meeting changing time is logistics; a pattern of
+    misses plus sentiment is a signal.
 
 RULES
 - Do not infer or embellish. Every claim needs a quote.
@@ -517,6 +542,7 @@ seen and, if a thread continued, more from a thread you already tracked). Update
 - If a new email clearly continues/updates a thread you already tracked, update that existing item \
 in place (its evidence, score, severity, blockedOn, lastMovementAt, lastEmailDate) rather than \
 creating a duplicate.
+- A previous score is not evidence. When you update an item, re-check it against the SCORING RUBRIC and MEETINGS rules from scratch using the emails shown, and lower the score if the criteria are not actually met - do not carry a 4 forward just because it was a 4 before.
 - Re-score on update. A 3 becomes a 4 when it reaches Production, when a date attaches to it, or \
 when the partner starts asking for commitments. A 4 drops back to 3 when the dated event passes \
 without incident or the blast radius turns out to be one student.

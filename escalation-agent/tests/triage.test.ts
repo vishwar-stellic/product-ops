@@ -122,6 +122,21 @@ describe("notableSeverityChanges", () => {
   it("ignores WATCH items, including brand-new ones", () => {
     expect(notableSeverityChanges([], [watch])).toEqual([]);
   });
+  it("does not re-alert when the model rewords the headline of the same conversation", () => {
+    const before = tracked({ headline: "Day Two meetings", vitallyConversationId: "conv-1" });
+    const reworded = tracked({ headline: "Stellic Day Two meetings (rescheduled)", vitallyConversationId: "conv-1" });
+    expect(notableSeverityChanges([before], [reworded])).toEqual([]);
+  });
+  it("does not re-alert on a de-escalation to a lower notable severity", () => {
+    const fire = tracked({ headline: "A", severity: "LIVE_FIRE", score: 5 });
+    const smolder = tracked({ headline: "A", severity: "SMOLDERING", score: 4 });
+    expect(notableSeverityChanges([fire], [smolder])).toEqual([]);
+  });
+  it("alerts for a different issue in a different conversation", () => {
+    const before = tracked({ headline: "A", vitallyConversationId: "conv-1" });
+    const other = tracked({ headline: "B", vitallyConversationId: "conv-2" });
+    expect(notableSeverityChanges([before], [other])).toEqual([other]);
+  });
 });
 
 describe("conversation matching", () => {
@@ -132,6 +147,17 @@ describe("conversation matching", () => {
       email({ subject: "Re: registration down", date: "2026-10-04T14:00:00Z", vitallyConversationId: "c-older" }),
     ];
     expect(matchConversationId(tracked(), emails)).toBe("c-match");
+  });
+  it("never links an item to an unrelated thread just because it is the newest email", () => {
+    const item = tracked({ subject: "RE: Course numbering problem", lastEmailDate: "2026-10-06T14:17:46Z", from: "Kenny" });
+    const unrelated = [email({ subject: "Stellic Day Two meetings", date: "2026-10-07T20:32:38Z", vitallyConversationId: "day-two" })];
+    expect(matchConversationId(item, unrelated)).toBeNull();
+  });
+  it("keeps an untouched item's existing link when no new email matches it", () => {
+    const prior = tracked({ subject: "RE: Course numbering problem", vitallyConversationId: "course-thread" });
+    const unrelated = [email({ subject: "Stellic Day Two meetings", from: "Roger", date: "2026-10-07T20:00:00Z", vitallyConversationId: "day-two" })];
+    const [out] = enrichItemsWithConversations([prior], unrelated, [prior]);
+    expect(out?.vitallyConversationId).toBe("course-thread");
   });
   it("falls back to the prior item's conversation id by headline", () => {
     const prior = tracked({ vitallyConversationId: "c-prior" });

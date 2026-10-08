@@ -1,6 +1,7 @@
 import { normalizeSubject } from "./filters";
 import type { LlmFn } from "./llm";
 import { TRIAGE_PROMPT_TEMPLATE } from "./triage-rubric.generated";
+import { type AlertHistory, SEVERITY_RANK, shouldAlert } from "./history";
 import type { SourceEmail } from "./vitally";
 
 export type Severity = "LIVE_FIRE" | "SMOLDERING" | "WATCH";
@@ -122,15 +123,22 @@ export function matchConversationId(item: TrackedItem, sourceEmails: SourceEmail
   const lastDate = item.lastEmailDate || item.lastMovementAt;
   const sender = item.from.trim();
 
-  let candidates = sourceEmails;
-  if (subjectKey) {
-    const bySubject = sourceEmails.filter((e) => normalizeSubject(e.subject) === subjectKey);
-    if (bySubject.length > 0) candidates = bySubject;
-  }
+  const bySubject = subjectKey ? sourceEmails.filter((e) => normalizeSubject(e.subject) === subjectKey) : [];
+  const subjectMatched = bySubject.length > 0;
+  const candidates = subjectMatched ? bySubject : sourceEmails;
+
   if (lastDate) {
-    const hit = candidates.find((e) => e.date === lastDate && e.vitallyConversationId);
+    // Without a subject match, require the exact timestamp AND sender to agree.
+    const hit = candidates.find(
+      (e) => e.date === lastDate && e.vitallyConversationId && (subjectMatched || (!!sender && e.from === sender)),
+    );
     if (hit) return hit.vitallyConversationId;
   }
+  // Everything below is only safe when the subject already narrowed it to this thread. Without a
+  // subject match, a sender / "only email" / "newest email" guess links the item to an UNRELATED
+  // conversation (an old item would inherit whatever thread happened to be newest) - so give up
+  // and let the caller keep the item's existing link, or none.
+  if (!subjectMatched) return null;
   if (sender) {
     const hit = candidates.find((e) => e.from === sender && e.vitallyConversationId);
     if (hit) return hit.vitallyConversationId;
@@ -163,15 +171,35 @@ export function enrichItemsWithConversations(
 const NOTABLE: ReadonlySet<Severity> = new Set(["LIVE_FIRE", "SMOLDERING"]);
 
 /**
- * Items that just became LIVE_FIRE/SMOLDERING this run: brand new (no prior
- * item with the same headline) or escalated from a lower severity. An item
- * that stays at the same severity never re-alerts.
+ * Items that just became LIVE_FIRE/SMOLDERING this run: brand new or escalated
+ * to a HIGHER severity than before. An item that stays at, or drops to, the
+ * same or a lower severity never re-alerts.
+ *
+ * "Same item" is decided by headline OR by Vitally conversation: the model
+ * often rewords a headline when it updates an item in place, and an exact
+ * headline match alone would then treat it as brand new and alert again.
+ *
+ * With `partnerId` + `history` (the alerts already posted), an item is also
+ * suppressed when its conversation/headline already alerted at this severity or
+ * higher, and when the team marked that alert a false alarm until it gets
+ * strictly worse (see `shouldAlert`).
  */
-export function notableSeverityChanges(prior: TrackedItem[], updated: TrackedItem[]): TrackedItem[] {
-  const priorByHeadline = new Map(prior.map((i) => [i.headline, i]));
+export function notableSeverityChanges(
+  prior: TrackedItem[],
+  updated: TrackedItem[],
+  opts: { partnerId?: string; history?: AlertHistory } = {},
+): TrackedItem[] {
   return updated.filter((item) => {
     if (!NOTABLE.has(item.severity)) return false;
-    const before = priorByHeadline.get(item.headline);
-    return !before || before.severity !== item.severity;
+    const rank = SEVERITY_RANK[item.severity];
+    const before = prior.filter(
+      (p) =>
+        p.headline === item.headline ||
+        (item.vitallyConversationId !== null && p.vitallyConversationId === item.vitallyConversationId),
+    );
+    const beforeRank = before.reduce((max, p) => Math.max(max, SEVERITY_RANK[p.severity]), -1);
+    if (rank <= beforeRank) return false;
+    if (opts.history && opts.partnerId && !shouldAlert(item, opts.partnerId, opts.history)) return false;
+    return true;
   });
 }

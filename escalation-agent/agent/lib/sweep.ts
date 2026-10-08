@@ -77,7 +77,7 @@ export async function runSweep(deps: SweepDeps): Promise<SweepSummary> {
   const nowIso = now.toISOString();
   const lookbackCutoffIso = new Date(now.getTime() - ESCALATION_LOOKBACK_DAYS * 86_400_000).toISOString();
 
-  let feedback: FeedbackSnapshot = { block: "", exampleCount: 0 };
+  let feedback: FeedbackSnapshot = { block: "", exampleCount: 0, history: new Map() };
   try {
     feedback = await loadFeedbackSnapshot(deps.store);
   } catch (error) {
@@ -157,7 +157,7 @@ export async function runSweep(deps: SweepDeps): Promise<SweepSummary> {
     };
     await deps.store.putJson(stateKey, payload);
 
-    const notable = notableSeverityChanges(priorItems, items);
+    const notable = notableSeverityChanges(priorItems, items, { partnerId: partner.partnerId, history: feedback.history });
     let postedForPartner = 0;
     let failedForPartner = 0;
     for (const item of notable) {

@@ -1,4 +1,5 @@
 import { FEEDBACK_MAX_ALERTS_SCANNED, FEEDBACK_MAX_EXAMPLES, FEEDBACK_TEXT_CLIP } from "./config";
+import { type AlertHistory, buildAlertHistory } from "./history";
 import type { Store } from "./store";
 import type { TrackedItem } from "./triage";
 
@@ -189,6 +190,8 @@ export interface FeedbackSnapshot {
   /** Text to inject into the prompt ("" when there is no usable feedback). */
   block: string;
   exampleCount: number;
+  /** Alerts already posted, so the sweep can avoid duplicates and honour false-alarm verdicts. */
+  history: AlertHistory;
 }
 
 /** Reads recent alert records once per sweep and derives everything the sweep needs from feedback. */
@@ -209,5 +212,5 @@ export async function loadFeedbackSnapshot(store: Store): Promise<FeedbackSnapsh
     examples.push({ record, verdict });
   }
   const selected = selectBalanced(examples);
-  return { block: renderFeedbackBlock(selected), exampleCount: selected.length };
+  return { block: renderFeedbackBlock(selected), exampleCount: selected.length, history: buildAlertHistory(records) };
 }
