@@ -78,8 +78,18 @@ describe("runSweep", () => {
 
   it("alerts again when an existing item escalates, but not when it stays put", async () => {
     const watch = itemJson({ severity: "WATCH", score: 3 });
-    const smolder = itemJson({ severity: "SMOLDERING", score: 4 });
-    const { deps, post } = setup({ llmReplies: [reply(watch), reply(smolder), reply(smolder)] });
+    const fresh = (quote: string, date: string) => [{ quote, sender: "Pat Partner", date }];
+    const smolder = itemJson({
+      severity: "SMOLDERING",
+      score: 4,
+      evidence: fresh("Now it affects every campus", "2026-10-05T17:00:00Z"),
+    });
+    const smolderAgain = itemJson({
+      severity: "SMOLDERING",
+      score: 4,
+      evidence: fresh("Still broken", "2026-10-05T19:00:00Z"),
+    });
+    const { deps, post } = setup({ llmReplies: [reply(watch), reply(smolder), reply(smolderAgain)] });
     await runSweep(deps); // WATCH: no alert
     expect(post).not.toHaveBeenCalled();
 
@@ -103,6 +113,52 @@ describe("runSweep", () => {
     });
     await runSweep({ ...deps, vitally: vit2, now: new Date("2026-10-05T20:00:00Z") });
     expect(post).toHaveBeenCalledTimes(2); // same severity -> no re-alert, and so no new legend
+  });
+
+  it("does not re-alert a saved item the model rewords, re-links and re-scores on stale evidence (UW-Oshkosh case)", async () => {
+    const stale = [{ quote: "People are losing trust in Stellic", sender: "Leanne", date: "2026-10-05T20:00:00Z" }];
+    const original = itemJson({
+      headline: "Prereq display wrong; partner losing trust",
+      severity: "SMOLDERING",
+      score: 4,
+      evidence: stale,
+    });
+    const { deps, store, posts } = setup({ llmReplies: [reply(original)] });
+    await runSweep(deps);
+    const saved = (await store.getJson<PartnerState>(partnerStateKey("p1")))!.items[0]!;
+    const savedId = saved.id;
+    expect(savedId).toBeTruthy();
+    expect(saved.vitallyConversationId).toBe("conv1");
+    posts.length = 0;
+
+    // Next sweep: an agenda email marks pre-reqs DONE; the model rewords + keeps the stale quotes.
+    const vit = fakeVitally({
+      acct1: [conversation("agenda", "Stellic agenda items", "2026-10-06T15:00:00Z", [inbound("2026-10-06T15:00:00Z", "DONE - Pre-reqs from the last meeting")])],
+    });
+    const reworded = itemJson({
+      id: savedId,
+      headline: "Incorrect prereq/co-req display in Production; partner reports loss of trust",
+      severity: "SMOLDERING",
+      score: 4,
+      evidence: stale,
+      subject: "Stellic agenda items",
+      lastEmailDate: "2026-10-06T15:00:00Z",
+    });
+    const { deps: deps2 } = setup({ llmReplies: [reply(reworded)] });
+    await runSweep({ ...deps, vitally: vit, llm: deps2.llm, now: new Date("2026-10-06T16:00:00Z") });
+    expect(posts).toHaveLength(0);
+    const state = (await store.getJson<PartnerState>(partnerStateKey("p1")))!;
+    expect(state.items[0]).toMatchObject({ id: savedId, vitallyConversationId: "conv1" });
+  });
+
+  it("gives legacy saved items an id and shows it to the model", async () => {
+    const { deps, store, prompts } = setup({ llmReplies: [reply(itemJson({ severity: "WATCH", score: 3 }))] });
+    const legacy = { ...itemJson({ severity: "WATCH", score: 3 }), vitallyConversationId: "conv1" };
+    await store.putJson(partnerStateKey("p1"), { items: [legacy], lastMessageAt: "2026-10-01T00:00:00Z", checkedAt: "x" });
+    await runSweep(deps);
+    const id = (await store.getJson<PartnerState>(partnerStateKey("p1")))!.items[0]!.id;
+    expect(id).toBeTruthy();
+    expect(prompts[0]).toContain(`"id": "${id}"`);
   });
 
   it("keeps prior items and does not advance lastMessageAt when the LLM fails", async () => {

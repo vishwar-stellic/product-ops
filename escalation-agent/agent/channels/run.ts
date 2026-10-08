@@ -3,9 +3,12 @@ import { defineChannel, GET, POST } from "eve/channels";
 import { checkBearer } from "../lib/auth";
 import { debugConversation } from "../lib/debug";
 import { ALERT_PREFIX, PARTNER_STATE_PREFIX } from "../lib/feedback";
+import { purgeForeignConversation } from "../lib/purge";
+import { fetchPartnerRegistry } from "../lib/registry";
 import { startConfiguredRun } from "../lib/run";
 import { readRunStatus } from "../lib/runs";
 import { getStore } from "../lib/store";
+import { createVitallyClient } from "../lib/vitally";
 
 /**
  * On-demand control surface for the escalation sweep. Authenticated with the
@@ -18,6 +21,7 @@ import { getStore } from "../lib/store";
  *   POST /escalation/run  {"seed": true}     triage and SAVE state, post nothing (baseline)
  *   GET  /escalation/run            status of the current / last run
  *   GET  /escalation/debug?conversation=<vitally id>   read-only: alerts + saved state linked to a conversation
+ *   POST /escalation/purge {"conversation": "<id>", "confirm": true}   drop saved items that came from a thread another partner owns ("dryRun": true previews)
  *   POST /escalation/reset {"confirm": true}   forget all partner state (see below)
  *   POST /escalation/reset {"confirm": true, "includeAlerts": true}   ...and the stored alerts + reaction feedback
  *
@@ -90,6 +94,46 @@ export default defineChannel({
         `[escalation-agent] reset: ${deleted} partner records, ${deletedAlerts} alert records deleted`,
       );
       return Response.json({ deleted, deletedAlerts });
+    }),
+
+    // Cleans saved items that came from a thread shared across accounts but started by another
+    // partner (state saved before the starter-account fix). Send {"dryRun": true} to preview.
+    POST("/escalation/purge", async (request) => {
+      const denied = reject(request);
+      if (denied) return denied;
+
+      type PurgeBody = { confirm?: unknown; conversation?: unknown; dryRun?: unknown };
+      let body: PurgeBody | null = null;
+      try {
+        body = (await request.json()) as PurgeBody | null;
+      } catch {
+        // fall through to the 400 below
+      }
+      const conversationId = typeof body?.conversation === "string" ? body.conversation.trim() : "";
+      const dryRun = body?.dryRun === true;
+      if (!conversationId || (!dryRun && body?.confirm !== true)) {
+        return Response.json(
+          { error: 'send {"conversation": "<vitally id>", "confirm": true} (or "dryRun": true to preview)' },
+          { status: 400 },
+        );
+      }
+      const store = getStore();
+      if (!dryRun && (await readRunStatus(store)).running) {
+        return Response.json({ error: "a sweep is running; try again when it finishes" }, { status: 409 });
+      }
+      try {
+        const result = await purgeForeignConversation(
+          store,
+          createVitallyClient(),
+          await fetchPartnerRegistry(),
+          conversationId,
+          { dryRun },
+        );
+        console.log(`[escalation-agent] purge ${conversationId}: ${JSON.stringify(result)}`);
+        return Response.json(result);
+      } catch (error) {
+        return Response.json({ error: String(error) }, { status: 502 });
+      }
     }),
 
     // Read-only: why was this Vitally conversation flagged? Returns the alerts it caused

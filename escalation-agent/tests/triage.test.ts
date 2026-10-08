@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  assignItemIds,
   buildTriagePrompt,
+  hasFreshEvidence,
+  ITEM_IDENTITY_NOTE,
+  reconcileItemIds,
   enrichItemsWithConversations,
   extractJsonObject,
   matchConversationId,
@@ -163,5 +167,97 @@ describe("conversation matching", () => {
     const prior = tracked({ vitallyConversationId: "c-prior" });
     const [out] = enrichItemsWithConversations([tracked({ vitallyConversationId: null })], [], [prior]);
     expect(out?.vitallyConversationId).toBe("c-prior");
+  });
+});
+
+describe("item identity", () => {
+  it("assigns ids once and leaves existing ones alone", () => {
+    const [a] = assignItemIds([tracked()]);
+    expect(a?.id).toBeTruthy();
+    const again = assignItemIds([a as TrackedItem]);
+    expect(again[0]).toBe(a);
+  });
+  it("keeps the prior id when the model echoes it, even with a new headline", () => {
+    const [prior] = assignItemIds([tracked({ headline: "Old headline" })]);
+    const [out] = reconcileItemIds([prior as TrackedItem], [tracked({ headline: "Reworded", id: prior?.id })]);
+    expect(out?.id).toBe(prior?.id);
+  });
+  it("falls back to the headline, and gives genuinely new or unknown ids a fresh id", () => {
+    const [prior] = assignItemIds([tracked({ headline: "Same" })]);
+    const out = reconcileItemIds(
+      [prior as TrackedItem],
+      [tracked({ headline: "Same" }), tracked({ headline: "Different", id: "made-up" }), tracked({ headline: "Other" })],
+    );
+    expect(out[0]?.id).toBe(prior?.id);
+    expect(out[1]?.id).not.toBe("made-up");
+    expect(new Set(out.map((i) => i.id)).size).toBe(3);
+  });
+  it("never gives one id to two items", () => {
+    const [prior] = assignItemIds([tracked()]);
+    const out = reconcileItemIds([prior as TrackedItem], [tracked({ id: prior?.id }), tracked({ id: prior?.id, headline: "dup" })]);
+    expect(out[0]?.id).not.toBe(out[1]?.id);
+  });
+  it("tells the model to keep ids and shows previous ids in the prompt", () => {
+    const [prior] = assignItemIds([tracked()]);
+    const prompt = buildTriagePrompt({ previousItems: [prior as TrackedItem], newEmails: [email()], feedbackBlock: "" });
+    expect(prompt).toContain(`"id": "${prior?.id}"`);
+    expect(prompt).toContain(ITEM_IDENTITY_NOTE);
+  });
+  it("does not re-alert a reworded, re-linked item that has the same id", () => {
+    const [prior] = assignItemIds([tracked({ headline: "Prereqs wrong", vitallyConversationId: "thread-a" })]);
+    const updated = tracked({ headline: "Prereq display wrong; trust lost", vitallyConversationId: "thread-b", id: prior?.id });
+    expect(notableSeverityChanges([prior as TrackedItem], [updated])).toEqual([]);
+  });
+});
+
+describe("fresh evidence", () => {
+  const emails = [email({ date: "2026-10-08T14:56:24Z", body: "DONE - Pre-reqs from the last meeting. Has been submitted." })];
+  const ev = (quote: string, date: string) => ({ quote, sender: "x", date });
+  it("accepts a quote from the new emails or an exact timestamp match", () => {
+    expect(hasFreshEvidence(tracked({ evidence: [ev("Pre-reqs from the last meeting", "2026-10-07")] }), emails)).toBe(true);
+    expect(hasFreshEvidence(tracked({ evidence: [ev("something paraphrased", "2026-10-08T14:56:24Z")] }), emails)).toBe(true);
+  });
+  it("rejects evidence that is all older than this run's emails", () => {
+    const stale = tracked({ evidence: [ev("People are losing trust in Stellic", "2026-10-05T20:00:00Z")] });
+    expect(hasFreshEvidence(stale, emails)).toBe(false);
+  });
+  it("lets an item with no evidence through (it can't be shown stale)", () => {
+    expect(hasFreshEvidence(tracked({ evidence: [] }), emails)).toBe(true);
+  });
+  it("suppresses an alert whose evidence is stale, but not one with fresh evidence", () => {
+    const stale = tracked({ evidence: [ev("People are losing trust in Stellic", "2026-10-05T20:00:00Z")] });
+    const fresh = tracked({ evidence: [ev("Pre-reqs from the last meeting", "2026-10-08T14:56:24Z")] });
+    expect(notableSeverityChanges([], [stale], { newEmails: emails })).toEqual([]);
+    expect(notableSeverityChanges([], [fresh], { newEmails: emails })).toEqual([fresh]);
+  });
+});
+
+describe("keeping an item's original link", () => {
+  const emails = [
+    email({ subject: "Stellic agenda items", from: "Michelle", date: "2026-10-08T14:56:24Z", body: "DONE - Pre-reqs from the last meeting", vitallyConversationId: "agenda" }),
+  ];
+  it("does not re-point an old item at a newer thread its evidence is not in", () => {
+    const [prior] = assignItemIds([tracked({ vitallyConversationId: "prereqs-thread", subject: "Re: Pre-reqs" })]);
+    const updated = tracked({
+      id: prior?.id,
+      subject: "Stellic agenda items",
+      from: "Michelle",
+      lastEmailDate: "2026-10-08T14:56:24Z",
+      evidence: [{ quote: "People are losing trust in Stellic", sender: "Leanne", date: "2026-10-05T20:00:00Z" }],
+    });
+    const [out] = enrichItemsWithConversations([updated], emails, [prior as TrackedItem]);
+    expect(out?.vitallyConversationId).toBe("prereqs-thread");
+  });
+  it("does re-point it when its evidence really is in the new thread", () => {
+    const [prior] = assignItemIds([tracked({ vitallyConversationId: "prereqs-thread" })]);
+    const updated = tracked({
+      id: prior?.id,
+      subject: "Stellic agenda items",
+      from: "Michelle",
+      lastEmailDate: "2026-10-08T14:56:24Z",
+      evidence: [{ quote: "DONE - Pre-reqs from the last meeting", sender: "Michelle", date: "2026-10-08T14:56:24Z" }],
+    });
+    const [out] = enrichItemsWithConversations([updated], emails, [prior as TrackedItem]);
+    expect(out?.vitallyConversationId).toBe("agenda");
   });
 });

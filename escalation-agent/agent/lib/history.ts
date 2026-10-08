@@ -15,9 +15,13 @@ export interface AlertHistoryEntry {
 /** Alerts already posted, keyed per partner by conversation and by headline. */
 export type AlertHistory = Map<string, AlertHistoryEntry>;
 
-/** Keys one item is filed under: its Vitally conversation (when linked) and its headline. */
-export function historyKeys(partnerId: string, item: Pick<TrackedItem, "vitallyConversationId" | "headline">): string[] {
+/** Keys one item is filed under: its stable id, its Vitally conversation (when linked) and its headline. */
+export function historyKeys(
+  partnerId: string,
+  item: Pick<TrackedItem, "vitallyConversationId" | "headline"> & { id?: string },
+): string[] {
   const keys = [`${partnerId}|h:${item.headline}`];
+  if (item.id) keys.push(`${partnerId}|i:${item.id}`);
   if (item.vitallyConversationId) keys.push(`${partnerId}|c:${item.vitallyConversationId}`);
   return keys;
 }

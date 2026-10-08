@@ -11,8 +11,10 @@ import type { TriagePartner } from "./registry";
 import { formatSlackMessage, REACTION_LEGEND, type PostedMessage } from "./slack";
 import type { Store } from "./store";
 import {
+  assignItemIds,
   enrichItemsWithConversations,
   notableSeverityChanges,
+  reconcileItemIds,
   updateEscalations,
   type TrackedItem,
 } from "./triage";
@@ -104,7 +106,8 @@ export async function runSweep(deps: SweepDeps): Promise<SweepSummary> {
       lastMessageAt: null,
       checkedAt: nowIso,
     };
-    const priorItems = prior.items ?? [];
+    // Items saved before ids existed get one now, so the model can refer to them and keep them stable.
+    const priorItems = assignItemIds(prior.items ?? []);
     // Never reach back further than the lookback window, never re-fetch what's already incorporated.
     const sinceIso = latestIso(prior.lastMessageAt, lookbackCutoffIso);
 
@@ -142,7 +145,7 @@ export async function runSweep(deps: SweepDeps): Promise<SweepSummary> {
       return;
     }
 
-    let items = enrichItemsWithConversations(updated, newEmails, priorItems);
+    let items = enrichItemsWithConversations(reconcileItemIds(priorItems, updated), newEmails, priorItems);
     if (items.some((i) => !i.vitallyConversationId)) {
       const backfill = await collectNewHumanEmails(deps.vitally, partner.vitallyAccountId, lookbackCutoffIso);
       items = enrichItemsWithConversations(items, backfill, items);
@@ -157,7 +160,11 @@ export async function runSweep(deps: SweepDeps): Promise<SweepSummary> {
     };
     await deps.store.putJson(stateKey, payload);
 
-    const notable = notableSeverityChanges(priorItems, items, { partnerId: partner.partnerId, history: feedback.history });
+    const notable = notableSeverityChanges(priorItems, items, {
+      partnerId: partner.partnerId,
+      history: feedback.history,
+      newEmails,
+    });
     let postedForPartner = 0;
     let failedForPartner = 0;
     for (const item of notable) {

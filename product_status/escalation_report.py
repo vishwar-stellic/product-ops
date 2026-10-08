@@ -485,6 +485,14 @@ event; a partner who is explicitly escalating is covered by 4(c). Both signals
 need evidence - quote the dates of the misses or the partner's own words. A single
 reschedule, even one Stellic requested, is neither.
 
+STATUS NOTES AND AGENDAS
+A meeting agenda, recap or running status list that mentions an issue is not a new report of it.
+An item the notes mark as DONE, fixed, resolved, submitted, or "being worked on" by Stellic or the
+partner's own vendor is progress, not a fresh escalation: do not raise it, and lower or drop any
+tracked item it covers unless the same email also voices new frustration, a new deadline, or fresh
+Production impact. Only count what the email actually says about the issue, not what an older
+thread said about it.
+
 CALIBRATION EXAMPLES - these are real, human-scored
   5  Students cannot enroll or add classes in Prod; add deadline has passed.
   5  Multiple grading, audit and catalog incidents together threaten the SOM
@@ -548,6 +556,9 @@ when the partner starts asking for commitments. A 4 drops back to 3 when the dat
 without incident or the blast radius turns out to be one student.
 - If a new email makes it clear an existing item is now resolved (e.g. a fix confirmed, an apology \
 accepted, the ball explicitly no longer with either side), drop it from the list.
+- Evidence must stay with the issue it supports. Do not take quotes from one tracked item or \
+thread and attach them to an item built from a different email, and do not keep old quotes on an \
+item when the new emails give no sign the issue is still live.
 - Leave any existing item untouched if none of the new emails relate to it - do not reassess or \
 reword it just because this run happened.
 - Base every judgment only on the emails actually provided (previous items' own evidence, plus the \
