@@ -1092,11 +1092,32 @@ def _record_history(report: Dict[str, Any]) -> None:
         print(f"[support_report] failed to record history point: {exc}")
 
 
+def _latest_point_per_day(points: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Collapse the refresh log to one point per Pacific calendar day - the
+    day's *latest* snapshot - so several refreshes in one day show up as a
+    single point on the trend chart. The stored log keeps every refresh."""
+    by_day: Dict[Any, Dict[str, Any]] = {}
+    for point in points:
+        try:
+            at = datetime.fromisoformat(str(point["at"]).replace("Z", "+00:00"))
+        except (KeyError, ValueError):
+            continue
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        day = at.astimezone(_PACIFIC).date()
+        current = by_day.get(day)
+        if current is None or at >= current[0]:
+            by_day[day] = (at, point)
+    return [point for _, (_, point) in sorted(by_day.items(), key=lambda kv: kv[0])]
+
+
 def get_support_report_history() -> Dict[str, Any]:
     """Trend history for the chart - `{"points": [...]}` (oldest first among
-    the returned slice), capped at `SUPPORT_REPORT_TREND_CHART_MAX_POINTS`."""
+    the returned slice): one point per Pacific day (that day's latest
+    snapshot), capped at `SUPPORT_REPORT_TREND_CHART_MAX_POINTS`.
+    `totalPointsStored` counts days, not raw refreshes."""
     existing = cache.read_raw(SUPPORT_REPORT_HISTORY_KEY) or {}
-    points = existing.get("points") or []
+    points = _latest_point_per_day(existing.get("points") or [])
     return {
         "points": points[-SUPPORT_REPORT_TREND_CHART_MAX_POINTS:],
         "totalPointsStored": len(points),

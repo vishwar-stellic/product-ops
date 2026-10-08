@@ -3702,8 +3702,8 @@ function renderSupportReportTrendChart() {
   const columnPicker = renderSupportReportColumnPicker();
   return `
     <div class="squad-block support-trend-chart">
-      <h3 class="block-title">Trend <span class="label-badge">Last ${points.length} refresh${
-    points.length === 1 ? "" : "es"
+      <h3 class="block-title">Trend <span class="label-badge">Last ${points.length} day${
+    points.length === 1 ? "" : "s"
   }${
     totalStored > points.length ? ` (${totalStored} stored)` : ""
   }</span></h3>
@@ -3713,7 +3713,7 @@ function renderSupportReportTrendChart() {
       <div class="trend-svg-wrap"></div>
       <div class="trend-legend">${legend}</div>
       <p class="empty-note trend-cohort-note">
-        Last ${SUPPORT_REPORT_TREND_CHART_MAX_POINTS} daily refresh snapshots. Weekly SLA bars are on the Performance tab.
+        Last ${SUPPORT_REPORT_TREND_CHART_MAX_POINTS} days, one point per day (the day's latest refresh). Weekly SLA bars are on the Performance tab.
         The orange line has one point per snapshot, showing the number of customer-facing replies Stellic sent on Key User tickets during that snapshot's Pacific calendar day (the latest day is partial) — counted by the day the reply was sent, on any Key User ticket whether or not it closed (human teammates only; internal notes and bot replies excluded). Click a dot to see which tickets were responded to.${
           supportReportData && supportReportData.engagement && supportReportData.engagement.complete === false
             ? ` <strong>Still filling in:</strong> ${supportReportData.engagement.ticketsNotYetFetched} ticket(s) haven't been scanned yet, so recent counts may be low until the next refresh.`
