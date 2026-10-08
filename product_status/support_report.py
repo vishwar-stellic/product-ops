@@ -121,6 +121,18 @@ an `updated_at` search for this reason). A response = a human teammate's
 non-note part with a body (`_stellic_response_times`; bots excluded unless
 `ENGAGEMENT_COUNT_BOTS`). Reply times come from `conversation_parts`, cached
 per ticket by `updated_at` (`_collect_stellic_responses`).
+
+## Ticket type (from linked Linear issues)
+Each ticket record has `ticketType`: the Linear **Issue Type** label (Bug,
+Feature, Data Request, ...) of the Linear issue(s) linked to the ticket, joined
+with ", " when several differ, or "-" when nothing is linked / no Issue Type
+label. The link comes from the Linear-for-Intercom integration's internal notes
+on the conversation ("Issue <a href=linear...>ID</a> was linked to the
+conversation", status moves, "commented on"), read from the same
+`conversation_parts` fetch as the engagement series and cached with it
+(`_linear_issue_ids`). Labels are looked up in Linear by identifier (renamed or
+moved issues resolve via Linear's old-identifier redirect) and cached for
+`LINEAR_TYPE_CACHE_TTL_SECONDS`. "" means "not looked up yet" (cold cache).
 """
 
 import html
@@ -134,6 +146,7 @@ from zoneinfo import ZoneInfo
 
 from . import cache
 from .intercom_client import IntercomClient
+from .linear_client import LinearClient, chunked
 from .partner_identity import build_company_map, partner_name
 
 # Matches `notion_report.py:_PACIFIC` - "this week" resets on Pacific-time
@@ -145,7 +158,7 @@ SUPPORT_REPORT_CACHE_KEY = "dashboard-support-report"
 # Bump whenever this module's output shape or underlying metric logic
 # changes - see `milestones_report.py:MILESTONES_REPORT_CACHE_VERSION` for
 # why (same cache has no schema of its own).
-SUPPORT_REPORT_CACHE_VERSION = 20
+SUPPORT_REPORT_CACHE_VERSION = 21
 
 # Separate raw key (not versioned/aged like the main report - see
 # `cache.read_raw`) for the trend chart's accumulating history log.
@@ -171,6 +184,13 @@ ENGAGEMENT_COUNT_BOTS = False
 # may only get partway; later refreshes finish the job from the cache).
 ENGAGEMENT_DEADLINE_SECONDS = 235.0
 ENGAGEMENT_FETCH_CHUNK = 64
+
+# Linear issue identifier -> its "Issue Type" label, cached raw (see
+# `_issue_types_for`). Types almost never change, so a long TTL is fine.
+LINEAR_TYPE_CACHE_KEY = "dashboard-support-report-linear-types"
+LINEAR_TYPE_CACHE_TTL_SECONDS = 12 * 3600
+LINEAR_ISSUE_TYPE_PARENT = "Issue Type"
+LINEAR_LOOKUP_CHUNK = 40
 
 INTERCOM_INBOX_PREFIX = "g60t55rg"
 
@@ -526,6 +546,99 @@ def _verify_replies(client: IntercomClient, conversations: List[Dict[str, Any]])
         return dict(pool.map(_fetch, conversations))
 
 
+# The Linear-for-Intercom integration's notes: "Issue <a href=".../issue/PLAN-1/slug">PLAN-1</a>
+# was linked to the conversation" / "moved to status ..." / "<b>Name</b> commented on <a ...>".
+# Only notes that START with one of these count - a Linear URL merely mentioned
+# inside a comment's text (e.g. "Related: ...") is not a linked issue.
+_LINEAR_NOTE_RE = re.compile(
+    r'^\s*<p>(?:Issue |<b>[^<]*</b> commented on )<a href="https://linear\.app/[^/"]+/issue/([A-Za-z0-9]+-\d+)[^"]*"[^>]*>[^<]*</a>(.{0,60})',
+    re.DOTALL,
+)
+
+
+def _linear_issue_ids(conversation_parts: List[Dict[str, Any]]) -> List[str]:
+    """Linear issue identifiers linked to a conversation, in first-seen order,
+    read from the integration's internal notes (see `_LINEAR_NOTE_RE`); an
+    issue the integration later reports as unlinked/removed is dropped."""
+    ordered: List[str] = []
+    for part in conversation_parts or []:
+        if part.get("part_type") not in ("note", "note_and_unsnooze"):
+            continue
+        match = _LINEAR_NOTE_RE.match(part.get("body") or "")
+        if not match:
+            continue
+        identifier = match.group(1).upper()
+        tail = match.group(2).lower()
+        if "unlinked" in tail or "removed from" in tail:
+            if identifier in ordered:
+                ordered.remove(identifier)
+            continue
+        if identifier not in ordered:
+            ordered.append(identifier)
+    return ordered
+
+
+def _issue_types_for(identifiers: List[str], now: float) -> Dict[str, List[str]]:
+    """Linear identifier -> its "Issue Type" label names (usually one; [] when
+    the issue has none or can't be found). Cached per identifier; if Linear
+    can't be reached, stale cache entries are used and unknown ids are simply
+    absent from the result (callers show "" = not looked up)."""
+    stored = cache.read_raw(LINEAR_TYPE_CACHE_KEY) or {}
+    entries: Dict[str, Any] = stored.get("issues") or {}
+    result: Dict[str, List[str]] = {}
+    missing: List[str] = []
+    for identifier in sorted(set(identifiers)):
+        entry = entries.get(identifier)
+        if entry and now - float(entry.get("at") or 0) < LINEAR_TYPE_CACHE_TTL_SECONDS:
+            result[identifier] = entry.get("types") or []
+        else:
+            missing.append(identifier)
+    if missing:
+        try:
+            client = LinearClient()
+            for group in chunked(missing, LINEAR_LOOKUP_CHUNK):
+                fields = "identifier labels(first: 50) { nodes { name parent { name } } }"
+                query = "query {" + " ".join(f'i{n}: issue(id: "{i}") {{ {fields} }}' for n, i in enumerate(group)) + "}"
+                data = client.query(query)
+                for n, identifier in enumerate(group):
+                    issue = data.get(f"i{n}")
+                    if issue is None:
+                        types: List[str] = []
+                    else:
+                        types = [
+                            label["name"]
+                            for label in (issue.get("labels") or {}).get("nodes") or []
+                            if (label.get("parent") or {}).get("name") == LINEAR_ISSUE_TYPE_PARENT
+                        ]
+                    result[identifier] = types
+                    entries[identifier] = {"types": types, "at": now}
+            cache.write_raw(LINEAR_TYPE_CACHE_KEY, {"issues": entries})
+        except Exception as exc:  # never fail the report over a label
+            print(f"support_report: Linear issue-type lookup failed: {exc}", file=sys.stderr)
+            for identifier in missing:
+                stale = entries.get(identifier)
+                if stale and identifier not in result:
+                    result[identifier] = stale.get("types") or []
+    return result
+
+
+def _ticket_type_label(linear_ids: Optional[List[str]], issue_types: Dict[str, List[str]]) -> str:
+    """"" = unknown (parts not fetched yet / Linear unreachable), "-" = nothing
+    linked or no Issue Type label, else the distinct Issue Type labels joined."""
+    if linear_ids is None:
+        return ""
+    if not linear_ids:
+        return "-"
+    names: List[str] = []
+    for identifier in linear_ids:
+        if identifier not in issue_types:
+            return ""
+        for name in issue_types[identifier]:
+            if name not in names:
+                names.append(name)
+    return ", ".join(names) if names else "-"
+
+
 def _stellic_response_times(conversation_parts: List[Dict[str, Any]]) -> List[float]:
     """Epoch of every genuine Stellic response in `conversation_parts`: a
     human teammate (author `admin`; `bot` too only if `ENGAGEMENT_COUNT_BOTS`),
@@ -564,20 +677,26 @@ def _collect_stellic_responses(
     in time falls back to its previous cache entry (or is skipped) and is
     picked up on the next refresh; `complete` is False meanwhile.
 
-    Returns {"byTicket": {conversation_id: [epoch, ...]}, "complete": bool,
+    The same fetch also yields each ticket's linked Linear issue identifiers
+    (`_linear_issue_ids`), cached alongside and returned as "linearByTicket".
+
+    Returns {"byTicket": {conversation_id: [epoch, ...]},
+    "linearByTicket": {conversation_id: [identifier, ...]}, "complete": bool,
     "notFetched": int}."""
     stored = cache.read_raw(ENGAGEMENT_CACHE_KEY) or {}
     cached: Dict[str, Any] = stored.get("tickets") or {}
 
     by_ticket: Dict[str, List[float]] = {}
+    linear_by_ticket: Dict[str, List[str]] = {}
     fresh: Dict[str, Any] = {}
     to_fetch: List[Dict[str, Any]] = []
     for conversation in conversations:
         cid = str(conversation["id"])
         entry = cached.get(cid)
-        if entry and entry.get("updatedAt") == conversation.get("updated_at"):
+        if entry and entry.get("updatedAt") == conversation.get("updated_at") and "linear" in entry:
             fresh[cid] = entry
             by_ticket[cid] = [t for t in entry.get("replies") or [] if t >= since_ts]
+            linear_by_ticket[cid] = list(entry.get("linear") or [])
         else:
             to_fetch.append(conversation)
 
@@ -588,7 +707,12 @@ def _collect_stellic_responses(
             print(f"support_report: parts fetch failed for {conversation.get('id')}: {exc}", file=sys.stderr)
             return None
         parts = ((full.get("conversation_parts") or {}).get("conversation_parts")) or []
-        return str(conversation["id"]), conversation.get("updated_at"), _stellic_response_times(parts)
+        return (
+            str(conversation["id"]),
+            conversation.get("updated_at"),
+            _stellic_response_times(parts),
+            _linear_issue_ids(parts),
+        )
 
     if deadline is None:
         deadline = time.time() + ENGAGEMENT_DEADLINE_SECONDS
@@ -605,22 +729,30 @@ def _collect_stellic_responses(
                         # (and its old updatedAt) so it refetches next time.
                         fresh[cid] = stale
                         by_ticket[cid] = [t for t in stale.get("replies") or [] if t >= since_ts]
+                        if "linear" in stale:
+                            linear_by_ticket[cid] = list(stale.get("linear") or [])
                     not_fetched += 1
                 break
             for result in pool.map(_fetch, chunk):
                 if result is None:
                     not_fetched += 1
                     continue
-                cid, updated_at, times = result
+                cid, updated_at, times, linear_ids = result
                 replies = [t for t in times if t >= since_ts]
-                fresh[cid] = {"updatedAt": updated_at, "replies": replies}
+                fresh[cid] = {"updatedAt": updated_at, "replies": replies, "linear": linear_ids}
                 by_ticket[cid] = replies
+                linear_by_ticket[cid] = linear_ids
 
     try:
         cache.write_raw(ENGAGEMENT_CACHE_KEY, {"updatedAt": now, "tickets": fresh})
     except Exception as exc:  # best-effort, like the trend history
         print(f"support_report: could not save engagement cache: {exc}", file=sys.stderr)
-    return {"byTicket": by_ticket, "complete": not_fetched == 0, "notFetched": not_fetched}
+    return {
+        "byTicket": by_ticket,
+        "linearByTicket": linear_by_ticket,
+        "complete": not_fetched == 0,
+        "notFetched": not_fetched,
+    }
 
 
 def _build_daily_engagement(
@@ -837,6 +969,7 @@ def _ticket_record(
     contact_name_map: Dict[str, str],
     assignee_map: Dict[str, str],
     now: float,
+    ticket_types: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     created = conversation.get("created_at")
     priority = _priority(conversation) or "(blank)"
@@ -854,6 +987,7 @@ def _ticket_record(
         "createdAt": _epoch_to_iso(created),
         "firstReplyAt": _epoch_to_iso(first_reply),
         "ticketState": _ticket_state(conversation),
+        "ticketType": (ticket_types or {}).get(str(conversation.get("id")), ""),
         "conversationState": conversation.get("state"),
         "updatedAt": _epoch_to_iso(conversation.get("updated_at")),
         "userName": _user_name(conversation, contact_name_map),
@@ -878,6 +1012,7 @@ def _area_metrics(
     assignee_map: Dict[str, str],
     now: float,
     week_start: float,
+    ticket_types: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     ku_open = [c for c in open_register if _squad_for(c) == squad and _is_key_user(c)]
     new_ku = [
@@ -904,7 +1039,9 @@ def _area_metrics(
 
     def _records(conversations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return [
-            _ticket_record(c, squad, label, reply_overrides, company_map, contact_name_map, assignee_map, now)
+            _ticket_record(
+                c, squad, label, reply_overrides, company_map, contact_name_map, assignee_map, now, ticket_types
+            )
             for c in conversations
         ]
 
@@ -1048,6 +1185,16 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
     # These two extra lookups are independent of each other, so run them
     # side by side rather than one after another.
     ku_updated = [c for c in updated_raw if _is_key_user(c) and c.get("id")]
+    # Open Key User tickets first (their linked Linear issues drive the "Ticket
+    # Type" column), then everything else touched in the window; open tickets
+    # older than the window aren't in `ku_updated`, so add them too.
+    ku_open_all = [c for c in open_register if _is_key_user(c) and c.get("id")]
+    seen_ids = set()
+    engagement_tickets: List[Dict[str, Any]] = []
+    for c in ku_open_all + ku_updated:
+        if c["id"] not in seen_ids:
+            seen_ids.add(c["id"])
+            engagement_tickets.append(c)
     with ThreadPoolExecutor(max_workers=3) as pool:
         reply_future = pool.submit(_verify_replies, client, needs_verification)
         contact_name_future = pool.submit(
@@ -1056,7 +1203,7 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
         engagement_future = pool.submit(
             _collect_stellic_responses,
             client,
-            ku_updated,
+            engagement_tickets,
             cohort_since,
             now,
             started + ENGAGEMENT_DEADLINE_SECONDS,
@@ -1064,6 +1211,12 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
         reply_overrides = reply_future.result()
         contact_name_map = contact_name_future.result()
         engagement = engagement_future.result()
+
+    linear_by_ticket = engagement.get("linearByTicket") or {}
+    issue_types = _issue_types_for([i for ids in linear_by_ticket.values() for i in ids], now)
+    ticket_types = {
+        cid: _ticket_type_label(ids, issue_types) for cid, ids in linear_by_ticket.items()
+    }
 
     areas = [
         {
@@ -1081,6 +1234,7 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
                 assignee_map,
                 now,
                 week_start,
+                ticket_types,
             ),
         }
         for area in AREAS

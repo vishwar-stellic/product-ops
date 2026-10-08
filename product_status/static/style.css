@@ -677,19 +677,39 @@ body {
 /* Compact Date Created / First Reply / Last Update / User Name columns:
    headers may wrap and the filter controls truncate instead of widening
    the column. nth-child: 2 = created, 3 = first reply, 7 = last update,
-   8 = user name (see `renderSupportReportSortableHeaders`). */
-.filter-table thead tr:first-child th:nth-child(2),
-.filter-table thead tr:first-child th:nth-child(3),
-.filter-table thead tr:first-child th:nth-child(7),
-.filter-table thead tr:first-child th:nth-child(8) {
+   8 = user name for the generic tables; the Open Tickets drill-down
+   (`.drilldown-table`, see `renderSupportReportSortableHeaders`) has Ticket
+   Type inserted at 7, so there 8 = last update and 9 = user name. */
+.filter-table:not(.drilldown-table) thead tr:first-child th:nth-child(2),
+.filter-table:not(.drilldown-table) thead tr:first-child th:nth-child(3),
+.filter-table:not(.drilldown-table) thead tr:first-child th:nth-child(7),
+.filter-table:not(.drilldown-table) thead tr:first-child th:nth-child(8),
+.drilldown-table thead tr:first-child th:nth-child(2),
+.drilldown-table thead tr:first-child th:nth-child(3),
+.drilldown-table thead tr:first-child th:nth-child(7),
+.drilldown-table thead tr:first-child th:nth-child(8),
+.drilldown-table thead tr:first-child th:nth-child(9) {
   white-space: normal;
 }
 
-.filter-table .filter-row th:nth-child(2),
-.filter-table .filter-row th:nth-child(3),
-.filter-table .filter-row th:nth-child(7),
-.filter-table .filter-row th:nth-child(8) {
+.filter-table:not(.drilldown-table) .filter-row th:nth-child(2),
+.filter-table:not(.drilldown-table) .filter-row th:nth-child(3),
+.filter-table:not(.drilldown-table) .filter-row th:nth-child(7),
+.filter-table:not(.drilldown-table) .filter-row th:nth-child(8),
+.drilldown-table .filter-row th:nth-child(2),
+.drilldown-table .filter-row th:nth-child(3),
+.drilldown-table .filter-row th:nth-child(8) {
   min-width: 5.5rem;
+}
+
+/* Ticket Type (drill-down col 7): short values (Bug, Feature, Data Request). */
+.drilldown-table .filter-row th:nth-child(7) {
+  min-width: 4.5rem;
+}
+
+.drilldown-table .multi-select-filter[data-filter="ticketType"] {
+  width: 0;
+  min-width: 100%;
 }
 
 .filter-table th.col-compact {
@@ -714,10 +734,23 @@ body {
   white-space: normal;
 }
 
-.filter-table .filter-row th:nth-child(4),
-.filter-table .filter-row th:nth-child(8) {
+.filter-table:not(.drilldown-table) .filter-row th:nth-child(4),
+.filter-table:not(.drilldown-table) .filter-row th:nth-child(8),
+.drilldown-table .filter-row th:nth-child(4) {
   width: 1%;
   min-width: 4.5rem;
+}
+
+/* Drill-down User Name (col 9) is narrower still to make room for Ticket Type. */
+.drilldown-table .filter-row th:nth-child(9) {
+  width: 1%;
+  min-width: 4.5rem;
+}
+
+/* Wrap names at spaces (first / last name on separate lines) rather than mid-word. */
+.drilldown-table td:nth-child(9) {
+  min-width: 4.5rem;
+  max-width: 6.5rem;
 }
 
 .filter-table .multi-select-filter[data-filter="firstResponseSLA"] {
@@ -725,7 +758,8 @@ body {
   min-width: 100%;
 }
 
-.filter-table .filter-row th:nth-child(8) .multi-select-filter {
+.filter-table:not(.drilldown-table) .filter-row th:nth-child(8) .multi-select-filter,
+.drilldown-table .filter-row th:nth-child(9) .multi-select-filter {
   width: 0;
   min-width: 100%;
 }

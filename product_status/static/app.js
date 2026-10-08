@@ -1492,6 +1492,7 @@ const supportReportFilters = {
   firstResponseSLA: [],
   conversationState: [],
   ticketState: [],
+  ticketType: [],
   assignee: [],
   updatedDateFrom: "",
   updatedDateTo: "",
@@ -1553,6 +1554,12 @@ function supportReportConversationStatusLabel(value) {
 
 function supportReportFilterLabel(value) {
   return value || "(blank)";
+}
+
+// Ticket Type = Issue Type label of the linked Linear issue(s); "-" when none is
+// linked. An empty value means the backend hasn't looked the ticket up yet.
+function supportReportTicketTypeLabel(value) {
+  return value || "Loading…";
 }
 
 function supportReportLocalDayBounds(dateInputValue) {
@@ -1848,6 +1855,7 @@ function supportReportFilteredTickets(tickets) {
     if (f.conversationState.length && !f.conversationState.includes(supportReportConversationStatusLabel(t.conversationState)))
       return false;
     if (f.ticketState.length && !f.ticketState.includes(supportReportFilterLabel(t.ticketState))) return false;
+    if (f.ticketType.length && !f.ticketType.includes(supportReportTicketTypeLabel(t.ticketType))) return false;
     if (f.assignee.length && !f.assignee.includes(supportReportFilterLabel(t.assignee))) return false;
     if (f.userName.length && !f.userName.includes(supportReportFilterLabel(t.userName))) return false;
     if (f.partnerName.length && !f.partnerName.includes(supportReportFilterLabel(t.partnerName))) return false;
@@ -2012,7 +2020,7 @@ function slaStatusClass(status) {
   return "status-planned"; // Pending
 }
 
-const SUPPORT_REPORT_TICKET_COLUMNS = 12;
+const SUPPORT_REPORT_TICKET_COLUMNS = 13;
 
 // Sortable columns of the drill-down table, in display order. Clicking a
 // header cycles ascending -> descending -> unsorted (original order).
@@ -2023,6 +2031,7 @@ const SUPPORT_REPORT_SORT_COLUMNS = [
   { key: "firstResponseSLA", label: "First Response SLA", type: "sla" },
   { key: "conversationState", label: "Conversation Status", compact: true },
   { key: "ticketState", label: "Ticket Status" },
+  { key: "ticketType", label: "Ticket Type" },
   { key: "updatedAt", label: "Last Update", type: "date" },
   { key: "userName", label: "User Name" },
   { key: "partnerName", label: "Partner Name" },
@@ -2109,6 +2118,7 @@ function renderSupportReportTicketRows(tickets) {
       )}</span></td>
         <td>${escapeHtml(supportReportConversationStatusLabel(t.conversationState))}</td>
         <td>${escapeHtml(supportReportFilterLabel(t.ticketState))}</td>
+        <td>${escapeHtml(supportReportTicketTypeLabel(t.ticketType))}</td>
         <td>${formatDateOnly(t.updatedAt)}</td>
         <td>${escapeHtml(t.userName)}</td>
         <td>${escapeHtml(t.partnerName)}</td>
@@ -2151,6 +2161,7 @@ function renderSupportReportDrilldown() {
     ...new Set(allTickets.map((t) => supportReportConversationStatusLabel(t.conversationState))),
   ].sort();
   const ticketStateOptions = [...new Set(allTickets.map((t) => supportReportFilterLabel(t.ticketState)))].sort();
+  const ticketTypeOptions = [...new Set(allTickets.map((t) => supportReportTicketTypeLabel(t.ticketType)))].sort();
   const assigneeOptions = [...new Set(allTickets.map((t) => supportReportFilterLabel(t.assignee)))].sort();
   const priorityOptions = [...new Set(allTickets.map((t) => t.priority))].sort(
     (a, b) => SUPPORT_REPORT_PRIORITY_ORDER.indexOf(a) - SUPPORT_REPORT_PRIORITY_ORDER.indexOf(b)
@@ -2161,7 +2172,7 @@ function renderSupportReportDrilldown() {
       <h3 class="block-title">${escapeHtml(row ? row.label : "")} <span class="label-badge">${
     filtered.length
   } of ${allTickets.length}</span></h3>
-      <table class="data-table filter-table">
+      <table class="data-table filter-table drilldown-table">
         <thead>
           <tr>${renderSupportReportSortableHeaders()}</tr>
           <tr class="filter-row">
@@ -2179,6 +2190,7 @@ function renderSupportReportDrilldown() {
               supportReportFilters.conversationState
             )}</th>
             <th>${renderSupportReportMultiSelect("ticketState", ticketStateOptions, supportReportFilters.ticketState)}</th>
+            <th>${renderSupportReportMultiSelect("ticketType", ticketTypeOptions, supportReportFilters.ticketType)}</th>
             <th>${renderSupportReportDatePicker("updated")}</th>
             <th>${renderSupportReportMultiSelect("userName", userNameOptions, supportReportFilters.userName)}</th>
             <th>${renderSupportReportMultiSelect(
