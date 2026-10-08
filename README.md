@@ -292,72 +292,51 @@ the site into separate capabilities, each its own tab:
       issues together"). Zero-count cells aren't clickable. "Total" counts/
       links are open-state-only (matching the score denominators above);
       "new this month" counts/links intentionally include every status.
-  - **Live Fire** / **Smoldering** (Vitally conversations, triaged by an LLM) —
+  - **Live Fire** / **Smoldering** / **Watch** (from the escalation agent) —
     counts of that partner's currently-tracked escalation items at each
-    severity, from triaging that partner's recent *human-written* email
-    (Gmail/Outlook) and Intercom conversations — both mirrored into Vitally,
-    see `product_status/vitally_client.py` — against a fixed risk-triage
-    prompt (see `product_status/escalation_report.py`'s module docstring for
-    the exact prompt and design, including why Intercom conversations are
-    included despite the removed Support score also having used Intercom).
-    A plain `-` for a genuine zero at that severity, or `not in Vitally`/
-    `not configured` when there's no escalation data at all for that
-    partner. A third severity, **Watch**, doesn't get its own column (lower
-    signal) but is still visible in the expanded row.
-    - Needs *both* `VITALLY_ACCESS_TOKEN` (the conversation source) and
-      `OPENAI_API_KEY` (the triage, via `product_status/openai_client.py`
-      — OpenAI's `us.api.openai.com` regional/US-data-residency endpoint by
-      default) — either missing shows "not configured" for everyone.
-    - Before anything reaches the LLM, calendar invites/responses and
-      out-of-office auto-replies are dropped mechanically (these dominate
-      Vitally's Gmail-synced conversation volume) — subtler auto-generated
-      content (newsletters, marketing, recruiting, system alerts) is left to
-      the LLM's own judgment per the prompt's SCOPE section.
-    - A message counts as partner-authored either when Vitally's own
-      `type` field says so, or when its sender resolves to one of that
-      conversation's own external contacts — Vitally's `type` field turns
-      out to mislabel some genuinely partner-authored Gmail-synced replies
-      as "outbound" (confirmed against live data), so it isn't trusted
-      alone. See `escalation_report.py`'s `_is_partner_authored`.
-    - **Incremental, and only on a forced refresh** — unlike Bug/Feature
-      score, this never runs on a passive 24h cache-age refresh, only the
-      **Update** button. Each run only fetches emails newer than the last
-      run's newest processed email (capped at a 3-day lookback), hands them
-      to the LLM *alongside* the currently-tracked items, and asks it to
-      adjust (add/update/drop) rather than re-derive the list from scratch —
-      a partner with no new eligible email since last time costs nothing.
-      "Days since last movement" is computed live on every page load from
-      each item's `lastMovementAt`, not a number that goes stale between
-      runs.
+    severity. The triage itself lives in the separate escalation agent
+    (`escalation-agent/`, see its README): it reads each partner's recent
+    *human-written* email (Gmail/Outlook) and Intercom conversations
+    (mirrored into Vitally, see `product_status/vitally_client.py`) on a
+    schedule, scores them against a fixed risk rubric, keeps the tracked
+    items, and posts Slack alerts. This dashboard no longer triages
+    anything — `partner_insights.with_live_escalations` reads the agent's
+    saved items (`product_status/escalation_agent_client.py`, a 60-second
+    in-process cache) every time the tab is served, so it always matches
+    what the agent last saw. The 24h report cache holds only the Linear
+    scores. A plain `-` for a genuine zero at that severity;
+    `not in Vitally` when the partner has no Vitally account;
+    `not configured` when `ESCALATION_AGENT_URL` isn't set; `unavailable`
+    when the agent couldn't be reached (the Bug/Feature scores still show).
+    - Needs `ESCALATION_AGENT_URL` (the agent's production URL) and
+      `CRON_SECRET` (the secret both projects share) on this project.
+    - "Days since last movement" is computed live on every page load from
+      each item's `lastMovementAt`, not a number that goes stale.
     - Click a partner to see every tracked item's full breakdown (a
       findings table plus one detail card per item — headline, severity +
       why, 1-2 quoted evidence lines with sender/date, who's blocked on
       whom, days since last movement, and the triggering email's
       from/subject/date), plus a best-effort "Open account in Vitally"
-      link when `VITALLY_APP_SUBDOMAIN` is set (Vitally's API doesn't
-      expose a direct link back to the original thread, only the account
-      page) — **and** a "Recent emails analyzed" section listing the raw
-      source emails (subject/from/date, expand for the full body) the
-      latest batch actually looked at, from `escalations.recentEmails`
-      (see `escalation_report.py`'s module docstring) — not just the 1-2
-      quotes per item the triage prompt happens to pull out.
+      link when `VITALLY_APP_SUBDOMAIN` is set — **and** a "Recent emails
+      analyzed" section listing the raw source emails (subject/from/date,
+      expand for the full body) the agent's latest batch for that partner
+      looked at, from `escalations.recentEmails`.
   - Click a partner row to expand it in place (an extra row directly below
     that partner, not a separate panel at the bottom of the table) with the
     full breakdown — the Bug/Feature metrics and the Escalations block
     above.
   - Cached the same way as the other tabs (24h, own **Update** button to
-    force a refresh) — a forced refresh also re-runs escalation triage
-    for every partner with new eligible email, so it's slow (Linear pull +
-    Vitally pull + an LLM call per partner with new email).
+    force a refresh) — the Update button re-pulls Linear and re-reads the
+    agent's escalations; it never triggers a triage (the agent runs on its
+    own schedule).
   - Each row also has its own small ⟳ **Update** button (rightmost
-    column) to force a refresh for *just that partner* —
+    column) to refresh *just that partner* —
     `POST /api/partner-insights/refresh/{partner_id}` /
-    `partner_insights.refresh_single_partner` — instead of the whole
-    roster: one Linear pull plus at most one LLM triage call, versus one
-    LLM call per partner with new email for the top-of-tab Update button.
-    It patches the already-cached full report in place (`cache.peek` /
-    `cache.write_raw` on `PARTNER_INSIGHTS_CACHE_KEY`) so the change is
-    visible on a normal page load too, not just the tab that triggered it.
+    `partner_insights.refresh_single_partner` — one Linear pull plus a
+    re-read of that partner's escalations. It patches the already-cached
+    full report in place (`cache.peek` / `cache.write_raw` on
+    `PARTNER_INSIGHTS_CACHE_KEY`) so the change is visible on a normal page
+    load too, not just the tab that triggered it.
   - An earlier version of this tab also had a Support score column,
     scoring Intercom conversations with an LLM via a daily batch job. That
     was removed entirely (not just hidden) when it was dropped in favor of
@@ -803,40 +782,13 @@ may invoke anywhere within that hour rather than exactly on the minute -
 see [Vercel's Cron Jobs docs](https://vercel.com/docs/cron-jobs) for
 current plan limits.
 
-**Escalations cron + Slack alerting (Vercel Cron, needs a plan above
-Hobby):** `vercel.json` also registers a cron job that hits
-`GET /api/cron/refresh-escalations` once an hour, every day
-(`"schedule": "0 * * * *"`). It's deliberately a superset schedule - the
-endpoint itself (`server.py`'s `_in_escalation_run_window`) checks the
-*real* America/New_York local time on every invocation and no-ops
-(cheaply - no Vitally/LLM calls) unless it's currently one of 6 slots
-(8am/10am/12pm/2pm/4pm/6pm) on a weekday, which is how "every 2 hours,
-8am-6pm Eastern, Monday-Friday" stays correct across the DST switch
-without a seasonal schedule change (a fixed-UTC-offset cron, like the
-Support Report one above, would drift by an hour twice a year). Inside
-that window it forces the same whole-roster escalation refresh as the
-Partner Insights tab's Update button
-(`build_partner_insights_report(force=True)` ->
-`escalation_report.refresh_partner_escalations`) - which, per that
-module's "Only look at the last email" design, only ever calls the LLM
-for a partner that actually has new eligible email since the last check,
-not on every run. Whenever that turns up an item that's newly Live Fire
-or Smoldering (brand new, or escalated up from Watch/Smoldering - see
-escalation_report.py's `_notable_severity_changes`), it sends one Slack
-message summarizing everything newly flagged in that run
-(`product_status/slack_client.py`) - configured via `SLACK_BOT_TOKEN` +
-`SLACK_ALERT_TARGET` in `.env.example`; leave either unset and
-everything else works, the Slack step is just skipped.
-`SLACK_ALERT_TARGET` can be either a person's Slack member ID (DMs them)
-or a channel ID (posts there instead, once the bot's invited to that
-channel) - same env var either way, see `slack_client.py`'s module
-docstring. This alerting
-fires the same way regardless of which of the three trigger paths
-(this cron, the whole-roster Update button, or a per-partner Update
-button) caused the refresh - see escalation_report.py's module docstring.
-Same `CRON_SECRET` gate as the Support Report cron. Needs a Vercel plan
-above Hobby, since Hobby caps cron jobs at once/day (see above) and this
-one needs to fire hourly to do its own internal gating correctly.
+**Escalations:** there is no escalation cron here any more. The
+escalation agent (`escalation-agent/`) runs its own schedule (every 2 hours,
+Mon-Fri, 8am-6pm Eastern), triages partner email, and posts the Slack
+alerts. This app only serves it the partner list
+(`GET /api/internal/partner-registry`) and reads back its saved items for
+the Partner Insights tab. Both directions use `CRON_SECRET`, so the same
+value must be set on both Vercel projects.
 
 ## Project layout
 
@@ -856,10 +808,8 @@ product_status/
   support_report.py      # live Intercom SLA "5 metrics" per squad for the Support Report tab
   partner_identity.py    # shared Intercom<->Linear<->Vitally partner resolution (support_report.py + partner_insights.py)
   partner_insights.py    # per-partner Product (Linear) + Escalations for the Partner Insights tab (filtered to Vitally-matched partners)
-  vitally_client.py      # raw Vitally REST API client (Basic Auth, cursor pagination) - escalation_report.py's email source + partner_identity.py's account matching
-  escalation_report.py   # Vitally-synced partner emails, triaged by an LLM, for Partner Insights' Live Fire/Smoldering columns
-  openai_client.py       # thin OpenAI Chat Completions wrapper shared by partner_insights.py + escalation_report.py
-  slack_client.py        # minimal Slack Web API client (DM via chat.postMessage) - escalation_report.py's new-Fire/Smoldering alert
+  vitally_client.py      # raw Vitally REST API client (Basic Auth, cursor pagination) - partner_identity.py's account matching
+  escalation_agent_client.py  # read-only client for the escalation agent's saved items (Partner Insights' Live Fire/Smoldering/Watch columns)
   cache.py             # JSON cache keyed by age (used by the dashboard, 24h default) - on disk, or...
   blob_cache.py         # ...Vercel Blob-backed, when BLOB_READ_WRITE_TOKEN is set (persists on serverless hosts)
   notion_client.py      # raw Notion REST API client (auth, retries, nested block creation)

@@ -6,8 +6,7 @@ import { del as blobDel, get as blobGet, list as blobList, put as blobPut } from
 /**
  * Tiny JSON key/value store. Backed by a (private) Vercel Blob store when
  * BLOB_READ_WRITE_TOKEN is set, otherwise by the local `.state/` directory.
- * This project's store is separate from the dashboard's, so nothing here ever
- * touches the Python triage's cached state.
+ * This project's store is separate from the dashboard's.
  */
 export interface Store {
   getJson<T>(key: string): Promise<T | null>;

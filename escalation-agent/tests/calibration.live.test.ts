@@ -8,7 +8,7 @@ import type { SourceEmail } from "../agent/lib/vitally";
  * LIVE_CALIBRATION=1 and OPENAI_API_KEY are set (`npm run calibrate`).
  *
  * Each case is a synthetic partner email modelled on one of the human-scored
- * calibration examples in the rubric (agent/lib/triage-rubric.generated.ts).
+ * calibration examples in the rubric (agent/lib/triage-rubric.ts).
  * The check is deliberately coarse - "fire (score >= 4)" vs "not a fire" -
  * because that's the line the Slack alerts are drawn on. Run it before
  * deploying a change that could shift scoring (new feedback logic, a different

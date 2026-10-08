@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { normalizeSubject } from "./filters";
 import type { LlmFn } from "./llm";
-import { TRIAGE_PROMPT_TEMPLATE } from "./triage-rubric.generated";
+import { TRIAGE_PROMPT_TEMPLATE } from "./triage-rubric";
 import { type AlertHistory, SEVERITY_RANK, shouldAlert } from "./history";
 import type { SourceEmail } from "./vitally";
 
@@ -22,7 +22,7 @@ export interface TrackedItem {
    */
   id?: string;
   headline: string;
-  /** 0-5, per the rubric. Kept (unlike the Python state) so feedback can show the agent's own score. */
+  /** 0-5, per the rubric. Kept so feedback can show the agent's own score. */
   score: number;
   severity: Severity;
   severityReason: string;
@@ -88,7 +88,7 @@ export function formatEmailsForPrompt(emails: SourceEmail[]): string {
     .join("\n\n---\n\n");
 }
 
-/** Appended to the shared rubric: item identity is an agent-only concern, so it isn't in the Python prompt. */
+/** Appended to the shared rubric: kept separate from the rubric text itself. */
 export const ITEM_IDENTITY_NOTE = `ITEM IDENTITY
 Every previously tracked item above has an "id". When you update a tracked item in place, return it with the SAME "id", even if you reword its headline, change its score, or the newest email is in a different thread. Only an item that is genuinely new gets "id": null. Never reuse one item's id for a different issue.
 Evidence: each item's "evidence" must be quotes the emails actually contain. Quote the new emails when they support the item; keep older quotes only for the same issue and the same partner. Never move quotes from one tracked item onto another.`;

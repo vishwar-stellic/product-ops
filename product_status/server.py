@@ -77,35 +77,20 @@ Endpoints:
                                           Allowlist-gated (403 unless the
                                           signed-in email is in
                                           PARTNER_INSIGHTS_ALLOWED_EMAILS)
-    POST /api/partner-insights/refresh -> force a fresh pull (Linear +
-                                          Intercom, plus an LLM scoring
-                                          batch), bypassing the 24h cache -
-                                          slow, same allowlist gate
+    POST /api/partner-insights/refresh -> force a fresh pull (Linear),
+                                          bypassing the 24h cache - same
+                                          allowlist gate. Escalations are
+                                          read live from the escalation
+                                          agent on every GET/refresh (see
+                                          partner_insights.with_live_escalations)
     POST /api/partner-insights/refresh/{partner_id} -> force a fresh pull
                                           for exactly one partner - see
                                           partner_insights.refresh_single_partner
-    GET  /api/cron/refresh-escalations -> Vercel Cron hits this hourly (see
-                                          vercel.json); a no-op outside
-                                          Mon-Fri 8am-6pm America/New_York
-                                          (checked in real local time, so it
-                                          stays correct across DST - see
-                                          `_in_escalation_run_window`),
-                                          otherwise force-refreshes every
-                                          partner's escalation state (same
-                                          as the whole-roster Update
-                                          button) - see
-                                          escalation_report.py's "Slack
-                                          alerting" docstring section for
-                                          what happens when that finds
-                                          something new. Same
-                                          `Authorization: Bearer
-                                          <CRON_SECRET>` gate as the
-                                          Support Report cron above.
     GET  /api/internal/partner-registry -> machine-to-machine: the partner
                                           set the escalation triage covers
                                           (`partnerId`, `name`,
                                           `vitallyAccountId`), for the
-                                          parallel eve escalation agent in
+                                          eve escalation agent in
                                           `escalation-agent/`. Requires
                                           `Authorization: Bearer
                                           <CRON_SECRET>`; fails closed (503)
@@ -134,12 +119,10 @@ Endpoints:
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
 from html import escape
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote
-from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -176,6 +159,7 @@ from .partner_insights import (
     build_partner_insights_report,
     list_triage_partners,
     refresh_single_partner,
+    with_live_escalations,
 )
 from .projects import DEFAULT_SUMMIT_LABEL, build_dashboard_projects_report, build_summit_projects_report
 from .report import build_current_sprint, build_full_report, build_previous_sprint
@@ -207,8 +191,7 @@ _AUTH_PUBLIC_PATHS = {
     # pattern as `_require_partner_insights_access` gating its own routes
     # independently of this Google-login middleware.
     "/api/cron/refresh-support-report",
-    "/api/cron/refresh-escalations",
-    # Machine-to-machine: the parallel eve escalation agent reads the partner
+    # Machine-to-machine: the eve escalation agent reads the partner
     # list here - see `_require_internal_secret` for the real gate.
     "/api/internal/partner-registry",
     # Linked from each squad section in a published EPD Report Notion page.
@@ -794,48 +777,6 @@ def cron_refresh_support_report(request: Request):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-# Local hours (America/New_York, real clock time - not a fixed UTC offset,
-# so this stays correct across the DST switch) during which
-# /api/cron/refresh-escalations actually does anything. "Every 2 hours,
-# 8am-6pm, Mon-Fri" -> exactly these 6 slots.
-_ESCALATION_RUN_HOURS = {8, 10, 12, 14, 16, 18}
-_ESCALATION_TIMEZONE = ZoneInfo("America/New_York")
-
-
-def _in_escalation_run_window(now: Optional[datetime] = None) -> bool:
-    """Whether *right now*, in real America/New_York local time, falls on
-    one of the 2-hour business-hours slots above. The Vercel Cron entry
-    itself just fires hourly, every day (see vercel.json) - encoding
-    "every 2 hours, 8am-6pm Eastern, weekdays only" directly as a UTC cron
-    schedule would need manual adjustment twice a year for DST, so that
-    schedule is deliberately a superset and this function does the actual
-    gating in real local time instead. `now` is only ever overridden by
-    tests."""
-    local = (now or datetime.now(_ESCALATION_TIMEZONE)).astimezone(_ESCALATION_TIMEZONE)
-    return local.weekday() < 5 and local.hour in _ESCALATION_RUN_HOURS
-
-
-@app.get("/api/cron/refresh-escalations")
-def cron_refresh_escalations(request: Request):
-    """Meant to be invoked by Vercel Cron hourly, every day (see
-    vercel.json) - not by a person. A cheap no-op outside business hours
-    (see `_in_escalation_run_window`); otherwise forces the same
-    whole-roster escalation refresh as the Partner Insights tab's Update
-    button (`build_partner_insights_report(force=True)`), which - as a
-    side effect - sends a Slack DM for any newly-flagged Fire/Smoldering
-    item (see escalation_report.py's "Slack alerting" docstring section)."""
-    _require_cron_secret(request)
-    if not _in_escalation_run_window():
-        return {"skipped": True, "reason": "outside Mon-Fri 8am-6pm America/New_York"}
-    try:
-        report = _get_partner_insights(force=True)
-    except LinearGraphQLError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
-    except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
-    return {"skipped": False, "fetchedAt": report.get("fetchedAt")}
-
-
 def _require_internal_secret(request: Request) -> None:
     """Stricter sibling of `_require_cron_secret` for machine-to-machine
     routes that return partner data: fails CLOSED. A 401 unless
@@ -860,7 +801,7 @@ def internal_partner_registry(request: Request):
     """The partner set the escalation triage covers (`partnerId`, `name`,
     `vitallyAccountId`) - same registry and filter as the Partner Insights
     tab, see `partner_insights.list_triage_partners`. Consumed by the
-    parallel eve escalation agent (`escalation-agent/`). Gated by
+    eve escalation agent (`escalation-agent/`). Gated by
     `_require_internal_secret`; cached for an hour."""
     _require_internal_secret(request)
     try:
@@ -894,12 +835,13 @@ def _require_partner_insights_access(request: Request) -> None:
 def _get_partner_insights(force: bool) -> Dict[str, Any]:
     entry = cache.get_or_refresh(
         PARTNER_INSIGHTS_CACHE_KEY,
-        lambda: build_partner_insights_report(force=force),
+        lambda: build_partner_insights_report(),
         force=force,
         max_age_seconds=DASHBOARD_MAX_AGE_SECONDS,
         version=PARTNER_INSIGHTS_CACHE_VERSION,
     )
-    return {"fetchedAt": entry["fetchedAt"], **entry["data"]}
+    # Escalations come live from the escalation agent, not from the cache.
+    return {"fetchedAt": entry["fetchedAt"], **with_live_escalations(entry["data"])}
 
 
 @app.get("/api/partner-insights")
@@ -919,9 +861,8 @@ def partner_insights(request: Request):
 
 @app.post("/api/partner-insights/refresh")
 def partner_insights_refresh(request: Request):
-    """Force a fresh pull (Linear + Vitally, plus an LLM escalation-triage
-    call per partner with new eligible email), regardless of cache age -
-    slow, see partner_insights.py. Same allowlist gate as the GET above."""
+    """Force a fresh pull (Linear + Vitally) regardless of cache age, see
+    partner_insights.py. Same allowlist gate as the GET above."""
     _require_partner_insights_access(request)
     try:
         return _get_partner_insights(force=True)
@@ -934,10 +875,9 @@ def partner_insights_refresh(request: Request):
 @app.post("/api/partner-insights/refresh/{partner_id}")
 def partner_insights_refresh_one(partner_id: str, request: Request):
     """Force a fresh pull for exactly one partner (the Partner Insights
-    table's per-partner Update button) - one Linear pull plus at most one
-    LLM escalation-triage call, versus the whole-roster POST above which
-    re-triages every Vitally-matched partner with new eligible email.
-    Returns just that partner's row (`build_partner_insights_report`'s
+    table's per-partner Update button) - one Linear pull plus a re-read of
+    that partner's escalations from the agent, versus the whole-roster POST
+    above. Returns just that partner's row (`build_partner_insights_report`'s
     `partners[i]` shape) rather than the whole report - see
     `partner_insights.refresh_single_partner`, which also patches the
     already-cached full report in place so a normal page load reflects

@@ -1,7 +1,5 @@
 /**
- * Mechanical (non-LLM) pre-filtering of Vitally messages. Ports
- * `_looks_auto_generated`, `_is_partner_authored`, `_strip_html` and
- * `_normalize_subject_for_match` from `product_status/escalation_report.py`.
+ * Mechanical (non-LLM) pre-filtering of Vitally messages.
  */
 
 export interface VitallyParticipant {

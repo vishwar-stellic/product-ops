@@ -4,6 +4,7 @@ import { checkBearer } from "../lib/auth";
 import { debugConversation } from "../lib/debug";
 import { ALERT_PREFIX, PARTNER_STATE_PREFIX } from "../lib/feedback";
 import { purgeForeignConversation } from "../lib/purge";
+import { exportPartnerStates } from "../lib/state-export";
 import { fetchPartnerRegistry } from "../lib/registry";
 import { startConfiguredRun } from "../lib/run";
 import { readRunStatus } from "../lib/runs";
@@ -21,6 +22,7 @@ import { createVitallyClient } from "../lib/vitally";
  *   POST /escalation/run  {"seed": true}     triage and SAVE state, post nothing (baseline)
  *   GET  /escalation/run            status of the current / last run
  *   GET  /escalation/debug?conversation=<vitally id>   read-only: alerts + saved state linked to a conversation
+ *   POST /escalation/state {"partnerIds": [...]}   read-only: saved tracked items per partner (feeds the dashboard)
  *   POST /escalation/purge {"conversation": "<id>", "confirm": true}   drop saved items that came from a thread another partner owns ("dryRun": true previews)
  *   POST /escalation/reset {"confirm": true}   forget all partner state (see below)
  *   POST /escalation/reset {"confirm": true, "includeAlerts": true}   ...and the stored alerts + reaction feedback
@@ -134,6 +136,23 @@ export default defineChannel({
       } catch (error) {
         return Response.json({ error: String(error) }, { status: 502 });
       }
+    }),
+
+    // Read-only: the tracked items for the given partners, for the dashboard's Partner Insights tab.
+    POST("/escalation/state", async (request) => {
+      const denied = reject(request);
+      if (denied) return denied;
+      let partnerIds: string[] = [];
+      try {
+        const body = (await request.json()) as { partnerIds?: unknown } | null;
+        if (Array.isArray(body?.partnerIds)) {
+          partnerIds = body.partnerIds.filter((id): id is string => typeof id === "string" && id.length > 0);
+        }
+      } catch {
+        // fall through to the 400 below
+      }
+      if (partnerIds.length === 0) return Response.json({ error: 'send {"partnerIds": ["..."]}' }, { status: 400 });
+      return Response.json({ generatedAt: new Date().toISOString(), partners: await exportPartnerStates(getStore(), partnerIds) });
     }),
 
     // Read-only: why was this Vitally conversation flagged? Returns the alerts it caused

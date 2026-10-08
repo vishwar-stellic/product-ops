@@ -2,8 +2,7 @@ import { ESCALATION_RUN_HOURS, ESCALATION_TIMEZONE } from "./config";
 
 /**
  * Whether `now`, in real America/New_York local time, falls on one of the
- * 2-hour business-hours slots (Mon-Fri, 8/10/12/14/16/18). Mirrors
- * `_in_escalation_run_window` in the Python app. Eve crons run in UTC, so the
+ * 2-hour business-hours slots (Mon-Fri, 8/10/12/14/16/18). Eve crons run in UTC, so the
  * cron is an hourly superset and this does the gating in local time, which
  * stays correct across daylight saving.
  */

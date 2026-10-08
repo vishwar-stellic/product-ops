@@ -7,11 +7,11 @@ export interface TriagePartner {
 }
 
 /**
- * The partner set the Python escalation triage covers, served by the
- * dashboard's `GET /api/internal/partner-registry` (same registry + same
- * "has a Vitally account" filter). Throws on any failure - the sweep aborts
- * rather than falling back to a different partner list, so the side-by-side
- * comparison stays honest.
+ * The partner set the escalation triage covers, served by the
+ * dashboard's `GET /api/internal/partner-registry` (the Partner Insights
+ * registry, filtered to partners with a Vitally account). Throws on any
+ * failure - the sweep aborts rather than falling back to a different partner
+ * list.
  */
 export async function fetchPartnerRegistry(
   baseUrl = process.env.PRODUCT_OPS_BASE_URL,

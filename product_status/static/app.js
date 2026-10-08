@@ -4126,10 +4126,19 @@ function escalationSeverityCount(escalations, severity) {
 // Main-table cell for one severity's count (Live Fire / Smoldering / Watch)
 // - a quiet "-" for a genuine zero, or "not in Vitally"/"not configured"
 // when there's no escalation data at all for this partner.
-function renderEscalationCountCell(escalations, escalationsConfigured, severity) {
+function escalationsUnavailableText(escalationsConfigured, escalationsError) {
+  if (!escalationsConfigured) {
+    return "Escalations aren't configured yet (set ESCALATION_AGENT_URL) - see README.";
+  }
+  if (escalationsError) return "Escalation agent unavailable - try again shortly.";
+  return "Not matched to a Vitally account - no partner emails to triage.";
+}
+
+function renderEscalationCountCell(escalations, escalationsConfigured, severity, escalationsError) {
   const count = escalationSeverityCount(escalations, severity);
   if (count === null) {
-    return `<span class="empty-note-inline">${escalationsConfigured ? "not in Vitally" : "not configured"}</span>`;
+    const label = !escalationsConfigured ? "not configured" : escalationsError ? "unavailable" : "not in Vitally";
+    return `<span class="empty-note-inline">${label}</span>`;
   }
   if (!count) {
     return `<span class="empty-note-inline">-</span>`;
@@ -4138,8 +4147,8 @@ function renderEscalationCountCell(escalations, escalationsConfigured, severity)
 }
 
 // Computed live from `lastMovementAt` on every render rather than a number
-// the LLM wrote once (see `escalation_report.py`'s module docstring) - stays
-// accurate between refreshes without needing a new LLM call.
+// the LLM wrote once - stays accurate between refreshes without needing a
+// new LLM call.
 function daysSince(isoDate) {
   if (!isoDate) return null;
   const then = new Date(isoDate).getTime();
@@ -4155,16 +4164,12 @@ const BLOCKED_ON_LABEL = { us: "Us", them: "Them", unclear: "Unclear" };
 // the outer partner table itself, rather than a separate summary table
 // plus a fully-separate list of detail cards repeating the same items -
 // and, unlike a one-off ad-hoc check, a "Recent emails" section sourced
-// from `escalations.recentEmails` (see `escalation_report.py`'s module
-// docstring) so the raw source material stays visible between updates.
-function renderEscalationsBlock(partner, escalationsConfigured) {
+// from `escalations.recentEmails` (the escalation agent's latest batch) so
+// the raw source material stays visible between updates.
+function renderEscalationsBlock(partner, escalationsConfigured, escalationsError) {
   const escalations = partner.escalations;
   if (!escalations) {
-    return `<p class="empty-note">${
-      escalationsConfigured
-        ? "Not matched to a Vitally account - no partner emails to triage."
-        : "Escalation triage isn't configured yet (needs OPENAI_API_KEY and VITALLY_ACCESS_TOKEN) - see README."
-    }</p>`;
+    return `<p class="empty-note">${escapeHtml(escalationsUnavailableText(escalationsConfigured, escalationsError))}</p>`;
   }
   const items = (escalations.items || [])
     .slice()
@@ -4359,7 +4364,11 @@ function renderPartnerInsightsExpandedRow(partner) {
         </div>
         <div style="margin-top: 16px;">
           <h4 class="block-subtitle">Escalations</h4>
-          ${renderEscalationsBlock(partner, partnerInsightsData && partnerInsightsData.escalationsConfigured)}
+          ${renderEscalationsBlock(
+            partner,
+            partnerInsightsData && partnerInsightsData.escalationsConfigured,
+            partnerInsightsData && partnerInsightsData.escalationsError
+          )}
         </div>
       </td>
     </tr>`;
@@ -4389,16 +4398,16 @@ function renderPartnerInsights(data) {
       const isUpdating = p.partnerId === partnerInsightsUpdatingId;
       const updateBtn = `<button type="button" class="partner-update-btn" data-partner-id="${escapeHtml(
         p.partnerId
-      )}" ${isUpdating ? "disabled" : ""} title="Refresh just ${escapeHtml(p.name)} (Linear + Vitally + LLM)">${
+      )}" ${isUpdating ? "disabled" : ""} title="Refresh just ${escapeHtml(p.name)} (Linear score + latest escalations)">${
         isUpdating ? '<span class="spinner"></span>' : "⟳"
       }</button>`;
       const mainRow = `
       <tr class="clickable-row${isActive ? " active-row" : ""}" data-partner-id="${escapeHtml(p.partnerId)}">
         <td>${escapeHtml(p.name)}${!p.matched ? ' <span class="unmatched-flag" title="Couldn\'t be matched between Linear and Intercom">⚠</span>' : ""}</td>
         <td class="num">${renderScoreCell(bugScore, "not linked")}</td>
-        <td class="num">${renderEscalationCountCell(p.escalations, data.escalationsConfigured !== false, "LIVE_FIRE")}</td>
-        <td class="num">${renderEscalationCountCell(p.escalations, data.escalationsConfigured !== false, "SMOLDERING")}</td>
-        <td class="num">${renderEscalationCountCell(p.escalations, data.escalationsConfigured !== false, "WATCH")}</td>
+        <td class="num">${renderEscalationCountCell(p.escalations, data.escalationsConfigured !== false, "LIVE_FIRE", data.escalationsError)}</td>
+        <td class="num">${renderEscalationCountCell(p.escalations, data.escalationsConfigured !== false, "SMOLDERING", data.escalationsError)}</td>
+        <td class="num">${renderEscalationCountCell(p.escalations, data.escalationsConfigured !== false, "WATCH", data.escalationsError)}</td>
         <td class="num">${updateBtn}</td>
       </tr>`;
       return isActive ? mainRow + renderPartnerInsightsExpandedRow(p) : mainRow;
@@ -4411,12 +4420,14 @@ function renderPartnerInsights(data) {
         Only partners matched to a Vitally account are listed here. Bug score reflects bug-SLA
         responsiveness (100 = clean), from that partner's Linear customer requests. Live Fire,
         Smoldering, and Watch are counts of that partner's currently-tracked escalation items at each
-        severity, from an LLM triage of that partner's recent human-written emails and Intercom
-        conversations (synced via Vitally) - only re-analyzed on a forced Update, and only the newest
-        messages each time.${
+        severity, from the escalation agent's triage of that partner's recent human-written emails and
+        Intercom conversations (synced via Vitally). The agent re-checks every couple of hours on
+        weekdays; Update here just re-reads what it has saved.${
           data.escalationsConfigured === false
-            ? " Escalation triage isn't configured yet (needs OPENAI_API_KEY and VITALLY_ACCESS_TOKEN) - see README."
-            : ""
+            ? " Escalations aren't configured yet (set ESCALATION_AGENT_URL) - see README."
+            : data.escalationsError
+              ? " The escalation agent couldn't be reached just now - counts will return when it responds."
+              : ""
         }
         Click a partner for the full breakdown, including Feature score and the source
         emails/conversations themselves.
@@ -4533,10 +4544,9 @@ if (els.partnerInsightsUpdateBtn) {
 }
 
 // Per-row Update button (⟳ next to each partner) - refreshes just that
-// one partner's Product score + escalation triage instead of the whole
-// roster (see `refreshPartnerInsights` above and the server-side
-// `POST /api/partner-insights/refresh/{partner_id}`). Much faster since
-// it's at most one LLM call instead of one per partner with new email.
+// one partner's Product score and re-reads its escalations instead of the
+// whole roster (see `refreshPartnerInsights` above and the server-side
+// `POST /api/partner-insights/refresh/{partner_id}`).
 async function updateSinglePartner(partnerId) {
   if (partnerInsightsUpdatingId) return; // one at a time is enough
   const partner = ((partnerInsightsData && partnerInsightsData.partners) || []).find(

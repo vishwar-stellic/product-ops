@@ -4,7 +4,7 @@ import { inRunWindow } from "../lib/window";
 import { startConfiguredRun } from "../lib/run";
 
 /**
- * Escalation sweep, same cadence as the Python job: every 2 hours, Mon-Fri,
+ * Escalation sweep, every 2 hours, Mon-Fri,
  * 8am-6pm America/New_York. Eve schedules run in UTC, so the cron fires hourly
  * and the real gating happens here in Eastern local time (correct across DST).
  * Outside a slot this returns immediately and costs nothing.

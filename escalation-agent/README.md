@@ -1,37 +1,34 @@
 # Escalation agent (eve)
 
-A parallel, read-only version of the Partner Insights escalation triage, built on
-[Vercel eve](https://eve.dev). It runs next to the Python job (`product_status/escalation_report.py`),
-posts Live Fire / Smoldering alerts to **its own Slack channel** so the two can be compared side by side, and
-**learns from emoji reactions** on those alerts.
+The partner-escalation triage for the Product Ops dashboard, built on [Vercel eve](https://eve.dev). It reads
+partner email from Vitally on a schedule, keeps a tracked list of escalation items per partner, posts Live Fire
+/ Smoldering alerts to Slack, and **learns from emoji reactions** on those alerts. The dashboard's Partner
+Insights tab shows the items it saved (`POST /escalation/state`); the dashboard does no triage of its own.
 
-It never writes to the dashboard's cache, never posts to the Python job's Slack target, and only reads
-Vitally.
+It is read-only against Vitally. It keeps its own state in a dedicated Vercel Blob store.
 
 ## How it works
 
 ```
 schedule (hourly UTC cron, gated to Mon-Fri 8/10/12/14/16/18 ET)
-  -> GET {PRODUCT_OPS_BASE_URL}/api/internal/partner-registry     same partner set as the Python job
+  -> GET {PRODUCT_OPS_BASE_URL}/api/internal/partner-registry     the partners to triage
   -> feedback snapshot from Slack reactions                        (agent/lib/feedback.ts)
   -> per partner (8 in parallel):
        Vitally: new partner-authored, non-auto-generated email      (agent/lib/vitally.ts)
-       model: update the tracked items (same rubric + call as Python) (agent/lib/triage.ts, llm.ts)
+       model: update the tracked items against the rubric           (agent/lib/triage.ts, llm.ts)
        save state, then post one Slack message per item that newly reached Live Fire / Smoldering
 Slack reaction_added / reaction_removed on an alert
   -> agent/channels/slack.ts -> agent/lib/reactions.ts -> agent/lib/feedback.ts
+Dashboard Partner Insights tab
+  -> POST /escalation/state {"partnerIds": [...]}                  (agent/lib/state-export.ts)
 ```
 
-Same as the Python job: 3-day lookback, only `google`/`intercom` Vitally sources, partner-authored detection
-(including the mislabelled-`outbound` rescue), calendar/OOO filtering, incremental per-partner state, one
-message per newly notable item, same model and request parameters (`gpt-5-mini`, reasoning `low`).
+3-day lookback, only `google`/`intercom` Vitally sources, partner-authored detection (including the
+mislabelled-`outbound` rescue), calendar/OOO filtering, incremental per-partner state, one message per newly
+notable item, model `gpt-5-mini` with reasoning `low`.
 
-The rubric is **not retyped**: `agent/lib/triage-rubric.generated.ts` is generated from the Python prompt.
-After changing `_TRIAGE_SYSTEM_PROMPT` run, from the repo root:
-
-```sh
-PYTHONPATH=. .venv/bin/python escalation-agent/scripts/export-rubric.py
-```
+The rubric lives in `agent/lib/triage-rubric.ts` (a plain template; edit it there). Alerts only fire for an
+item whose evidence is in the emails read this run, and a tracked item keeps a stable `id` across rewording.
 
 ## Slack feedback
 
@@ -56,14 +53,14 @@ lives in `EMOJI_VERDICTS` in `agent/lib/feedback.ts`.
 1. **Slack app** (new, or reuse the existing one): bot scopes `chat:write`, `reactions:read`,
    `channels:history` (`groups:history` for a private channel). Event Subscriptions -> Request URL
    `https://<this-deployment>/eve/v1/slack`, subscribe to `reaction_added` and `reaction_removed`. Create the
-   alert channel, `/invite` the bot, and copy the channel ID into `SLACK_ALERT_CHANNEL_AGENT` (the Python
-   job keeps using its own `SLACK_ALERT_TARGET`; this agent never reads that one).
-2. **Dashboard project (Python)**: it must have `CRON_SECRET` set. The new `/api/internal/partner-registry`
-   endpoint returns 503 without it and 401 for a wrong secret.
+   alert channel, `/invite` the bot, and copy the channel ID into `SLACK_ALERT_CHANNEL_AGENT`.
+2. **Dashboard project**: it must have `CRON_SECRET` set (the same value as on this project) and
+   `ESCALATION_AGENT_URL` pointing at this deployment. `/api/internal/partner-registry` returns 503 without
+   the secret and 401 for a wrong one; this agent's `/escalation/*` routes use the same secret.
 3. **This project**: `eve link`, then set the env vars in `.env.example` on the Vercel project (including a
    new, dedicated Blob store for `BLOB_READ_WRITE_TOKEN`), then `eve deploy`.
 4. First run: the sweep looks back 3 days, so expect a burst of alerts for currently-open Live Fire /
-   Smoldering issues, same as the Python job's first run.
+   Smoldering issues.
 
 ## Local development
 
@@ -80,7 +77,7 @@ outside the Eastern business-hours slots; `ESCALATION_DRY_RUN=1` logs alerts ins
 
 ## Running on demand
 
-The schedule follows the Python job (every 2 hours, Mon-Fri 8am-6pm ET). To run a sweep at any other
+The schedule is every 2 hours, Mon-Fri 8am-6pm ET. To run a sweep at any other
 time, call the authenticated endpoint with the same `CRON_SECRET` the dashboard uses:
 
 ```sh
@@ -101,11 +98,9 @@ turn `ESCALATION_DRY_RUN=1` off. Manual runs don't change the schedule.
 re-triages the whole 3-day window and re-alerts); add `"includeAlerts": true` to also delete the stored
 alert records and their reaction feedback (test data).
 
-## Comparing against the Python job
-
-Both run at the same slots against the same partners with the same model, so differences come from the
-framework and the feedback. Expect small timing skew (they run independently). Each eve alert ends with a
-reaction legend, which is how you tell the channels apart at a glance.
+`POST /escalation/purge` with `{"conversation": "<vitally id>", "confirm": true}` removes saved items that
+came from a thread another partner owns (Vitally attaches a thread to every participant's account); add
+`"dryRun": true` to preview. `GET /escalation/debug?conversation=<id>` shows why a conversation alerted.
 
 ## Things to watch
 

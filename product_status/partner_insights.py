@@ -76,16 +76,13 @@ would only ever show empty cells; filtering them out keeps the table to
 partners this tab can actually say something about, rather than a long
 tail of "not linked"/"not in Vitally" rows.
 
-## Escalations (Vitally conversations + LLM triage, incremental, forced-refresh only)
-A second, independent signal alongside Bug/Feature score - see
-`escalation_report.py`'s module docstring for the full design. In short:
-partner-authored, human-written email (Gmail/Outlook) and Intercom
-conversations, both mirrored into Vitally, are triaged by OpenAI against
-a fixed risk framework into LIVE_FIRE/SMOLDERING/WATCH items, cached and
-updated incrementally (only new messages since the last run are ever
-re-analyzed). Unlike Bug/Feature score, this never runs on a passive/
-cache-age refresh - only an explicit "Update" button click triggers new
-LLM calls, since it's the more expensive of the two to compute.
+## Escalations (read from the escalation agent)
+A second, independent signal alongside Bug/Feature score. This module no longer
+triages anything itself: the escalation agent (`escalation-agent/`) reads
+partner-authored email from Vitally on a schedule, keeps each partner's tracked
+LIVE_FIRE/SMOLDERING/WATCH items and posts the Slack alerts. `with_live_escalations`
+reads those saved items from the agent every time the report is served (not baked
+into the 24h cache), so this tab always matches what the agent last saw.
 """
 
 import re
@@ -93,12 +90,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from . import cache
-from .escalation_report import escalations_configured, refresh_partner_escalations, vitally_app_account_url
+from . import escalation_agent_client
 from .intercom_client import IntercomClient
 from .linear_client import LinearClient
 from .partner_identity import build_partner_registry
 from .quality import BUG_LABEL, _month_bounds
-from .vitally_client import VitallyClient
+from .vitally_client import VitallyClient, vitally_app_account_url
 from .vitally_client import is_configured as vitally_configured
 
 PARTNER_INSIGHTS_CACHE_KEY = "dashboard-partner-insights"
@@ -353,29 +350,53 @@ def compute_product_scores(
 # ---------------------------------------------------------------------------
 
 
-def _escalation_view(partner: Dict[str, Any], escalation_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """The `escalations` sub-object for one partner's row, given the raw
-    `escalation_report.py` state dict (`partnerId -> {"items": [...], ...}`)
-    - shared by `build_partner_insights_report` (the whole roster) and
-    `refresh_single_partner` (one partner) so both produce identically-
-    shaped rows."""
+def _escalation_view(partner: Dict[str, Any], agent_state: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The `escalations` sub-object for one partner's row, from the agent's
+    saved state for that partner (None = the agent hasn't processed this
+    partner yet, shown as an empty "nothing found" block rather than hidden)."""
     account_id = partner.get("vitallyAccountId")
     if not account_id:
         return None
-    entry = escalation_state.get(partner["partnerId"]) or {"items": [], "checkedAt": None}
+    entry = agent_state or {}
     return {
         "items": entry.get("items") or [],
         "checkedAt": entry.get("checkedAt"),
         "vitallyAccountUrl": vitally_app_account_url(account_id),
-        # Raw source emails from the latest triage batch - see
-        # `escalation_report.py`'s module docstring's `recentEmails`
-        # section. Empty until the first forced refresh after a
-        # partner has new eligible email.
+        # Raw source emails from the agent's latest triage batch for this partner.
         "recentEmails": entry.get("recentEmails") or [],
     }
 
 
-def build_partner_insights_report(force: bool = False) -> Dict[str, Any]:
+def with_live_escalations(report: Dict[str, Any]) -> Dict[str, Any]:
+    """The cached report with each partner's `escalations` filled in from the
+    escalation agent right now. Escalations are deliberately not part of the
+    24h-cached report: the agent updates them every couple of hours, so they
+    are read fresh (60s in-process cache) whenever the report is served.
+
+    Degrades without failing the tab: agent not configured -> escalationsConfigured
+    False; agent unreachable -> `escalationsError` set and every partner's
+    escalations None, while the Bug/Feature scores still show."""
+    partners = report.get("partners") or []
+    configured = escalation_agent_client.is_configured()
+    out = {**report, "escalationsConfigured": configured}
+    out.pop("escalationsError", None)
+    states: Dict[str, Any] = {}
+    error: Optional[str] = None
+    if configured and partners:
+        try:
+            states = escalation_agent_client.fetch_partner_states([p["partnerId"] for p in partners])
+        except RuntimeError as exc:
+            error = str(exc)
+    if error:
+        out["escalationsError"] = error
+    out["partners"] = [
+        {**p, "escalations": None if error or not configured else _escalation_view(p, states.get(p["partnerId"]))}
+        for p in partners
+    ]
+    return out
+
+
+def build_partner_insights_report() -> Dict[str, Any]:
     intercom_client = IntercomClient()
     linear_client = LinearClient()
     # `None` (not an empty client) when unconfigured - `build_partner_registry`
@@ -391,19 +412,12 @@ def build_partner_insights_report(force: bool = False) -> Dict[str, Any]:
     registry = [p for p in registry if p.get("vitallyAccountId")]
     product_scores = compute_product_scores(registry, linear_client=linear_client)
 
-    # Escalations: the one signal here that never runs on a passive
-    # cache-age refresh, only an explicit `force` - see
-    # `escalation_report.py`'s module docstring and this module's own
-    # docstring's "Escalations" section.
-    escalation_state = (
-        refresh_partner_escalations(registry, vitally_client, force=force) if vitally_client else {}
-    )
-
+    # Escalations are not computed here - see `with_live_escalations`.
     partners = [
         {
             **partner,
             "product": product_scores.get(partner["partnerId"]),
-            "escalations": _escalation_view(partner, escalation_state),
+            "escalations": None,
         }
         for partner in registry
     ]
@@ -411,7 +425,6 @@ def build_partner_insights_report(force: bool = False) -> Dict[str, Any]:
     return {
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "vitallyConfigured": vitally_configured(),
-        "escalationsConfigured": escalations_configured(),
         "partners": partners,
     }
 
@@ -420,10 +433,8 @@ def list_triage_partners() -> List[Dict[str, Any]]:
     """The exact partner set the escalation triage covers: the same
     `build_partner_registry` call and the same "has a Vitally account"
     filter as `build_partner_insights_report`, trimmed to the three fields
-    an external triage worker needs (`partnerId`, `name`,
-    `vitallyAccountId`). Served to the parallel eve escalation agent via
-    `/api/internal/partner-registry` so both triage jobs cover identical
-    partners."""
+    the escalation agent needs (`partnerId`, `name`, `vitallyAccountId`).
+    Served to the agent via `/api/internal/partner-registry`."""
     intercom_client = IntercomClient()
     linear_client = LinearClient()
     vitally_client = VitallyClient() if vitally_configured() else None
@@ -440,12 +451,10 @@ def list_triage_partners() -> List[Dict[str, Any]]:
 
 
 def refresh_single_partner(partner_id: str) -> Dict[str, Any]:
-    """Force-refresh exactly one partner's row (Product score + escalation
-    triage) - the Partner Insights table's per-partner Update button.
-    Much cheaper than `build_partner_insights_report(force=True)` when a
-    reviewer only cares about one partner's latest email: that endpoint
-    re-triages *every* Vitally-matched partner with new eligible email
-    (one LLM call each), while this only ever makes at most one.
+    """Force-refresh exactly one partner's row - the Partner Insights table's
+    per-partner Update button. Recomputes the Product score from Linear and
+    re-reads that partner's escalations from the escalation agent (the agent
+    itself only runs on its own schedule; this never triggers a triage).
 
     Also patches the already-cached full report in place (if one exists -
     `PARTNER_INSIGHTS_CACHE_KEY`, see `cache.peek`/`cache.write_raw`) so a
@@ -465,15 +474,8 @@ def refresh_single_partner(partner_id: str) -> Dict[str, Any]:
         raise ValueError(f"No Vitally-matched partner found for id {partner_id!r}")
 
     product_scores = compute_product_scores([partner], linear_client=linear_client)
-    escalation_state = (
-        refresh_partner_escalations([partner], vitally_client, force=True) if vitally_client else {}
-    )
-
-    updated_partner = {
-        **partner,
-        "product": product_scores.get(partner["partnerId"]),
-        "escalations": _escalation_view(partner, escalation_state),
-    }
+    # Cached row carries no escalations (they're overlaid at serve time).
+    updated_partner = {**partner, "product": product_scores.get(partner["partnerId"]), "escalations": None}
 
     cached = cache.peek(PARTNER_INSIGHTS_CACHE_KEY)
     if cached and isinstance(cached.get("data"), dict):
@@ -487,4 +489,4 @@ def refresh_single_partner(partner_id: str) -> Dict[str, Any]:
                 partners.append(updated_partner)
             cache.write_raw(PARTNER_INSIGHTS_CACHE_KEY, cached)
 
-    return updated_partner
+    return with_live_escalations({"partners": [updated_partner]})["partners"][0]

@@ -40,6 +40,16 @@ def is_configured() -> bool:
     return bool(os.environ.get("VITALLY_ACCESS_TOKEN"))
 
 
+def vitally_app_account_url(account_id: str) -> Optional[str]:
+    """Link to an account in the Vitally web app, or None when
+    `VITALLY_APP_SUBDOMAIN` (the part before ".vitally.io" in your Vitally URL)
+    isn't set. Used for each partner's "Open account in Vitally" link."""
+    subdomain = os.environ.get("VITALLY_APP_SUBDOMAIN")
+    if not subdomain or not account_id:
+        return None
+    return f"https://{subdomain}.vitally.io/accounts/{account_id}"
+
+
 class VitallyClient:
     def __init__(self, access_token: Optional[str] = None):
         self.access_token = access_token or self._env_token()

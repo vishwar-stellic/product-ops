@@ -4,11 +4,8 @@ import { DEFAULT_OPENAI_BASE_URL, DEFAULT_OPENAI_MODEL } from "./config";
 export type LlmFn = (prompt: string) => Promise<string>;
 
 /**
- * Same call the Python triage makes (`openai_client.chat_completion`): one
- * user-turn Chat Completions request to the same model/base URL, with
- * reasoning_effort "low" and max_completion_tokens 6000. Keeping this
- * identical means differences between the two jobs come from the framework
- * and the Slack feedback, not the model.
+ * One user-turn Chat Completions request, with reasoning_effort "low" and
+ * max_completion_tokens 6000.
  */
 export function createOpenAiLlm(
   apiKey = process.env.OPENAI_API_KEY,
