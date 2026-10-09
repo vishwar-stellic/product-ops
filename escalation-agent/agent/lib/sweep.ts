@@ -8,14 +8,22 @@ import {
 } from "./feedback";
 import type { LlmFn } from "./llm";
 import type { TriagePartner } from "./registry";
-import { formatQuietSweepMessage, formatSlackMessage, REACTION_LEGEND, type PostedMessage } from "./slack";
+import {
+  formatEmailReviewThread,
+  formatSlackMessage,
+  formatSweepCompleteMessage,
+  REACTION_LEGEND,
+  type PostedMessage,
+} from "./slack";
 import type { Store } from "./store";
 import {
   assignItemIds,
   enrichItemsWithConversations,
   notableSeverityChanges,
+  mergeEmailReviews,
   reconcileItemIds,
-  updateEscalations,
+  triageEmails,
+  type ReviewedEmail,
   type TrackedItem,
 } from "./triage";
 import { collectNewHumanEmails, vitallyAccountUrl, type SourceEmail, type VitallyApi } from "./vitally";
@@ -34,8 +42,8 @@ export interface SweepDeps {
   store: Store;
   vitally: VitallyApi;
   llm: LlmFn;
-  /** Posts one Slack message; omitted in dry-run mode. */
-  post: ((text: string) => Promise<PostedMessage>) | null;
+  /** Posts one Slack message (as a thread reply when `threadTs` is given); omitted in dry-run mode. */
+  post: ((text: string, threadTs?: string) => Promise<PostedMessage>) | null;
   registry: TriagePartner[];
   now?: Date;
 }
@@ -98,6 +106,10 @@ export async function runSweep(deps: SweepDeps): Promise<SweepSummary> {
   };
 
   let dryRunAlerts = 0;
+  let liveFireAlerts = 0;
+  let smolderingAlerts = 0;
+  /** Every email the model analyzed this run, with its score and reason (posted as the sweep thread). */
+  const reviewedEmails: ReviewedEmail[] = [];
 
   async function processPartner(partner: TriagePartner): Promise<void> {
     const stateKey = partnerStateKey(partner.partnerId);
@@ -134,17 +146,19 @@ export async function runSweep(deps: SweepDeps): Promise<SweepSummary> {
     }
 
     summary.withNewEmails += 1;
-    const updated = await updateEscalations(deps.llm, {
+    const triage = await triageEmails(deps.llm, {
       previousItems: priorItems,
       newEmails,
       feedbackBlock: feedback.block,
     });
-    if (updated === null) {
+    const updated = triage?.items ?? null;
+    if (triage === null || updated === null) {
       // Keep the prior items and DON'T advance lastMessageAt, so these emails are retried next run.
       summary.llmFailures += 1;
       return;
     }
 
+    reviewedEmails.push(...mergeEmailReviews(partner.name, newEmails, triage.reviews));
     let items = enrichItemsWithConversations(reconcileItemIds(priorItems, updated), newEmails, priorItems);
     if (items.some((i) => !i.vitallyConversationId)) {
       const backfill = await collectNewHumanEmails(deps.vitally, partner.vitallyAccountId, lookbackCutoffIso);
@@ -191,6 +205,8 @@ export async function runSweep(deps: SweepDeps): Promise<SweepSummary> {
         await deps.store.putJson(alertKey(posted.channel, posted.ts), record);
         summary.alertsPosted += 1;
         postedForPartner += 1;
+        if (item.severity === "LIVE_FIRE") liveFireAlerts += 1;
+        else smolderingAlerts += 1;
       } catch (error) {
         summary.alertFailures += 1;
         failedForPartner += 1;
@@ -217,22 +233,38 @@ export async function runSweep(deps: SweepDeps): Promise<SweepSummary> {
     }
   });
 
-  // One reaction legend per sweep, after the alerts, instead of a footer on every message.
-  if (summary.alertsPosted > 0 && deps.post) {
+  if (deps.post) {
+    // One reaction legend per sweep, after the alerts, instead of a footer on every message.
+    if (summary.alertsPosted > 0) {
+      try {
+        await deps.post(REACTION_LEGEND);
+      } catch (error) {
+        console.error(`[escalation-agent] failed to post the reaction legend: ${String(error)}`);
+      }
+    }
+    // Every sweep ends with a completion message (so a quiet channel is distinguishable from a run
+    // that never happened), and a thread under it scoring each email that was analyzed.
     try {
-      await deps.post(REACTION_LEGEND);
+      const complete = await deps.post(
+        formatSweepCompleteMessage({
+          partners: summary.partners,
+          withNewEmails: summary.withNewEmails,
+          llmFailures: summary.llmFailures,
+          fetchFailures: summary.fetchFailures,
+          alertFailures: summary.alertFailures,
+          liveFire: liveFireAlerts,
+          smoldering: smolderingAlerts,
+          emailsAnalyzed: reviewedEmails.length,
+        }),
+      );
+      for (const chunk of formatEmailReviewThread(reviewedEmails)) {
+        await deps.post(chunk, complete.ts);
+      }
     } catch (error) {
-      console.error(`[escalation-agent] failed to post the reaction legend: ${String(error)}`);
+      console.error(`[escalation-agent] failed to post the sweep-complete message or its thread: ${String(error)}`);
     }
   } else if (dryRunAlerts > 0) {
     console.log(`[escalation-agent] (dry run) would post:\n${REACTION_LEGEND}`);
-  } else if (deps.post && summary.alertFailures === 0) {
-    // Nothing to alert on: say so, so a quiet channel is distinguishable from a run that never happened.
-    try {
-      await deps.post(formatQuietSweepMessage(summary));
-    } catch (error) {
-      console.error(`[escalation-agent] failed to post the "nothing new" message: ${String(error)}`);
-    }
   }
 
   return summary;

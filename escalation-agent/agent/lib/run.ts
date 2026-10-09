@@ -37,7 +37,10 @@ export async function runConfiguredSweep(
     vitally: createVitallyClient(),
     llm: createOpenAiLlm(),
     // A seed run saves state but posts nothing (see startConfiguredRun).
-    post: dryRun || options.seed ? null : (text) => postSlackMessage(text),
+    post:
+      dryRun || options.seed
+        ? null
+        : (text, threadTs) => postSlackMessage(text, undefined, undefined, threadTs),
     registry,
   });
   console.log(`[escalation-agent] sweep complete ${JSON.stringify(summary)}`);

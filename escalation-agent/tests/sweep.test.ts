@@ -24,7 +24,7 @@ function setup(opts: { emails?: ReturnType<typeof inbound>[]; llmReplies?: Array
   });
   let n = 0;
   const posts: string[] = [];
-  const post = vi.fn(async (text: string) => {
+  const post = vi.fn(async (text: string, _threadTs?: string) => {
     posts.push(text);
     n += 1;
     return { channel: "CALERT", ts: `${1000 + n}.0001` };
@@ -44,7 +44,8 @@ describe("runSweep", () => {
     const { deps, store, posts } = setup();
     const summary = await runSweep(deps);
     expect(summary).toMatchObject({ partners: 1, withNewEmails: 1, alertsPosted: 1, llmFailures: 0, fetchFailures: 0 });
-    expect(posts).toHaveLength(2); // the alert + the once-per-sweep legend
+    expect(posts).toHaveLength(4); // the alert, the once-per-sweep legend, the sweep-complete message and its thread
+    expect(posts[2]).toContain("1 new escalation posted above (1 Live Fire, 0 Smoldering)");
     expect(posts[0]).toContain(":fire: *Live Fire* \u2014 *Acme University*: Registration blocked in Prod");
     expect(posts[0]).toContain("https://stellic.vitally.io/conversations/active/conv1|source");
     expect(posts[0]).toContain("> Students cannot register and the deadline passed");
@@ -91,8 +92,8 @@ describe("runSweep", () => {
       evidence: fresh("Still broken", "2026-10-05T19:00:00Z"),
     });
     const { deps, post } = setup({ llmReplies: [reply(watch), reply(smolder), reply(smolderAgain)] });
-    await runSweep(deps); // WATCH: no alert, just the "nothing new" message
-    expect(post).toHaveBeenCalledTimes(1);
+    await runSweep(deps); // WATCH: no alert, just the sweep-complete message and its thread
+    expect(post).toHaveBeenCalledTimes(2);
 
     const vit = fakeVitally({
       acct1: [
@@ -103,7 +104,7 @@ describe("runSweep", () => {
       ],
     });
     await runSweep({ ...deps, vitally: vit, now: new Date("2026-10-05T18:00:00Z") });
-    expect(post).toHaveBeenCalledTimes(3); // + the escalated alert and the legend
+    expect(post).toHaveBeenCalledTimes(6); // + the escalated alert, the legend, the sweep-complete message and its thread
 
     const vit2 = fakeVitally({
       acct1: [
@@ -113,8 +114,8 @@ describe("runSweep", () => {
       ],
     });
     await runSweep({ ...deps, vitally: vit2, now: new Date("2026-10-05T20:00:00Z") });
-    expect(post).toHaveBeenCalledTimes(4); // same severity -> no re-alert and no legend, just the "nothing new" message
-    expect(post.mock.calls[3]?.[0]).toContain("no new Live Fire or Smoldering escalations");
+    expect(post).toHaveBeenCalledTimes(8); // same severity -> no re-alert and no legend, just the sweep-complete message + thread
+    expect(post.mock.calls[6]?.[0]).toContain("no new Live Fire or Smoldering escalations");
   });
 
   it("does not re-alert a saved item the model rewords, re-links and re-scores on stale evidence (UW-Oshkosh case)", async () => {
@@ -148,8 +149,9 @@ describe("runSweep", () => {
     });
     const { deps: deps2 } = setup({ llmReplies: [reply(reworded)] });
     await runSweep({ ...deps, vitally: vit, llm: deps2.llm, now: new Date("2026-10-06T16:00:00Z") });
-    expect(posts).toHaveLength(1); // no alert; only the "nothing new" message
+    expect(posts).toHaveLength(2); // no alert; only the sweep-complete message and its thread
     expect(posts[0]).toContain("no new Live Fire or Smoldering escalations");
+    expect(posts.some((p) => p.includes("*Smoldering*"))).toBe(false);
     const state = (await store.getJson<PartnerState>(partnerStateKey("p1")))!;
     expect(state.items[0]).toMatchObject({ id: savedId, vitallyConversationId: "conv1" });
   });
@@ -208,20 +210,20 @@ describe("reaction legend", () => {
     const { deps, posts, store } = setup({ llmReplies: [reply(itemJson(), itemJson({ headline: "Second fire" }))] });
     const summary = await runSweep(deps);
     expect(summary.alertsPosted).toBe(2);
-    expect(posts).toHaveLength(3);
+    expect(posts).toHaveLength(5); // 2 alerts, the legend, the sweep-complete message and its thread
     expect(posts.filter((p) => p === LEGEND)).toHaveLength(1);
     expect(posts[2]).toBe(LEGEND);
     expect(posts[2]).not.toContain("resolved");
     expect((await store.listKeys("alerts/")).length).toBe(2); // the legend is not tracked
   });
 
-  it("is not posted when the sweep raised no alerts (a 'nothing new' message goes out instead)", async () => {
+  it("is not posted when the sweep raised no alerts (the sweep-complete message goes out instead)", async () => {
     const { deps, posts } = setup({ llmReplies: [reply(itemJson({ severity: "WATCH", score: 3 }))] });
     await runSweep(deps);
-    expect(posts).toHaveLength(1);
+    expect(posts).toHaveLength(2);
     expect(posts[0]).not.toContain("React:");
     expect(posts[0]).toBe(
-      ":white_check_mark: Sweep complete: no new Live Fire or Smoldering escalations. Checked 1 partners, 1 with new email.",
+      ":white_check_mark: Sweep complete: no new Live Fire or Smoldering escalations. Checked 1 partners, 1 with new email. 1 email analyzed - scores in the thread.",
     );
   });
 
@@ -233,14 +235,14 @@ describe("reaction legend", () => {
     expect((await store.listKeys("alerts/")).length).toBe(0);
   });
 
-  it("no 'nothing new' message when Slack posting itself failed, or in a seed/dry run", async () => {
+  it("survives Slack failing outright, and posts nothing in a seed/dry run", async () => {
     const { deps } = setup({ llmReplies: [reply(itemJson())] });
     const failing = vi.fn(async () => {
       throw new Error("channel_not_found");
     });
     const summary = await runSweep({ ...deps, post: failing });
     expect(summary.alertFailures).toBe(1);
-    expect(failing).toHaveBeenCalledTimes(1); // the alert only; no status message on top of a Slack failure
+    expect(failing).toHaveBeenCalledTimes(2); // the alert, then the sweep-complete message; both failures are swallowed
     const quiet = setup({ llmReplies: [reply(itemJson({ severity: "WATCH", score: 3 }))] });
     await runSweep({ ...quiet.deps, post: null });
     expect(quiet.post).not.toHaveBeenCalled();
@@ -288,7 +290,7 @@ describe("failed alerts are retried", () => {
     expect(await store.getJson(partnerStateKey("p1"))).toBeNull();
     const live = await runSweep({ ...deps, now: new Date("2026-10-05T18:00:00Z") });
     expect(live.alertsPosted).toBe(1);
-    expect(post).toHaveBeenCalledTimes(2); // the alert + the legend
+    expect(post).toHaveBeenCalledTimes(4); // the alert, the legend, the sweep-complete message and its thread
   });
 });
 
@@ -335,7 +337,57 @@ describe("feedback loop", () => {
     const broken = { ...store, listKeys: async () => { throw new Error("blob down"); } };
     const summary = await runSweep({ ...deps, store: broken as any });
     expect(summary.alertsPosted).toBe(1);
-    expect(posts).toHaveLength(2); // the alert + the legend
+    expect(posts).toHaveLength(4); // the alert, the legend, the sweep-complete message and its thread
+  });
+});
+
+describe("sweep-complete message and email thread", () => {
+  const review = (over: Record<string, unknown> = {}) => ({
+    email: 1,
+    score: 4,
+    summary: "Partner says students cannot register",
+    why: "Production, many students, add deadline passed",
+    ...over,
+  });
+
+  it("posts every run, with the per-email thread as a reply to it", async () => {
+    const { deps, post, posts } = setup({
+      llmReplies: [JSON.stringify({ items: [itemJson()], emailReviews: [review()] })],
+    });
+    await runSweep(deps);
+    // alert, legend, complete, thread
+    expect(posts).toHaveLength(4);
+    expect(post.mock.calls[0]?.[1]).toBeUndefined(); // the alert is a top-level post
+    expect(post.mock.calls[3]?.[1]).toBe("1003.0001"); // the thread replies to the sweep-complete message's ts
+    const thread = posts[3]!;
+    expect(thread).toContain("*Acme University*");
+    expect(thread).toContain("*4*");
+    expect(thread).toContain("Registration down");
+    expect(thread).toContain("Partner says students cannot register");
+    expect(thread).toContain("_Why:_ Production, many students, add deadline passed");
+    expect(thread).toContain("https://stellic.vitally.io/conversations/active/conv1");
+  });
+
+  it("lists an email the model skipped as not scored, and still posts when the model returns no reviews", async () => {
+    const { deps, posts } = setup({ llmReplies: [reply(itemJson({ severity: "WATCH", score: 3 }))] });
+    await runSweep(deps);
+    expect(posts[1]).toContain("Not scored");
+    expect(posts[1]).toContain("*?*");
+  });
+
+  it("posts no thread when no email was analyzed", async () => {
+    const { deps, post } = setup();
+    await runSweep(deps);
+    post.mockClear();
+    await runSweep({ ...deps, now: new Date("2026-10-05T18:00:00Z") });
+    expect(post).toHaveBeenCalledTimes(1); // just the sweep-complete message
+  });
+
+  it("flags partners that could not be checked and failed alerts in the message", async () => {
+    const { deps, posts } = setup({ llmReplies: [new Error("timeout")] });
+    await runSweep(deps);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]).toContain(":warning: 1 could not be checked this run");
   });
 });
 

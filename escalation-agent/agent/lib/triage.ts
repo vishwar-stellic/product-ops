@@ -82,16 +82,84 @@ export function sanitizeItem(raw: Record<string, unknown>): TrackedItem | null {
   };
 }
 
+/** Each email is numbered ("Email #1", ...) so the model can refer to it in its per-email reviews. */
 export function formatEmailsForPrompt(emails: SourceEmail[]): string {
   return emails
-    .map((e) => `From: ${e.from}\nDate: ${e.date}\nSubject: ${e.subject}\nBody:\n${e.body}`)
+    .map((e, n) => `Email #${n + 1}\nFrom: ${e.from}\nDate: ${e.date}\nSubject: ${e.subject}\nBody:\n${e.body}`)
     .join("\n\n---\n\n");
+}
+
+/** The model's own read of one new email: what it says and how it scores under the rubric. */
+export interface EmailReview {
+  /** 1-based position of the email in the prompt. */
+  email: number;
+  score: number | null;
+  summary: string;
+  why: string;
+}
+
+/** One analyzed email with its review, for the per-sweep Slack thread. */
+export interface ReviewedEmail {
+  partnerName: string;
+  from: string;
+  subject: string;
+  date: string;
+  vitallyConversationId: string;
+  /** null when the model gave no (valid) review for this email. */
+  score: number | null;
+  summary: string;
+  why: string;
+}
+
+export function sanitizeEmailReviews(raw: unknown, emailCount: number): EmailReview[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<number>();
+  const out: EmailReview[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const r = entry as Record<string, unknown>;
+    const email = Number(r.email);
+    if (!Number.isInteger(email) || email < 1 || email > emailCount || seen.has(email)) continue;
+    seen.add(email);
+    const score = Number(r.score);
+    out.push({
+      email,
+      score: Number.isInteger(score) && score >= 0 && score <= 5 ? score : null,
+      summary: str(r.summary, 300).trim(),
+      why: str(r.why, 300).trim(),
+    });
+  }
+  return out;
+}
+
+/** Pairs every analyzed email with its review; an email the model skipped still appears, unscored. */
+export function mergeEmailReviews(partnerName: string, emails: SourceEmail[], reviews: EmailReview[]): ReviewedEmail[] {
+  const byEmail = new Map(reviews.map((r) => [r.email, r]));
+  return emails.map((e, n) => {
+    const review = byEmail.get(n + 1);
+    return {
+      partnerName,
+      from: e.from,
+      subject: e.subject,
+      date: e.date,
+      vitallyConversationId: e.vitallyConversationId,
+      score: review?.score ?? null,
+      summary: review?.summary ?? "",
+      why: review?.why ?? "",
+    };
+  });
 }
 
 /** Appended to the shared rubric: kept separate from the rubric text itself. */
 export const ITEM_IDENTITY_NOTE = `ITEM IDENTITY
 Every previously tracked item above has an "id". When you update a tracked item in place, return it with the SAME "id", even if you reword its headline, change its score, or the newest email is in a different thread. Only an item that is genuinely new gets "id": null. Never reuse one item's id for a different issue.
 Evidence: each item's "evidence" must be quotes the emails actually contain. Quote the new emails when they support the item; keep older quotes only for the same issue and the same partner. Never move quotes from one tracked item onto another.`;
+
+/** Asks for a per-email score and reason alongside the tracked items (shown in the sweep's Slack thread). */
+export const EMAIL_REVIEW_NOTE = `EMAIL REVIEWS
+Each new email above is numbered ("Email #1", "Email #2", ...). In the SAME JSON object that holds "items", also return a top-level "emailReviews" array with one entry for EVERY new email, in this shape:
+{"email": <the email's number>, "score": 0 | 1 | 2 | 3 | 4 | 5, "summary": "<what this email says, one short sentence, 140 characters max>", "why": "<why it got this score under the rubric - blast radius, environment, any dated event - one short sentence, 160 characters max>"}
+Score each email by the consequence of the issue it raises, with the same rubric and rules as for items. An email that only continues an already-tracked issue is scored for that issue; logistics, FYIs and acknowledgements are 0-2. When an email is the evidence for an item, its score must match that item's score. Keep every entry short.`;
 
 export function buildTriagePrompt(opts: {
   previousItems: TrackedItem[];
@@ -102,7 +170,7 @@ export function buildTriagePrompt(opts: {
   return TRIAGE_PROMPT_TEMPLATE.replace("__FEEDBACK__", () => (opts.feedbackBlock ? `${opts.feedbackBlock}\n\n` : ""))
     .replace("__PREVIOUS_ITEMS__", () => JSON.stringify(opts.previousItems, null, 2))
     .replace("__NEW_EMAILS__", () => formatEmailsForPrompt(opts.newEmails))
-    .concat(`\n\n${ITEM_IDENTITY_NOTE}\n`);
+    .concat(`\n\n${ITEM_IDENTITY_NOTE}\n\n${EMAIL_REVIEW_NOTE}\n`);
 }
 
 /** Gives every item an id; items that already have one are returned untouched (same object). */
@@ -170,27 +238,41 @@ export function hasFreshEvidence(item: TrackedItem, emails: SourceEmail[]): bool
   });
 }
 
+export interface TriageResult {
+  items: TrackedItem[];
+  /** One per email the model reviewed (may be empty if it skipped them; items never depend on it). */
+  reviews: EmailReview[];
+}
+
 /**
- * One LLM call producing the updated tracked-items list; null on any failure
- * (bad response, timeout, malformed JSON) so one partner's flaky call never
- * blocks the rest of the batch.
+ * One LLM call producing the updated tracked-items list plus the per-email reviews; null on any
+ * failure (bad response, timeout, malformed JSON) so one partner's flaky call never blocks the
+ * rest of the batch. A missing or malformed "emailReviews" never fails the call.
  */
-export async function updateEscalations(
+export async function triageEmails(
   llm: LlmFn,
   opts: { previousItems: TrackedItem[]; newEmails: SourceEmail[]; feedbackBlock: string },
-): Promise<TrackedItem[] | null> {
+): Promise<TriageResult | null> {
   try {
     const text = await llm(buildTriagePrompt(opts));
-    const parsed = JSON.parse(extractJsonObject(text)) as { items?: unknown };
+    const parsed = JSON.parse(extractJsonObject(text)) as { items?: unknown; emailReviews?: unknown };
     const items = (Array.isArray(parsed.items) ? parsed.items : [])
       .filter((i): i is Record<string, unknown> => !!i && typeof i === "object")
       .map(sanitizeItem)
       .filter((i): i is TrackedItem => i !== null);
-    return items;
+    return { items, reviews: sanitizeEmailReviews(parsed.emailReviews, opts.newEmails.length) };
   } catch (error) {
     console.error(`[escalation-agent] LLM triage failed: ${String(error)}`);
     return null;
   }
+}
+
+/** The tracked items only; see `triageEmails` for the full result. */
+export async function updateEscalations(
+  llm: LlmFn,
+  opts: { previousItems: TrackedItem[]; newEmails: SourceEmail[]; feedbackBlock: string },
+): Promise<TrackedItem[] | null> {
+  return (await triageEmails(llm, opts))?.items ?? null;
 }
 
 // ---------------------------------------------------------------------------

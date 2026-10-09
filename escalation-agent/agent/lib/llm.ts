@@ -5,7 +5,7 @@ export type LlmFn = (prompt: string) => Promise<string>;
 
 /**
  * One user-turn Chat Completions request, with reasoning_effort "low" and
- * max_completion_tokens 6000.
+ * max_completion_tokens 10000.
  */
 export function createOpenAiLlm(
   apiKey = process.env.OPENAI_API_KEY,
@@ -19,11 +19,11 @@ export function createOpenAiLlm(
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model,
-        max_completion_tokens: 6000,
+        max_completion_tokens: 10000,
         reasoning_effort: "low",
         messages: [{ role: "user", content: prompt.slice(0, 60000) }],
       }),
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.timeout(90_000),
     });
     if (!response.ok) {
       throw new Error(`OpenAI error ${response.status}: ${(await response.text()).slice(0, 300)}`);
