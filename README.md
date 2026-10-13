@@ -458,6 +458,14 @@ section. Each squad's section has, in order:
       scored)* — Bug-labeled issues created this calendar month with
       Urgent or High priority.
 
+   **Progress only:** rows 1-4 and 6 are each followed by one row that
+   splits the count by the bugs' "Compute?" label group, e.g.
+   `Currently Out of SLA - Compute / Non-compute / No Label` = `2 / 5 / 1`
+   (Compute = bugs labeled `Compute`, Non-compute = labeled `Non-compute`,
+   No Label = bugs with neither). They show on the web page and in the
+   Notion table; the manual "missing tests" row has no split
+   (`quality.py:COMPUTE_BREAKDOWN_TEAMS`).
+
    Only Urgent/High priority bugs carry an SLA in this workspace, so rows 2
    and 3 implicitly cover just those; "this month" is the current UTC
    calendar month.
@@ -548,6 +556,15 @@ described below. **Demo run** is sent as `demo_run` and only changes *which
 squads* get published (just "Progress" instead of all of them) - it
 doesn't change the structure of the page itself.
 
+Each squad section opens with a **🔄 Refresh Projects** link
+(`GET /notion/refresh-projects`; the original `/notion/refresh-squad` path
+still works for pages published earlier). Clicking it re-pulls Linear
+projects and rewrites only that squad's Projects section — Quality, Kudos,
+Dependency/Availability and the hand-filled "Other Asks" toggle are left
+alone. (Pages published before this change still show the old "Click here
+to refresh this section" wording, but the link now does the same
+Projects-only refresh.)
+
 Structure of the generated page (`product_status/notion_report.py`) with
 **Only Star Projects** checked (shows just the labeled set, without the
 "Other Projects" toggle - unchecked by default, see "EPD Report toolbar
@@ -592,7 +609,9 @@ EPD Report <date>                     (page)
         had breached their SLA
       Metric / Goal / Value / Notes table, colored by threshold - "Notes"
       is a blank column for jotting notes directly in the table (no
-      separate commentary callout for this section)
+      separate commentary callout for this section). Progress's table has
+      a "<metric> - Compute / Non-compute / No Label" row (e.g. `2 / 5 / 1`)
+      under each auto-generated metric
     Kudos                             (heading_3 - no "Current Sprint" or
                                         "Previous Sprint" section anymore;
                                         sprint data is never published)

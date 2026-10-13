@@ -313,6 +313,16 @@ function renderQualityDefinitions() {
   return `<ul class="quality-definitions">${items}</ul>`;
 }
 
+// Progress only: each auto-generated row is followed by one row splitting
+// its count by the "Compute?" label group (keys match
+// `quality.computeBreakdown` from quality.py; mirrors
+// `notion_report.py:_COMPUTE_BUCKET_ROWS`).
+const COMPUTE_BUCKET_ROWS = [
+  ["compute", "Compute"],
+  ["nonCompute", "Non-compute"],
+  ["unlabeled", "No Label"],
+];
+
 function renderQualityBlock(quality) {
   if (!quality) {
     return `
@@ -325,24 +335,39 @@ function renderQualityBlock(quality) {
   const rows = [
     {
       label: "SLA Quality Total",
+      key: "slaQualityTotal",
       value: quality.slaQualityTotal,
       total: true,
       withinThreshold: quality.slaQualityWithinThreshold,
     },
-    { label: "Currently Out of SLA", value: quality.currentlyOutOfSla },
-    { label: "Failed SLA This Month", value: quality.failedSlaThisMonth },
-    { label: "Currently Active High Bugs", value: quality.currentlyActiveHighBugs },
+    { label: "Currently Out of SLA", key: "currentlyOutOfSla", value: quality.currentlyOutOfSla },
+    { label: "Failed SLA This Month", key: "failedSlaThisMonth", value: quality.failedSlaThisMonth },
+    { label: "Currently Active High Bugs", key: "currentlyActiveHighBugs", value: quality.currentlyActiveHighBugs },
     // No data pull for this one - always blank, filled in by hand.
     { label: "Number of bugs because of missing tests", value: "" },
     {
       label: "Incoming Bugs with High or Urgent priority this month",
+      key: "incomingHighUrgentThisMonth",
       value: quality.incomingHighUrgentThisMonth,
       total: true,
       withinThreshold: quality.incomingHighUrgentWithinThreshold,
     },
   ];
 
-  const body = rows
+  const breakdown = quality.computeBreakdown;
+  const withSplits = rows.flatMap((row) =>
+    breakdown && row.key
+      ? [
+          row,
+          {
+            label: `${row.label} - ${COMPUTE_BUCKET_ROWS.map(([, suffix]) => suffix).join(" / ")}`,
+            value: COMPUTE_BUCKET_ROWS.map(([bucket]) => breakdown[row.key][bucket]).join(" / "),
+            split: true,
+          },
+        ]
+      : [row]
+  );
+  const body = withSplits
     .map((row) => {
       const scored = row.withinThreshold !== undefined;
       const labelHtml = scored
@@ -351,7 +376,7 @@ function renderQualityBlock(quality) {
       const scoreClass = scored ? (row.withinThreshold ? " score-ok" : " score-over") : "";
       return `
         <tr${row.total ? ' class="total-row"' : ""}>
-          <td>${labelHtml}</td>
+          <td${row.split ? ' style="padding-left: 24px"' : ""}>${labelHtml}</td>
           <td class="num${scoreClass}">${row.value}</td>
         </tr>`;
     })

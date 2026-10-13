@@ -136,6 +136,7 @@ from .dashboard import (
     TEAMS_CACHE_KEY,
     build_squad_data,
     fetch_dashboard_teams,
+    projects_for_team,
     squad_cache_key,
 )
 from .linear_client import LinearClient, LinearGraphQLError
@@ -151,7 +152,7 @@ from .notion_report import (
     notion_refresh_token,
     publish_dashboard_to_notion,
     publish_sprint_report_to_notion,
-    replace_squad_section_on_page,
+    replace_projects_section_on_page,
 )
 from .partner_insights import (
     PARTNER_INSIGHTS_CACHE_KEY,
@@ -194,7 +195,10 @@ _AUTH_PUBLIC_PATHS = {
     # Machine-to-machine: the eve escalation agent reads the partner
     # list here - see `_require_internal_secret` for the real gate.
     "/api/internal/partner-registry",
-    # Linked from each squad section in a published EPD Report Notion page.
+    # Linked from each squad section in a published EPD Report Notion page
+    # ("/notion/refresh-squad" is the original name, kept for pages published
+    # before the link became "Refresh Projects").
+    "/notion/refresh-projects",
     "/notion/refresh-squad",
 }
 
@@ -533,9 +537,9 @@ def dashboard_refresh_all():
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.api_route("/notion/refresh-squad", methods=["GET", "POST"])
-def notion_refresh_squad(
-    request: Request,
+@app.api_route("/notion/refresh-projects", methods=["GET", "POST"])
+@app.api_route("/notion/refresh-squad", methods=["GET", "POST"])  # original path - already embedded in published pages
+def notion_refresh_projects(
     team: str = Query(..., description='Linear team key, e.g. "PROG"'),
     page_id: str = Query(..., description="Notion EPD Report page id or URL"),
     token: str = Query(..., description="Refresh token from the published link"),
@@ -544,11 +548,13 @@ def notion_refresh_squad(
         description='Match the "Only Star Projects" export shape when rewriting Projects',
     ),
 ):
-    """Refresh one squad section on an existing EPD Report Notion page.
+    """Refresh one squad's Projects section on an existing EPD Report Notion page.
 
-    Linked from a callout embedded at publish time. Force-refreshes Linear
-    data for that squad, rewrites its Notion section, then redirects back to
-    the report page (usually in a new browser tab opened from Notion)."""
+    Linked ("Refresh Projects") from a callout embedded at publish time.
+    Force-refreshes the shared Linear projects report, rewrites only that
+    squad's Projects section (Quality, Kudos and the rest of the page are
+    untouched), then redirects back to the report page (usually in a new
+    browser tab opened from Notion)."""
     _require_notion_refresh_token(token)
     try:
         normalized_page_id = extract_page_id(page_id)
@@ -557,15 +563,14 @@ def notion_refresh_squad(
         if matched is None:
             raise HTTPException(status_code=404, detail=f'Unknown squad "{team}"')
         projects_report = _get_projects_report(force=True)
-        squad = _get_squad(matched, force=True, projects_report=projects_report)
-        base_url = notion_refresh_public_base_url(str(request.base_url))
-        heading_id = replace_squad_section_on_page(
+        squad = {
+            "team": {"id": matched["id"], "key": matched["key"], "name": matched["name"]},
+            **projects_for_team(projects_report, matched),
+        }
+        heading_id = replace_projects_section_on_page(
             normalized_page_id,
             squad,
-            skip_sprint_data=True,
             only_star_projects=only_star_projects,
-            public_base_url=base_url or None,
-            refresh_token=notion_refresh_token(),
         )
         page = NotionClient().retrieve_page(normalized_page_id)
         page_url = page.get("url") or ""
@@ -736,7 +741,7 @@ def support_report_history():
 
 
 def _require_notion_refresh_token(token: str) -> None:
-    """Query-param gate for `/notion/refresh-squad` - linked from each squad
+    """Query-param gate for `/notion/refresh-projects` - linked from each squad
     section in a published EPD Report page. Uses `NOTION_REFRESH_SECRET`,
     falling back to `CRON_SECRET` when unset."""
     secret = notion_refresh_token()

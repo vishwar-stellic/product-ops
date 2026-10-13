@@ -33,7 +33,7 @@ PROJECTS_REPORT_CACHE_KEY = "dashboard-projects-report"
 # updates are included changes) so same-day cache hits don't silently keep
 # serving stale results computed under the old logic - see
 # `cache.get_or_refresh`'s `version` parameter.
-SQUAD_CACHE_VERSION = 12
+SQUAD_CACHE_VERSION = 13
 
 
 def squad_cache_key(team_key: str) -> str:
@@ -58,6 +58,24 @@ def fetch_dashboard_teams(
     teams.sort(key=lambda t: order.get(t["key"].lower(), len(order)))
 
     return teams
+
+
+def projects_for_team(projects_report: Dict[str, Any], team: Dict[str, Any]) -> Dict[str, Any]:
+    """The `summitLabel` / `summitProjects` / `otherProjects` part of a squad,
+    cut from the workspace-wide projects report.
+
+    A project can be shared across multiple teams (e.g. also shared with
+    "Docs"), so it's shown under every dashboard squad it's linked to rather
+    than guessing a single "owner" - matches what each team sees in Linear."""
+
+    def _for_team(projects: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return [p for p in projects if team["id"] in {t["id"] for t in p["teams"]}]
+
+    return {
+        "summitLabel": projects_report["summitLabel"],
+        "summitProjects": _for_team(projects_report["summitProjects"]),
+        "otherProjects": _for_team(projects_report["otherProjects"]),
+    }
 
 
 def build_squad_data(
@@ -99,17 +117,9 @@ def build_squad_data(
         previous_sprint = previous_future.result()
         quality = quality_future.result()
 
-    # A project can be shared across multiple teams (e.g. also shared with
-    # "Docs"), so show it under every dashboard squad it's linked to rather
-    # than guessing a single "owner" - matches what each team sees in Linear.
-    def _for_team(projects: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        return [p for p in projects if team["id"] in {t["id"] for t in p["teams"]}]
-
     return {
         "team": {"id": team["id"], "key": team["key"], "name": team["name"]},
-        "summitLabel": projects_report["summitLabel"],
-        "summitProjects": _for_team(projects_report["summitProjects"]),
-        "otherProjects": _for_team(projects_report["otherProjects"]),
+        **projects_for_team(projects_report, team),
         "currentSprint": current_sprint,
         "previousSprint": previous_sprint,
         "quality": quality,

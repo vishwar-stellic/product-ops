@@ -249,20 +249,23 @@ def commentary_callout() -> Dict[str, Any]:
     return callout("💡", [rich_text(COMMENTARY_TEXT, bold=True)])
 
 
-def squad_refresh_url(base_url: str, team_key: str, page_id: str, token: str) -> str:
-    """Link embedded in each squad section on publish - GET `/notion/refresh-squad`
-    refreshes Linear data and rewrites that section, then redirects back here."""
+def projects_refresh_url(base_url: str, team_key: str, page_id: str, token: str) -> str:
+    """Link embedded in each squad section on publish - GET `/notion/refresh-projects`
+    refreshes Linear data and rewrites that squad's Projects section only, then
+    redirects back here."""
     query = urlencode({"team": team_key, "page_id": page_id, "token": token})
-    return f"{base_url.rstrip('/')}/notion/refresh-squad?{query}"
+    return f"{base_url.rstrip('/')}/notion/refresh-projects?{query}"
 
 
-def refresh_section_callout(refresh_url: str) -> Dict[str, Any]:
+def refresh_projects_callout(refresh_url: str) -> Dict[str, Any]:
     return callout(
         "🔄",
         [
-            rich_text("Click "),
-            rich_text("here", link=refresh_url, bold=True),
-            rich_text(" to refresh this section from Linear. Manual updates will be overwritten."),
+            rich_text("Refresh Projects", link=refresh_url, bold=True),
+            rich_text(
+                " - re-pulls this squad's projects from Linear and rewrites only the Projects section "
+                "(Other Asks is kept). Manual edits to the projects will be overwritten."
+            ),
         ],
     )
 
@@ -280,62 +283,80 @@ def _is_squad_heading(block: Dict[str, Any], team_name: str) -> bool:
     return block.get("type") == "heading_2" and block_plain_text(block) == team_name
 
 
-def find_squad_section_block_ids(page_id: str, team_name: str, client: Optional[NotionClient] = None) -> Tuple[str, List[str]]:
-    """Return `(heading_block_id, content_block_ids)` for one squad section.
+def find_projects_section_block_ids(
+    page_id: str, team_name: str, client: Optional[NotionClient] = None
+) -> Tuple[str, List[Dict[str, Any]]]:
+    """Return `(projects_heading_block_id, content_blocks)` for one squad's
+    Projects section.
 
-    Content blocks are every top-level block after the squad's `heading_2`
-    until the next squad `heading_2` (or end of page). The heading itself is
-    kept so the table-of-contents anchor stays stable."""
+    The section is the squad's `heading_3` starting with "Projects" (it reads
+    'Projects with label "..."' when only Star projects are published) plus
+    every top-level block after it up to the next `heading_3` (Quality). The
+    returned content blocks are the full Notion blocks, so callers can tell
+    the toggles apart. Everything outside the section - including the refresh
+    callout above the heading - is left alone."""
     client = client or NotionClient()
     children = client.list_block_children(page_id)
+    in_squad = False
     heading_id: Optional[str] = None
-    content_ids: List[str] = []
-    in_section = False
+    content: List[Dict[str, Any]] = []
     for block in children:
-        if block.get("type") == "heading_2":
-            if in_section:
+        block_type = block.get("type")
+        if block_type == "heading_2":
+            if in_squad:
                 break
-            if _is_squad_heading(block, team_name):
-                heading_id = block["id"]
-                in_section = True
+            in_squad = _is_squad_heading(block, team_name)
             continue
-        if in_section:
-            content_ids.append(block["id"])
-    if not heading_id:
+        if not in_squad:
+            continue
+        if heading_id is None:
+            if block_type == "heading_3" and block_plain_text(block).startswith("Projects"):
+                heading_id = block["id"]
+            continue
+        if block_type == "heading_3":
+            break
+        content.append(block)
+    if not in_squad:
         raise ValueError(f'Could not find a squad heading for "{team_name}" on this Notion page')
-    return heading_id, content_ids
+    if not heading_id:
+        raise ValueError(f'Could not find a Projects section under "{team_name}" on this Notion page')
+    return heading_id, content
 
 
-def replace_squad_section_on_page(
+def replace_projects_section_on_page(
     page_id: str,
     squad: Dict[str, Any],
     *,
-    skip_sprint_data: bool = True,
     only_star_projects: bool = False,
-    public_base_url: Optional[str] = None,
-    refresh_token: Optional[str] = None,
     client: Optional[NotionClient] = None,
 ) -> str:
-    """Rewrite one squad's section on an existing EPD Report page. Returns
-    the squad heading block id (for redirect anchors)."""
+    """Rewrite just one squad's Projects section on an existing EPD Report
+    page (every other section, and the manual "Other Asks" toggle inside
+    Projects, are untouched). `squad` needs `team`, `summitLabel`,
+    `summitProjects` and `otherProjects`. Returns the Projects heading block
+    id (for redirect anchors)."""
     client = client or NotionClient()
     team_name = squad["team"]["name"]
-    heading_id, content_ids = find_squad_section_block_ids(page_id, team_name, client=client)
-    for block_id in content_ids:
-        client.delete_block(block_id)
+    heading_id, content = find_projects_section_block_ids(page_id, team_name, client=client)
+    for block in content:
+        # "Other Asks" is typed in by hand - never delete it.
+        if not _is_other_asks_toggle(block):
+            client.delete_block(block["id"])
 
-    team_blocks = build_team_blocks(
-        squad, skip_sprint_data=skip_sprint_data, only_star_projects=only_star_projects
+    # The heading's wording depends on `only_star_projects`; keep it in sync.
+    client.update_block(
+        heading_id,
+        _projects_heading(squad.get("summitLabel", ""), only_star_projects),
     )
-    # heading_2 already on the page - append everything after it.
-    content_blocks = team_blocks[1:]
-    refresh_url = None
-    if public_base_url and refresh_token:
-        refresh_url = squad_refresh_url(public_base_url, squad["team"]["key"], page_id, refresh_token)
-    if refresh_url:
-        content_blocks = [refresh_section_callout(refresh_url), *content_blocks]
-    if content_blocks:
-        create_nested_blocks(client, page_id, content_blocks, after_block_id=heading_id)
+    # Appended right after the heading, so they land above a preserved "Other Asks".
+    project_blocks = _project_content(
+        squad.get("summitProjects", []),
+        squad.get("summitLabel", ""),
+        other_projects=squad.get("otherProjects", []),
+        only_star_projects=only_star_projects,
+        include_other_asks=False,
+    )
+    create_nested_blocks(client, page_id, project_blocks, after_block_id=heading_id)
     return heading_id
 
 
@@ -483,6 +504,7 @@ def _project_content(
     summit_label: str,
     other_projects: Optional[List[Dict[str, Any]]] = None,
     only_star_projects: bool = False,
+    include_other_asks: bool = True,
 ) -> List[Dict[str, Any]]:
     star_blocks = _project_group_content(summit_projects, f'No projects tagged "{summit_label}" for this squad.')
     if only_star_projects:
@@ -501,7 +523,8 @@ def _project_content(
     # "Other Asks" sits right after "Other Projects" (or at the end of the
     # Projects section if that toggle isn't shown) rather than as its own
     # per-squad section.
-    blocks.append(_other_asks_toggle())
+    if include_other_asks:
+        blocks.append(_other_asks_toggle())
     return blocks
 
 
@@ -520,6 +543,12 @@ def _quality_definitions_blocks() -> List[Dict[str, Any]]:
     ]
 
 
+# The three "Compute?" label buckets (Progress only) - see
+# `quality.COMPUTE_BREAKDOWN_TEAMS`. Keys match `quality["computeBreakdown"]`.
+_COMPUTE_BUCKET_ROWS = [("compute", "Compute"), ("nonCompute", "Non-compute"), ("unlabeled", "No Label")]
+_COMPUTE_SPLIT_SUFFIX = " / ".join(label for _, label in _COMPUTE_BUCKET_ROWS)
+
+
 def _quality_content(quality: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if not quality:
         return [paragraph("No quality data available.")]
@@ -530,6 +559,17 @@ def _quality_content(quality: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
     # directly in the table, rather than a single commentary callout for
     # the whole section.
     notes = ""
+    # Progress only: every auto-generated row is followed by one row with its
+    # count split by the "Compute?" label group, e.g.
+    # "Currently Out of SLA - Compute / Non-compute / No Label" = "2 / 5 / 1".
+    breakdown = quality.get("computeBreakdown")
+
+    def split_rows(title: str, metric_key: str) -> List[List[Any]]:
+        if not breakdown:
+            return []
+        counts = " / ".join(str(breakdown[metric_key][bucket]) for bucket, _ in _COMPUTE_BUCKET_ROWS)
+        return [[f"{title} - {_COMPUTE_SPLIT_SUFFIX}", "—", counts, notes]]
+
     rows = [
         [
             {"text": "SLA Quality Total", "bold": True},
@@ -541,9 +581,13 @@ def _quality_content(quality: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
             },
             notes,
         ],
+        *split_rows("SLA Quality Total", "slaQualityTotal"),
         ["Currently Out of SLA", "—", quality["currentlyOutOfSla"], notes],
+        *split_rows("Currently Out of SLA", "currentlyOutOfSla"),
         ["Failed SLA This Month", "—", quality["failedSlaThisMonth"], notes],
+        *split_rows("Failed SLA This Month", "failedSlaThisMonth"),
         ["Currently Active High Bugs", "—", quality["currentlyActiveHighBugs"], notes],
+        *split_rows("Currently Active High Bugs", "currentlyActiveHighBugs"),
         # No data pull for this one - a manual placeholder row, filled in
         # by hand each time (see the "Notes" column). Value is left blank
         # (not "—") since there's nothing computed to show yet.
@@ -558,8 +602,23 @@ def _quality_content(quality: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
             },
             notes,
         ],
+        *split_rows("Incoming Bugs with High or Urgent priority this month", "incomingHighUrgentThisMonth"),
     ]
-    return _quality_definitions_blocks() + [table(["Metric", "Goal", "Value", "Notes"], rows)]
+    definitions = _quality_definitions_blocks()
+    if breakdown:
+        definitions.append(
+            bulleted_item(
+                [
+                    rich_text("Compute / Non-compute / No Label: ", bold=True, color="gray"),
+                    rich_text(
+                        'The row under each metric splits its count (in that order) by the bugs\' "Compute" / '
+                        '"Non-compute" label (under "Compute?"); No Label counts bugs with neither.',
+                        color="gray",
+                    ),
+                ]
+            )
+        )
+    return definitions + [table(["Metric", "Goal", "Value", "Notes"], rows)]
 
 
 def _previous_sprint_status_summary(sprint: Dict[str, Any]) -> Optional[str]:
@@ -650,16 +709,28 @@ def _dependency_availability_content() -> List[Dict[str, Any]]:
     return [paragraph([rich_text("Add dependency/availability notes here.", color="gray")])]
 
 
+_OTHER_ASKS_TITLE = "Other Asks"
+
+
+def _is_other_asks_toggle(block: Dict[str, Any]) -> bool:
+    return block.get("type") == "heading_4" and block_plain_text(block) == _OTHER_ASKS_TITLE
+
+
 def _other_asks_toggle() -> Dict[str, Any]:
     # A single blank row (rather than just headers) gives an obvious place
     # to start typing - filled in by hand for each report. Sits right after
     # "Other Projects" in the Projects section - see `_project_content`.
     other_asks_table = table(["Asks", "Goal", "Status/Outcome", "Commentary/analysis"], [["", "", "", ""]])
-    return toggle_heading(4, "Other Asks", [other_asks_table])
+    return toggle_heading(4, _OTHER_ASKS_TITLE, [other_asks_table])
 
 
 def _section_blocks(content_blocks: List[Dict[str, Any]], append_commentary: bool = True) -> List[Dict[str, Any]]:
     return content_blocks + [commentary_callout()] if append_commentary else content_blocks
+
+
+def _projects_heading(summit_label: str, only_star_projects: bool) -> Dict[str, Any]:
+    title = f'Projects with label "{summit_label}"' if only_star_projects and summit_label else "Projects"
+    return heading_3(title, learn_more_url=LEARN_MORE_URL_PROJECTS)
 
 
 def build_team_blocks(
@@ -690,10 +761,7 @@ def build_team_blocks(
     blocks: List[Dict[str, Any]] = [heading_2(team["name"])]
 
     summit_label = squad.get("summitLabel", "")
-    projects_heading = (
-        f'Projects with label "{summit_label}"' if only_star_projects and summit_label else "Projects"
-    )
-    blocks.append(heading_3(projects_heading, learn_more_url=LEARN_MORE_URL_PROJECTS))
+    blocks.append(_projects_heading(summit_label, only_star_projects))
     # Projects gets one commentary callout per project (see
     # `_project_content`) rather than a single one for the whole section.
     blocks.extend(
@@ -763,10 +831,10 @@ def _publish_squads_page(
         heading_positions.append(len(blocks))
         team_blocks = team_blocks_fn(squad)
         if embed_squad_refresh_links and public_base_url and refresh_token:
-            refresh_url = squad_refresh_url(
+            refresh_url = projects_refresh_url(
                 public_base_url, squad["team"]["key"], page["id"], refresh_token
             )
-            team_blocks = [team_blocks[0], refresh_section_callout(refresh_url), *team_blocks[1:]]
+            team_blocks = [team_blocks[0], refresh_projects_callout(refresh_url), *team_blocks[1:]]
         blocks.extend(team_blocks)
 
     created = create_nested_blocks(client, page["id"], blocks)
