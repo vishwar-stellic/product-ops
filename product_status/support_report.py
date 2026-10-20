@@ -7,8 +7,9 @@ isn't available to this service; it shows area-level totals only).
 
 ## The 5 metrics (Key User tickets only - see the skill for the full spec)
 1. Total open KU tickets - open + snoozed, excluding any already marked
-   "Resolved" at the ticket level (a ticket can be "Resolved" while its
-   conversation is still technically open in Intercom).
+   "Resolved", "Waiting on fix confirmation", "Won't fix" or "Submitted
+   feature request" at the ticket level (see `RESOLVED_TICKET_STATES`; a ticket can be in one of those
+   while its conversation is still technically open in Intercom).
 2. New KU tickets this week - created since the start of the current
    calendar week, regardless of current state.
 3. KU tickets closed this week - first closed (`statistics.first_close_at`)
@@ -158,7 +159,7 @@ SUPPORT_REPORT_CACHE_KEY = "dashboard-support-report"
 # Bump whenever this module's output shape or underlying metric logic
 # changes - see `milestones_report.py:MILESTONES_REPORT_CACHE_VERSION` for
 # why (same cache has no schema of its own).
-SUPPORT_REPORT_CACHE_VERSION = 21
+SUPPORT_REPORT_CACHE_VERSION = 22
 
 # Separate raw key (not versioned/aged like the main report - see
 # `cache.read_raw`) for the trend chart's accumulating history log.
@@ -197,7 +198,14 @@ INTERCOM_INBOX_PREFIX = "g60t55rg"
 FR_TARGET_HOURS = 24.0
 RES_TARGET_DAYS = 21.0
 
-RESOLVED_TICKET_STATE = "Resolved"
+# Internal ticket-state labels (`ticket_custom_state_admin_label`) that mean
+# the ticket is finished from the report's point of view, even while the
+# Intercom conversation itself is still open/snoozed: it isn't counted as
+# open and its resolution clock stops. (Other labels - including "Waiting on
+# partner" - leave the ticket open with the clock running.)
+RESOLVED_TICKET_STATES = frozenset(
+    {"Resolved", "Waiting on fix confirmation", "Won't fix", "Submitted feature request"}
+)
 
 # The 5 metric row keys, in table order - mirrors the frontend's
 # `SUPPORT_REPORT_ROWS` (`static/app.js`) and each area's `_area_metrics`
@@ -265,6 +273,11 @@ def _ticket_state(conversation: Dict[str, Any]) -> str:
     return (conversation.get("ticket") or {}).get("ticket_custom_state_admin_label") or "(blank)"
 
 
+def _is_ticket_resolved(conversation: Dict[str, Any]) -> bool:
+    """Ticket status is one of `RESOLVED_TICKET_STATES` (see there)."""
+    return _ticket_state(conversation) in RESOLVED_TICKET_STATES
+
+
 def _week_end(week_start: float) -> float:
     return week_start + 7 * 86400.0
 
@@ -279,11 +292,12 @@ def _resolution_close_ts(conversation: Dict[str, Any]) -> tuple:
     """`(epoch, source)` for when this ticket stopped its resolution clock, or
     `(None, None)` if it's still unresolved.
 
-    - Ticket status "Resolved" counts as finished even if the conversation is
-      still open; Intercom's close stats may be stale from an earlier close
+    - Ticket status "Resolved" (or "Waiting on fix confirmation" / "Won't
+      fix" / "Submitted feature request" - see `RESOLVED_TICKET_STATES`) counts as finished even if the
+      conversation is still open; Intercom's close stats may be stale from an earlier close
       then, so `updated_at` is used (or the latest close if the conversation
       is closed too).
-    - A conversation that's open/snoozed and not Resolved is **still open**,
+    - A conversation that's open/snoozed and not in one of those states is **still open**,
       whatever its history: an earlier close (a reopened ticket) means
       nothing for the resolution SLA, so the clock keeps running.
     - A closed conversation uses its *latest* close (`last_close_at`, then
@@ -293,13 +307,13 @@ def _resolution_close_ts(conversation: Dict[str, Any]) -> tuple:
     """
     stats = conversation.get("statistics") or {}
     state = conversation.get("state")
-    resolved = _ticket_state(conversation) == RESOLVED_TICKET_STATE
+    resolved = _is_ticket_resolved(conversation)
     updated = conversation.get("updated_at")
 
     if state != "closed":
-        # Open or snoozed: only a Resolved ticket status ends the clock.
+        # Open or snoozed: only a resolved-type ticket status ends the clock.
         if resolved and updated:
-            return updated, "updated_at (ticket Resolved, conversation open)"
+            return updated, "updated_at (ticket resolved-type, conversation open)"
         return None, None
 
     if stats.get("last_close_at"):
@@ -1183,9 +1197,10 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
     cohort_raw = [c for c in updated_raw if (c.get("created_at") or 0) >= cohort_since]
 
     # "Open" = open + snoozed, always (see module docstring); a ticket
-    # marked Resolved at the ticket-state level is done even if Intercom
+    # marked Resolved (or Won't fix / Waiting on fix confirmation /
+    # Submitted feature request) at the ticket-state level is done even if Intercom
     # still shows the conversation itself as open.
-    open_register = [c for c in open_raw + snoozed_raw if _ticket_state(c) != RESOLVED_TICKET_STATE]
+    open_register = [c for c in open_raw + snoozed_raw if not _is_ticket_resolved(c)]
 
     # Key User tickets missing a reliable first-reply timestamp need
     # verifying - see `_verify_replies`: open (not snoozed) ones for the
