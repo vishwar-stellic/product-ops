@@ -132,6 +132,7 @@ from . import auth, cache, notion_oauth
 from .cycles import fetch_teams
 from .dashboard import (
     PROJECTS_REPORT_CACHE_KEY,
+    PROJECTS_REPORT_CACHE_VERSION,
     SQUAD_CACHE_VERSION,
     TEAMS_CACHE_KEY,
     build_squad_data,
@@ -448,6 +449,7 @@ def _get_projects_report(force: bool) -> Dict[str, Any]:
         lambda: build_dashboard_projects_report(client=LinearClient()),
         force=force,
         max_age_seconds=DASHBOARD_MAX_AGE_SECONDS,
+        version=PROJECTS_REPORT_CACHE_VERSION,
     )
     return entry["data"]
 

@@ -33,6 +33,7 @@ query Projects($first: Int!, $after: String, $filter: ProjectFilter!) {
       status { name type }
       startDate
       targetDate
+      completedAt
       progress
       leadTeam { id key name }
       teams(first: 5) {
@@ -143,6 +144,37 @@ def fetch_projects_in_quarter(
     )
 
 
+def _in_range(value: Optional[str], start: str, end: str) -> bool:
+    """Whether a Linear date/datetime string's date part is in `[start, end)`."""
+    return bool(value) and start <= value[:10] < end
+
+
+def star_project_in_scope(
+    project: Dict[str, Any],
+    quarter_start: str,
+    quarter_end: str,
+    today: Optional[str] = None,
+) -> bool:
+    """Whether a Star-labeled (raw Linear) project belongs in the EPD report.
+
+    A project is "completed" when its status type is `completed`; `canceled`
+    projects are never included. Otherwise it's in scope when ANY of:
+      1. it started in the past (`startDate` on or before today) and is not
+         completed;
+      2. it is completed, with a completed date in the current quarter;
+      3. it is not completed, with a target date in the current quarter
+         (e.g. due this quarter but not started yet).
+    `quarter_end` is exclusive; dates are UTC like `quarter_bounds`."""
+    today = today or datetime.now(timezone.utc).date().isoformat()
+    status_type = (project.get("status") or {}).get("type")
+    if status_type == "canceled":
+        return False
+    if status_type == "completed":
+        return _in_range(project.get("completedAt"), quarter_start, quarter_end)
+    started = bool(project.get("startDate")) and project["startDate"][:10] <= today
+    return started or _in_range(project.get("targetDate"), quarter_start, quarter_end)
+
+
 def health_label(health: Optional[str]) -> str:
     return _HEALTH_LABELS.get(health, health or "—")
 
@@ -214,6 +246,7 @@ def _project_summary(project: Dict[str, Any]) -> Dict[str, Any]:
         "statusType": status.get("type"),
         "startDate": project.get("startDate"),
         "targetDate": project.get("targetDate"),
+        "completedAt": project.get("completedAt"),
         "progress": project.get("progress"),
         "labels": labels,
         "leadTeam": {"id": lead_team["id"], "key": lead_team["key"], "name": lead_team["name"]}
@@ -257,7 +290,9 @@ def build_dashboard_projects_report(
     """Projects for the dashboard's Projects section, split into two groups:
 
     - `summitProjects` - projects carrying the `summit_label` label (e.g.
-      "Star Project").
+      "Star Project") that are in scope - see `star_project_in_scope`
+      (started and not completed, completed this quarter, or not completed
+      and due this quarter; canceled are excluded).
     - `otherProjects` - projects *not* carrying that label, but with a
       start or target date in the current calendar quarter. The Notion
       export shows these collapsed under a single "Other Projects" toggle
@@ -269,8 +304,11 @@ def build_dashboard_projects_report(
     client = client or LinearClient()
     quarter_start, quarter_end = quarter_bounds()
 
-    summit_raw = fetch_projects_by_label(client, summit_label)
-    summit_ids = {p["id"] for p in summit_raw}
+    labeled_raw = fetch_projects_by_label(client, summit_label)
+    # Every labeled project is kept out of "Other Projects", even one the
+    # scope rule drops from the Star group.
+    summit_ids = {p["id"] for p in labeled_raw}
+    summit_raw = [p for p in labeled_raw if star_project_in_scope(p, quarter_start, quarter_end)]
 
     quarter_raw = fetch_projects_in_quarter(client, quarter_start, quarter_end)
     other_raw = [p for p in quarter_raw if p["id"] not in summit_ids]

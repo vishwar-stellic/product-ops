@@ -27,13 +27,16 @@ TEAMS_CACHE_KEY = "dashboard-teams"
 # once per staleness window rather than once per squad; see
 # `server.py:_get_projects_report`.
 PROJECTS_REPORT_CACHE_KEY = "dashboard-projects-report"
+# Bump when `projects.build_dashboard_projects_report`'s selection/shape changes
+# (same reasoning as SQUAD_CACHE_VERSION below).
+PROJECTS_REPORT_CACHE_VERSION = 2
 
 # Bump whenever `build_squad_data`'s return shape *or* its underlying
 # filtering logic changes (e.g. a new field is added, or which projects/
 # updates are included changes) so same-day cache hits don't silently keep
 # serving stale results computed under the old logic - see
 # `cache.get_or_refresh`'s `version` parameter.
-SQUAD_CACHE_VERSION = 13
+SQUAD_CACHE_VERSION = 14
 
 
 def squad_cache_key(team_key: str) -> str:
