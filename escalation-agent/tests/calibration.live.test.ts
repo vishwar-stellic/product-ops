@@ -50,6 +50,22 @@ const cases: Array<{ name: string; fire: boolean; email: SourceEmail }> = [
     ),
   },
   {
+    name: "4: many advisors cannot add to student plans, environment not specified (assume Production)",
+    fire: true,
+    email: mail(
+      "Cannot add to student plans",
+      "All of our advisors in the AA group and one of our admins are reporting that they cannot add anything to student plans. It started this morning and nobody on the team can work around it.",
+    ),
+  },
+  {
+    name: "3: one advisor, environment not specified",
+    fire: false,
+    email: mail(
+      "Plan not saving for one student",
+      "One of our advisors says a single student's plan will not save when she adds a course. The other students she has tried are fine. Could someone take a look when possible?",
+    ),
+  },
+  {
     name: "3: roadmap and ETA request",
     fire: false,
     email: mail(

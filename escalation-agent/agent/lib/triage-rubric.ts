@@ -24,6 +24,11 @@ Answer both before scoring. They dominate everything else.
    - Test, staging, sandbox, pre-integration .................. low
    Production is close to a prerequisite for 4+. A broken thing in test that
    nobody is depending on this week is a 3, no matter how broken.
+   If the email does not name an environment, ASSUME PRODUCTION. Partners rarely
+   say "Production" when they report a problem with the live product. Only treat
+   it as Test/staging when the email says so (test, staging, sandbox, UAT,
+   pre-go-live) or the partner is clearly not live yet. A missing environment is
+   never a reason to lower a score.
 
 SCORING RUBRIC
 
@@ -164,9 +169,11 @@ RULES
 - Score from what the email actually says, not from how urgent it sounds.
   Frustrated tone about a single test-environment record is still a 3. Calm
   tone about students blocked in Production past a deadline is still a 5.
-- If you cannot tell whether it is Production, say so in severityReason and
-  cap the score at 3.
-- If a thread is ambiguous, score it 3 and say what's unclear rather than guessing.
+- If the environment is not stated, assume Production: score it as Production and
+  note "environment not specified, assumed Production" in severityReason. Never
+  cap a score at 3 just because the environment is missing.
+- If a thread is ambiguous in some other way (what is broken, who is affected),
+  score it 3 and say what's unclear rather than guessing.
 - If you find nothing, say so plainly (return an empty "items" array). Do not
   manufacture concern. An empty list is a valid and common result.
 
@@ -191,7 +198,7 @@ Respond with ONLY a single JSON object and nothing else - no markdown fences, no
     "severity": "LIVE_FIRE" | "SMOLDERING" | "WATCH",
     "severityReason": "<why this score - name the blast radius and the environment, one sentence>",
     "blastRadius": "<who is blocked and roughly how many>",
-    "environment": "production" | "test" | "staging" | "not_applicable" | "unclear",
+    "environment": "production" | "test" | "staging" | "not_applicable",  (use "production" when the email does not say)
     "datedEvent": "<the named event and its date, or null>",
     "evidence": [{"quote": "<short direct quote, <=200 chars>", "sender": "<name>", "date": "<ISO date from the email>"}],
     "blockedOn": "us" | "them" | "unclear",
@@ -208,7 +215,7 @@ Field rules:
 - "severity" is derived strictly from score: 5 -> "LIVE_FIRE", 4 -> "SMOLDERING", 0-3 -> "WATCH".
   Never set severity independently of score.
 - "datedEvent" must be null unless a specific date or day is named in the email.
-- Ambiguous threads still need every field - use score 3 and put what's unclear in severityReason.
+- Ambiguous threads still need every field - use score 3 and put what's unclear in severityReason (a missing environment is not ambiguity: assume Production).
 
 __FEEDBACK__PREVIOUSLY TRACKED ITEMS (JSON, adjust per INCREMENTAL UPDATE above):
 __PREVIOUS_ITEMS__
