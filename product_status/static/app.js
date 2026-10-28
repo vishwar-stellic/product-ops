@@ -4626,9 +4626,8 @@ function qualityReportSections() {
       title: "Every Wednesday",
       badge: `Last ${d.weeks} weeks`,
       metrics: d.metrics,
-      tipLabel: (p) => `Wednesday ${p.label}${p.partial ? " (so far today)" : ""}`,
       note:
-        "Charted: one point per Wednesday, taken at the end of that day (Pacific; today's is as of now). The \"this month\" series are month-to-date as of that day, so they reset at each month start.",
+        "Charted: one point per Wednesday (end of day, Pacific; today's is as of now) plus the last day of each month. The \"this month\" series are month-to-date (Pacific months), so they reset at each month start. \"Incoming High+ this month\" is drawn as columns: solid on month-end days and for the latest point, shaded for the weekly points in between.",
     },
   ];
 }
@@ -4671,9 +4670,37 @@ function renderQualityReportLegend(section) {
     .join("");
 }
 
+// Wednesday points plus a point for the last day of each month that ended
+// inside the window (just a flag on the Wednesday point when they coincide),
+// oldest first. Feeds both the chart and the table.
+function qualityReportEntries(selection) {
+  const at = (p) => new Date(p.asOf).getTime();
+  const firstAsOf = at(selection.weekly[0]);
+  const monthEnds = selection.monthly.filter((p) => !p.partial && at(p) >= firstAsOf);
+  const monthEndTimes = new Set(monthEnds.map(at));
+  const weeklyTimes = new Set(selection.weekly.map(at));
+  return [
+    ...selection.weekly.map((p) => ({
+      time: at(p),
+      label: p.label,
+      point: p,
+      today: !!p.partial,
+      monthEnd: monthEndTimes.has(at(p)),
+    })),
+    ...monthEnds
+      .filter((p) => !weeklyTimes.has(at(p)))
+      .map((p) => ({ time: at(p), label: p.dayLabel, point: p, today: false, monthEnd: true })),
+  ].sort((x, y) => x.time - y.time);
+}
+
+// Series drawn as columns instead of a line. Month-end days and the latest
+// point (the current month's latest value) are solid; the weekly points in
+// between are shaded.
+const QUALITY_REPORT_COLUMN_SERIES = new Set(["incomingHighUrgentThisMonth"]);
+
 function renderQualityReportSVG(section, selection, width) {
   const metrics = section.metrics;
-  const points = selection[section.id];
+  const entries = qualityReportEntries(selection);
   const height = 220;
   const paddingLeft = 44;
   const paddingRight = 24;
@@ -4689,13 +4716,14 @@ function renderQualityReportSVG(section, selection, width) {
   }
 
   let max = 0;
-  visible.forEach((m) => points.forEach((p) => (max = Math.max(max, p.values[m.key] || 0))));
+  visible.forEach((m) => entries.forEach((e) => (max = Math.max(max, e.point.values[m.key] || 0))));
   const tickCount = 4;
   const step = Math.max(1, Math.ceil(max / tickCount));
   const top = step * tickCount;
-  const n = points.length;
+  const n = entries.length;
   const xFor = (i) => paddingLeft + (n === 1 ? plotWidth / 2 : (i / (n - 1)) * plotWidth);
   const yFor = (v) => paddingTop + plotHeight - (v / top) * plotHeight;
+  const barWidth = Math.max(4, Math.min(26, (plotWidth / Math.max(1, n)) * 0.6));
 
   let gridLines = "";
   for (let t = 0; t <= tickCount; t++) {
@@ -4707,34 +4735,63 @@ function renderQualityReportSVG(section, selection, width) {
       <text x="${paddingLeft - 8}" y="${(y + 4).toFixed(1)}" class="trend-axis-label" text-anchor="end">${value}</text>`;
   }
 
-  const xLabels = points
+  const xLabels = entries
     .map(
-      (p, i) =>
-        `<text x="${xFor(i).toFixed(1)}" y="${height - 6}" class="trend-axis-label" text-anchor="middle">${escapeHtml(
-          p.label
-        )}${p.partial ? "*" : ""}</text>`
+      (e, i) =>
+        `<text x="${xFor(i).toFixed(1)}" y="${height - 6}" class="trend-axis-label" text-anchor="middle"${
+          e.monthEnd ? ' font-weight="700"' : ""
+        }>${escapeHtml(e.label)}${e.today ? "*" : ""}</text>`
     )
     .join("");
 
-  const series = metrics
-    .map((m, idx) => {
-      if (qualityReportHiddenSeries.has(m.key)) return "";
-      const color = QUALITY_REPORT_COLORS[idx % QUALITY_REPORT_COLORS.length];
-      const coords = points.map((p, i) => [xFor(i), yFor(p.values[m.key] || 0)]);
-      const path = coords.map(([x, y], i) => `${i ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
-      const dots = coords
-        .map(([x, y], i) => {
-          const p = points[i];
-          const tooltip = escapeHtml(`${selection.name} — ${m.label}\n${section.tipLabel(p)}: ${p.values[m.key] || 0}`);
-          return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.5" fill="${color}" />
-            <circle class="trend-dot-hit" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="8" fill="transparent" data-tooltip="${tooltip}"></circle>`;
+  const tooltipFor = (e, m) => {
+    const when = `${e.monthEnd ? "End of month — " : ""}${e.label}${e.today ? " (so far today)" : ""}`;
+    return escapeHtml(`${selection.name} — ${m.label}\n${when}: ${e.point.values[m.key] || 0}`);
+  };
+
+  const seriesSvg = (m, idx, drawColumns) => {
+    if (qualityReportHiddenSeries.has(m.key)) return "";
+    if (QUALITY_REPORT_COLUMN_SERIES.has(m.key) !== drawColumns) return "";
+    const color = QUALITY_REPORT_COLORS[idx % QUALITY_REPORT_COLORS.length];
+    if (drawColumns) {
+      return entries
+        .map((e, i) => {
+          const value = e.point.values[m.key] || 0;
+          const solid = e.monthEnd || i === n - 1;
+          const x = xFor(i) - barWidth / 2;
+          const y = yFor(value);
+          const h = Math.max(0, paddingTop + plotHeight - y);
+          return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${h.toFixed(
+            1
+          )}" fill="${color}" fill-opacity="${solid ? 0.95 : 0.28}" stroke="${color}" stroke-opacity="${
+            solid ? 1 : 0.5
+          }" stroke-width="1" />
+            <rect class="trend-bar-hit" x="${(xFor(i) - Math.max(barWidth, 12) / 2).toFixed(1)}" y="${paddingTop}" width="${Math.max(
+            barWidth,
+            12
+          ).toFixed(1)}" height="${plotHeight}" fill="transparent" data-tooltip="${tooltipFor(e, m)}"></rect>`;
         })
         .join("");
-      return `<path d="${path}" fill="none" stroke="${color}" stroke-width="2" />${dots}`;
-    })
-    .join("");
+    }
+    const coords = entries.map((e, i) => [xFor(i), yFor(e.point.values[m.key] || 0)]);
+    const path = coords.map(([x, y], i) => `${i ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+    const dots = coords
+      .map(
+        ([x, y], i) => `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${entries[i].monthEnd ? 4.5 : 3.5}" fill="${color}" />
+            <circle class="trend-dot-hit" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="8" fill="transparent" data-tooltip="${tooltipFor(
+          entries[i],
+          m
+        )}"></circle>`
+      )
+      .join("");
+    return `<path d="${path}" fill="none" stroke="${color}" stroke-width="2" />${dots}`;
+  };
 
-  return `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" class="trend-svg">${gridLines}${series}${xLabels}</svg>`;
+  // Columns first so the lines sit on top of them.
+  const columns = metrics.map((m, idx) => seriesSvg(m, idx, true)).join("");
+  const lines = metrics.map((m, idx) => seriesSvg(m, idx, false)).join("");
+
+  return `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" class="trend-svg">${gridLines}${columns}${lines}${xLabels}</svg>`;
 }
 
 function mountQualityReportCharts() {
@@ -4758,28 +4815,16 @@ function renderQualityReportTable(section, selection) {
   // Wednesday rows, plus a row for the last day of each month that ended
   // inside the window (shown on the Wednesday row itself when they coincide).
   const firstAsOf = new Date(selection.weekly[0].asOf).getTime();
-  const monthEnds = selection.monthly.filter((p) => !p.partial && new Date(p.asOf).getTime() >= firstAsOf);
-  const monthEndTimes = new Set(monthEnds.map((p) => new Date(p.asOf).getTime()));
-  const weeklyTimes = new Set(selection.weekly.map((p) => new Date(p.asOf).getTime()));
   const monthEndBadge = ' <span class="label-badge">month end</span>';
-  const entries = [
-    ...selection.weekly.map((p) => ({
-      time: new Date(p.asOf).getTime(),
-      html: rowHtml(
-        `${escapeHtml(p.label)}${p.partial ? ' <span class="label-badge">today</span>' : ""}${
-          monthEndTimes.has(new Date(p.asOf).getTime()) ? monthEndBadge : ""
-        }`,
-        p,
-        monthEndTimes.has(new Date(p.asOf).getTime())
-      ),
-    })),
-    ...monthEnds
-      .filter((p) => !weeklyTimes.has(new Date(p.asOf).getTime()))
-      .map((p) => ({ time: new Date(p.asOf).getTime(), html: rowHtml(`${escapeHtml(p.dayLabel)}${monthEndBadge}`, p, true) })),
-  ];
-  const weeklyRows = entries
-    .sort((x, y) => y.time - x.time)
-    .map((e) => e.html)
+  const weeklyRows = qualityReportEntries(selection)
+    .reverse()
+    .map((e) =>
+      rowHtml(
+        `${escapeHtml(e.label)}${e.today ? ' <span class="label-badge">today</span>' : ""}${e.monthEnd ? monthEndBadge : ""}`,
+        e.point,
+        e.monthEnd
+      )
+    )
     .join("");
   // Whole-month rows for the months that ended BEFORE the Wednesday window
   // starts (the window's own months are covered by the month-end rows above).
