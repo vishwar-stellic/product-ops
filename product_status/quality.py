@@ -17,13 +17,14 @@ priority/SLA eligibility:
 For Progress, each count is additionally split by the "Compute?" label group
 (see `COMPUTE_BREAKDOWN_TEAMS`).
 
-"This month" is a UTC calendar month, consistent with how the rest of this
-package treats timestamps.
+"This month" is a calendar month in Pacific time (America/Los_Angeles), so it
+rolls over at midnight PT on the 1st.
 """
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from .linear_client import LinearClient
 
@@ -110,6 +111,17 @@ def _month_bounds(now: Optional[datetime] = None) -> Tuple[str, str]:
     return start.isoformat(), end.isoformat()
 
 
+_PACIFIC = ZoneInfo("America/Los_Angeles")
+
+
+def _pacific_month_bounds(now: Optional[datetime] = None) -> Tuple[str, str]:
+    """(start, end) ISO instants (UTC) for the current Pacific-time calendar month."""
+    now = (now or datetime.now(timezone.utc)).astimezone(_PACIFIC)
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0, day=1)
+    end = datetime(start.year + (start.month == 12), start.month % 12 + 1, 1, tzinfo=_PACIFIC)
+    return start.astimezone(timezone.utc).isoformat(), end.astimezone(timezone.utc).isoformat()
+
+
 def build_quality_summary(
     client: Optional[LinearClient] = None,
     team: Optional[Dict[str, Any]] = None,
@@ -119,7 +131,7 @@ def build_quality_summary(
         raise ValueError("team is required")
     client = client or LinearClient()
 
-    month_start, month_end = _month_bounds()
+    month_start, month_end = _pacific_month_bounds()
     team_filter = {"id": {"eq": team["id"]}}
     bug_label_filter = {"some": {"name": {"eq": BUG_LABEL}}}
 

@@ -36,7 +36,7 @@ PROJECTS_REPORT_CACHE_VERSION = 2
 # updates are included changes) so same-day cache hits don't silently keep
 # serving stale results computed under the old logic - see
 # `cache.get_or_refresh`'s `version` parameter.
-SQUAD_CACHE_VERSION = 14
+SQUAD_CACHE_VERSION = 15
 
 
 def squad_cache_key(team_key: str) -> str:

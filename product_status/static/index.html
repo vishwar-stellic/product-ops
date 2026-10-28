@@ -29,6 +29,7 @@
       <!-- Hidden per request - code/markup kept intact, just not linked to from the tab bar. Remove "hidden" to bring back. -->
       <button class="tab-btn hidden" data-tab="project-milestones" type="button">Project Milestones</button>
       <button class="tab-btn" data-tab="support-report" type="button">Support Report</button>
+      <button class="tab-btn" data-tab="quality-report" type="button">Quality Report</button>
       <!-- Hidden by default - only shown once /api/me confirms partnerInsightsAccess (see app.js's loadCurrentUser). The real gate is server-side (403 on the API routes); this is just UX. -->
       <button class="tab-btn hidden" data-tab="partner-insights" type="button" id="partner-insights-tab-btn">Partner Insights</button>
     </div>
@@ -133,6 +134,21 @@
       </div>
       <div id="support-report-container">
         <p class="empty-note">Loading… (first load of the day can take up to ~2 minutes while it pulls fresh data from Intercom)</p>
+      </div>
+    </section>
+
+    <section id="tab-quality-report" class="tab-panel hidden">
+      <div class="milestones-toolbar">
+        <div class="milestones-toolbar-info">
+          <h2 class="milestones-quarter-label">Quality Report</h2>
+          <span id="quality-report-updated-at" class="updated-at"></span>
+        </div>
+        <button id="quality-report-update-btn" class="btn btn-primary btn-sm" type="button">
+          <span class="btn-label">Update</span>
+        </button>
+      </div>
+      <div id="quality-report-container">
+        <p class="empty-note">Loading… (the first load rebuilds the last 12 weeks from Linear, usually under 30 seconds)</p>
       </div>
     </section>
 

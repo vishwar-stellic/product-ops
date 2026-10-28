@@ -473,8 +473,8 @@ section. Each squad's section has, in order:
    (`quality.py:COMPUTE_BREAKDOWN_TEAMS`).
 
    Only Urgent/High priority bugs carry an SLA in this workspace, so rows 2
-   and 3 implicitly cover just those; "this month" is the current UTC
-   calendar month.
+   and 3 implicitly cover just those; "this month" is the current Pacific-time
+   (`America/Los_Angeles`) calendar month.
 
    **Scoring:** rows 1 and 6 — the two "main goal" rows — are each shown
    against a per-team limit and colored green (within limit) or red (over

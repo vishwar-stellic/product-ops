@@ -117,6 +117,7 @@ Endpoints:
 """
 
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from html import escape
@@ -163,6 +164,7 @@ from .partner_insights import (
     refresh_single_partner,
     with_live_escalations,
 )
+from .quality_report import build_quality_report
 from .projects import DEFAULT_SUMMIT_LABEL, build_dashboard_projects_report, build_summit_projects_report
 from .report import build_current_sprint, build_full_report, build_previous_sprint
 from .support_report import (
@@ -740,6 +742,50 @@ def support_report_history():
     """Accumulated trend-chart history for the support report's top table -
     see support_report.py's docstring ("Trend history")."""
     return get_support_report_history()
+
+
+# Quality Report (weekly history of the EPD Quality table, see quality_report.py).
+# Deliberately held in process memory only for now - nothing is written to the
+# disk/Blob cache while the tab is being tried out locally - so it's rebuilt
+# (a few seconds of Linear calls) after a restart or once this TTL passes.
+QUALITY_REPORT_MEMORY_TTL_SECONDS = 60 * 60
+_quality_report_memory: Dict[str, Any] = {}
+_quality_report_lock = threading.Lock()
+
+
+def _get_quality_report(force: bool) -> Dict[str, Any]:
+    with _quality_report_lock:
+        entry = _quality_report_memory.get("entry")
+        fresh = entry and time.time() - entry["fetchedAt"] < QUALITY_REPORT_MEMORY_TTL_SECONDS
+        if force or not fresh:
+            report = build_quality_report(client=LinearClient(), teams=_get_dashboard_teams())
+            entry = {"fetchedAt": time.time(), "data": report}
+            _quality_report_memory["entry"] = entry
+        return {"fetchedAt": entry["fetchedAt"], **entry["data"]}
+
+
+@app.get("/api/quality-report")
+def quality_report():
+    """Last 12 weeks of every Quality-table metric, per squad plus a Total.
+    Computed on first request and kept in memory only (never written to
+    Blob/disk) - see `_get_quality_report`."""
+    try:
+        return _get_quality_report(force=False)
+    except LinearGraphQLError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/quality-report/refresh")
+def quality_report_refresh():
+    """Rebuild the Quality Report from Linear now, regardless of the memory TTL."""
+    try:
+        return _get_quality_report(force=True)
+    except LinearGraphQLError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 def _require_notion_refresh_token(token: str) -> None:

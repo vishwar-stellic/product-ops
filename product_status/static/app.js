@@ -76,6 +76,9 @@ const els = {
   supportReportContainer: document.getElementById("support-report-container"),
   supportReportUpdateBtn: document.getElementById("support-report-update-btn"),
   supportReportUpdatedAt: document.getElementById("support-report-updated-at"),
+  qualityReportContainer: document.getElementById("quality-report-container"),
+  qualityReportUpdateBtn: document.getElementById("quality-report-update-btn"),
+  qualityReportUpdatedAt: document.getElementById("quality-report-updated-at"),
   partnerInsightsTabBtn: document.getElementById("partner-insights-tab-btn"),
   partnerInsightsContainer: document.getElementById("partner-insights-container"),
   partnerInsightsUpdateBtn: document.getElementById("partner-insights-update-btn"),
@@ -4601,6 +4604,308 @@ async function updateSinglePartner(partnerId) {
   }
 }
 
+// ---- Quality Report tab ----
+// History of the EPD Report's Quality table (see quality_report.py), split
+// in two like the table's rows are: point-in-time rows sampled every
+// Wednesday for 12 weeks, and month-to-date rows valued per month. A shared
+// Total / per-squad radio picker (like the Support Report's) drives both
+// sections; each has a line chart (one line per metric) and a table.
+
+const QUALITY_REPORT_COLORS = ["#6e8bff", "#3ecf8e", "#e5c15c", "#f16565", "#b98af6"];
+let qualityReportData = null;
+let qualityReportLoaded = false;
+let qualityReportColumn = "TOTAL";
+// Metric keys toggled off by clicking their legend item (session-only).
+const qualityReportHiddenSeries = new Set();
+
+function qualityReportSections() {
+  const d = qualityReportData;
+  return [
+    {
+      id: "weekly",
+      title: "Every Wednesday",
+      badge: `Last ${d.weeks} weeks`,
+      metrics: d.metrics,
+      tipLabel: (p) => `Wednesday ${p.label}${p.partial ? " (so far today)" : ""}`,
+      note:
+        "Charted: one point per Wednesday, taken at the end of that day (Pacific; today's is as of now). The \"this month\" series are month-to-date as of that day, so they reset at each month start.",
+    },
+  ];
+}
+
+function qualityReportColumnOptions() {
+  const squads = (qualityReportData && qualityReportData.squads) || [];
+  return [{ key: "TOTAL", label: "Total" }, ...squads.map((s) => ({ key: s.key, label: s.name }))];
+}
+
+function qualityReportSelection() {
+  if (!qualityReportData) return null;
+  if (qualityReportColumn === "TOTAL") return qualityReportData.total;
+  return qualityReportData.squads.find((s) => s.key === qualityReportColumn) || qualityReportData.total;
+}
+
+function renderQualityReportColumnPicker() {
+  return qualityReportColumnOptions()
+    .map(
+      (opt) => `
+      <label class="trend-column-option">
+        <input type="radio" name="quality-column" value="${escapeHtml(opt.key)}"${
+        opt.key === qualityReportColumn ? " checked" : ""
+      }>
+        ${escapeHtml(opt.label)}
+      </label>`
+    )
+    .join("");
+}
+
+function renderQualityReportLegend(section) {
+  return section.metrics
+    .map((m, idx) => {
+      const hidden = qualityReportHiddenSeries.has(m.key);
+      return `<span class="trend-legend-item${hidden ? " trend-legend-item-hidden" : ""}" data-series-key="${escapeHtml(
+        m.key
+      )}" title="Click to ${hidden ? "show" : "hide"} this line" role="button"><span class="trend-legend-swatch" style="background:${
+        QUALITY_REPORT_COLORS[idx % QUALITY_REPORT_COLORS.length]
+      }"></span>${escapeHtml(m.label)}</span>`;
+    })
+    .join("");
+}
+
+function renderQualityReportSVG(section, selection, width) {
+  const metrics = section.metrics;
+  const points = selection[section.id];
+  const height = 220;
+  const paddingLeft = 44;
+  const paddingRight = 24;
+  const paddingTop = 14;
+  const paddingBottom = 26;
+  const plotWidth = Math.max(1, width - paddingLeft - paddingRight);
+  const plotHeight = height - paddingTop - paddingBottom;
+  const visible = metrics.filter((m) => !qualityReportHiddenSeries.has(m.key));
+  if (!visible.length) {
+    return `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" class="trend-svg">
+      <text x="${width / 2}" y="${height / 2}" text-anchor="middle" class="trend-axis-label">Every series is hidden — click a legend item to show it again.</text>
+    </svg>`;
+  }
+
+  let max = 0;
+  visible.forEach((m) => points.forEach((p) => (max = Math.max(max, p.values[m.key] || 0))));
+  const tickCount = 4;
+  const step = Math.max(1, Math.ceil(max / tickCount));
+  const top = step * tickCount;
+  const n = points.length;
+  const xFor = (i) => paddingLeft + (n === 1 ? plotWidth / 2 : (i / (n - 1)) * plotWidth);
+  const yFor = (v) => paddingTop + plotHeight - (v / top) * plotHeight;
+
+  let gridLines = "";
+  for (let t = 0; t <= tickCount; t++) {
+    const value = t * step;
+    const y = yFor(value);
+    gridLines += `<line x1="${paddingLeft}" x2="${width - paddingRight}" y1="${y.toFixed(1)}" y2="${y.toFixed(
+      1
+    )}" class="trend-gridline" />
+      <text x="${paddingLeft - 8}" y="${(y + 4).toFixed(1)}" class="trend-axis-label" text-anchor="end">${value}</text>`;
+  }
+
+  const xLabels = points
+    .map(
+      (p, i) =>
+        `<text x="${xFor(i).toFixed(1)}" y="${height - 6}" class="trend-axis-label" text-anchor="middle">${escapeHtml(
+          p.label
+        )}${p.partial ? "*" : ""}</text>`
+    )
+    .join("");
+
+  const series = metrics
+    .map((m, idx) => {
+      if (qualityReportHiddenSeries.has(m.key)) return "";
+      const color = QUALITY_REPORT_COLORS[idx % QUALITY_REPORT_COLORS.length];
+      const coords = points.map((p, i) => [xFor(i), yFor(p.values[m.key] || 0)]);
+      const path = coords.map(([x, y], i) => `${i ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+      const dots = coords
+        .map(([x, y], i) => {
+          const p = points[i];
+          const tooltip = escapeHtml(`${selection.name} — ${m.label}\n${section.tipLabel(p)}: ${p.values[m.key] || 0}`);
+          return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.5" fill="${color}" />
+            <circle class="trend-dot-hit" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="8" fill="transparent" data-tooltip="${tooltip}"></circle>`;
+        })
+        .join("");
+      return `<path d="${path}" fill="none" stroke="${color}" stroke-width="2" />${dots}`;
+    })
+    .join("");
+
+  return `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" class="trend-svg">${gridLines}${series}${xLabels}</svg>`;
+}
+
+function mountQualityReportCharts() {
+  if (!els.qualityReportContainer || !qualityReportData) return;
+  const selection = qualityReportSelection();
+  qualityReportSections().forEach((section) => {
+    const wrap = els.qualityReportContainer.querySelector(`.trend-svg-wrap[data-section="${section.id}"]`);
+    if (!wrap) return;
+    const width = Math.max(300, Math.round(wrap.clientWidth));
+    wrap.innerHTML = renderQualityReportSVG(section, selection, width);
+    attachTrendTooltipHandlers(wrap);
+  });
+}
+
+function renderQualityReportTable(section, selection) {
+  const metrics = qualityReportData.metrics;
+  const head = metrics.map((m) => `<th class="num">${escapeHtml(m.label)}</th>`).join("");
+  // Rows for whole/last-day-of-month values get a slightly different tint.
+  const rowHtml = (label, p, monthRow = false) =>
+    `<tr${monthRow ? ' class="quality-report-month-row"' : ""}><td>${label}</td>${metrics.map((m) => `<td class="num">${p.values[m.key] ?? "—"}</td>`).join("")}</tr>`;
+  // Wednesday rows, plus a row for the last day of each month that ended
+  // inside the window (shown on the Wednesday row itself when they coincide).
+  const firstAsOf = new Date(selection.weekly[0].asOf).getTime();
+  const monthEnds = selection.monthly.filter((p) => !p.partial && new Date(p.asOf).getTime() >= firstAsOf);
+  const monthEndTimes = new Set(monthEnds.map((p) => new Date(p.asOf).getTime()));
+  const weeklyTimes = new Set(selection.weekly.map((p) => new Date(p.asOf).getTime()));
+  const monthEndBadge = ' <span class="label-badge">month end</span>';
+  const entries = [
+    ...selection.weekly.map((p) => ({
+      time: new Date(p.asOf).getTime(),
+      html: rowHtml(
+        `${escapeHtml(p.label)}${p.partial ? ' <span class="label-badge">today</span>' : ""}${
+          monthEndTimes.has(new Date(p.asOf).getTime()) ? monthEndBadge : ""
+        }`,
+        p,
+        monthEndTimes.has(new Date(p.asOf).getTime())
+      ),
+    })),
+    ...monthEnds
+      .filter((p) => !weeklyTimes.has(new Date(p.asOf).getTime()))
+      .map((p) => ({ time: new Date(p.asOf).getTime(), html: rowHtml(`${escapeHtml(p.dayLabel)}${monthEndBadge}`, p, true) })),
+  ];
+  const weeklyRows = entries
+    .sort((x, y) => y.time - x.time)
+    .map((e) => e.html)
+    .join("");
+  // Whole-month rows for the months that ended BEFORE the Wednesday window
+  // starts (the window's own months are covered by the month-end rows above).
+  const olderMonths = selection.monthly.filter((p) => !p.partial && new Date(p.asOf).getTime() < firstAsOf);
+  const monthRows = olderMonths
+    .map((p) => rowHtml(`${escapeHtml(p.label)} <span class="label-badge">full month</span>`, p, true))
+    .reverse()
+    .join("");
+  return `<table class="data-table quality-report-table">
+      <thead><tr><th>Date</th>${head}</tr></thead>
+      <tbody>
+        <tr class="quality-report-divider"><td colspan="${metrics.length + 1}">Every Wednesday — last ${qualityReportData.weeks} weeks, with a row for each month-end day</td></tr>
+        ${weeklyRows}
+        <tr class="quality-report-divider"><td colspan="${metrics.length + 1}">Earlier months — one row per month (value for the whole month)</td></tr>
+        ${monthRows}
+      </tbody>
+    </table>`;
+}
+
+function renderQualityReportTables() {
+  const selection = qualityReportSelection();
+  qualityReportSections().forEach((section) => {
+    const el = els.qualityReportContainer.querySelector(`.quality-report-table-wrap[data-section="${section.id}"]`);
+    if (el) el.innerHTML = renderQualityReportTable(section, selection);
+  });
+}
+
+function renderQualityReport(data) {
+  if (!els.qualityReportContainer) return;
+  qualityReportData = data;
+  const sections = qualityReportSections()
+    .map(
+      (section) => `
+    <div class="squad-block support-trend-chart">
+      <h3 class="block-title">${escapeHtml(section.title)} <span class="label-badge">${escapeHtml(section.badge)}</span></h3>
+      <div class="trend-svg-wrap" data-section="${section.id}"></div>
+      <div class="trend-legend" data-section="${section.id}">${renderQualityReportLegend(section)}</div>
+      <p class="empty-note trend-cohort-note">${escapeHtml(section.note)}</p>
+    </div>`
+    )
+    .join("");
+  els.qualityReportContainer.innerHTML = `
+    <div class="trend-controls">
+      <div class="trend-column-picker">${renderQualityReportColumnPicker()}</div>
+    </div>
+    ${sections}
+    <div class="quality-report-table-wrap" data-section="weekly"></div>
+    <p class="empty-note trend-cohort-note">
+      Each series is a row of the EPD Report's Quality table, replayed from each issue's own dates, so the latest points match that table.
+      Past points use each issue's current priority and SLA time. Total adds the squads together.
+    </p>`;
+  renderQualityReportTables();
+  mountQualityReportCharts();
+  if (els.qualityReportUpdatedAt && data.fetchedAt) {
+    els.qualityReportUpdatedAt.textContent = `Updated ${formatRelativeTime(data.fetchedAt)}`;
+    els.qualityReportUpdatedAt.title = new Date(data.fetchedAt * 1000).toLocaleString();
+  }
+}
+
+if (els.qualityReportContainer) {
+  els.qualityReportContainer.addEventListener("change", (event) => {
+    if (event.target.name !== "quality-column") return;
+    qualityReportColumn = event.target.value;
+    renderQualityReportTables();
+    mountQualityReportCharts();
+  });
+  els.qualityReportContainer.addEventListener("click", (event) => {
+    const legendItem = event.target.closest(".trend-legend-item");
+    if (!legendItem || !qualityReportData) return;
+    const key = legendItem.dataset.seriesKey;
+    if (qualityReportHiddenSeries.has(key)) qualityReportHiddenSeries.delete(key);
+    else qualityReportHiddenSeries.add(key);
+    qualityReportSections().forEach((section) => {
+      const legendEl = els.qualityReportContainer.querySelector(`.trend-legend[data-section="${section.id}"]`);
+      if (legendEl) legendEl.innerHTML = renderQualityReportLegend(section);
+    });
+    mountQualityReportCharts();
+  });
+  window.addEventListener("resize", () => {
+    if (qualityReportData && !els.qualityReportContainer.closest(".hidden")) mountQualityReportCharts();
+  });
+}
+
+async function loadQualityReport() {
+  if (!els.qualityReportContainer) return;
+  try {
+    const res = await fetch("/api/quality-report");
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail || `Request failed (${res.status})`);
+    }
+    renderQualityReport(await res.json());
+  } catch (err) {
+    els.qualityReportContainer.innerHTML = `<p class="empty-note">Couldn't load the quality report: ${escapeHtml(
+      err.message
+    )}</p>`;
+  }
+}
+
+async function refreshQualityReport() {
+  const btn = els.qualityReportUpdateBtn;
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span><span class="btn-label">Updating…</span>';
+  }
+  try {
+    const res = await fetch("/api/quality-report/refresh", { method: "POST" });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail || `Request failed (${res.status})`);
+    }
+    renderQualityReport(await res.json());
+  } catch (err) {
+    showError(`Couldn't update the quality report: ${err.message}`);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<span class="btn-label">Update</span>';
+    }
+  }
+}
+
+if (els.qualityReportUpdateBtn) {
+  els.qualityReportUpdateBtn.addEventListener("click", refreshQualityReport);
+}
+
 // ---- Tabs ----
 
 function switchTab(tabName) {
@@ -4613,6 +4918,14 @@ function switchTab(tabName) {
   if (tabName === "support-report" && !supportReportLoaded) {
     supportReportLoaded = true;
     loadSupportReport();
+  }
+  if (tabName === "quality-report") {
+    if (!qualityReportLoaded) {
+      qualityReportLoaded = true;
+      loadQualityReport();
+    } else if (qualityReportData) {
+      mountQualityReportCharts(); // the panel was hidden when last drawn, so re-measure
+    }
   }
   if (tabName === "partner-insights" && !partnerInsightsLoaded && partnerInsightsAccess) {
     partnerInsightsLoaded = true;

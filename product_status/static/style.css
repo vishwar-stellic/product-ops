@@ -2059,3 +2059,30 @@ body {
   max-height: 320px;
   overflow-y: auto;
 }
+
+/* Quality Report tab: shared squad picker above the sections */
+#quality-report-container > .trend-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 4px 0 16px;
+}
+
+#quality-report-container .quality-report-table-wrap {
+  margin-top: 14px;
+}
+
+#quality-report-container .quality-report-divider td {
+  background: var(--panel-2, rgba(255, 255, 255, 0.04));
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted, #8b90a0);
+}
+
+/* Month / month-end rows: a faint blue tint so they stand out from plain Wednesday rows */
+#quality-report-container .quality-report-month-row td {
+  background: rgba(110, 139, 255, 0.09);
+}
