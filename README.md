@@ -786,13 +786,15 @@ you to reconnect more often on Vercel than it would on a normal host.
 `NOTION_API_KEY` doesn't have this problem (it's just a static env var), so
 prefer that on Vercel.
 
-**Nightly Support Report refresh (Vercel Cron):** `vercel.json` registers
+**Nightly Support + Quality Report refresh (Vercel Cron):** `vercel.json` registers
 a cron job that hits `GET /api/cron/refresh-support-report` once a night
 (`"schedule": "0 7 * * *"`, i.e. 07:00 UTC = midnight Pacific during
 daylight saving - Vercel Cron schedules are always UTC with no DST
 adjustment, so this drifts to 11pm Pacific for the few months a year it's
 on standard time; adjust the schedule if you want it pinned exactly). This
-just forces the same slow full pull as the **Update** button
+first rebuilds the Quality Report (`build_quality_report()`, a few seconds of
+Linear calls; cached in Blob under `dashboard-quality-report`), then forces
+the same slow full pull as the Support tab's **Update** button
 (`build_support_report()`, a whole-workspace Intercom pull), so the
 dashboard's cache is already warm before anyone opens it that day rather
 than the first visitor of the day eating the ~1-2 minute cold-pull penalty
