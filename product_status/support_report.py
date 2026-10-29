@@ -37,15 +37,18 @@ working convenience, not a resolution (the skill's own hard rule, born from
 a ticket that sat snoozed and invisible for weeks).
 
 ## Why some tickets need an extra API call
-`statistics.first_admin_reply_at` is `null` for admin-initiated and
-escalated conversations even when a genuine reply happened (an assignment
-or comment part with a real body doesn't set it) - trusting a `null` there
-as "never answered" produces false positives. So any *open* Key User
-ticket missing that timestamp gets its full `conversation_parts` fetched
-and scanned for the first genuine customer-facing reply
-(`_first_customer_facing_reply_at`), mirroring the skill's own verification
-rule. This is the expensive part of a refresh (one extra HTTP call per such
-ticket) - `_verify_replies` runs those concurrently.
+The first-response clock stops at the earliest Stellic message to the
+partner: a conversation part from an admin or bot with a non-empty `body`,
+excluding internal notes (`note`, `note_and_reopen`, `note_and_unsnooze`).
+An assignment that includes a message counts, because that text lives on
+the assignment part. `statistics.first_admin_reply_at` does not: Intercom
+leaves it null for some admin-initiated and escalated conversations, and
+when it is set it often points at a later `comment`, skipping an earlier
+assignment that already carried the reply. So the parts scan wins whenever
+it finds an earlier body (`_first_reply_at`). Parts are fetched for the
+engagement series (`_collect_stellic_responses`, cached per ticket) and,
+for open Key User tickets and cohort tickets that still have no statistic,
+by `_verify_replies`.
 
 ## Product Area mapping
 Intercom's "Product Area" custom attribute (conversation- or ticket-level,
@@ -159,7 +162,7 @@ SUPPORT_REPORT_CACHE_KEY = "dashboard-support-report"
 # Bump whenever this module's output shape or underlying metric logic
 # changes - see `milestones_report.py:MILESTONES_REPORT_CACHE_VERSION` for
 # why (same cache has no schema of its own).
-SUPPORT_REPORT_CACHE_VERSION = 22
+SUPPORT_REPORT_CACHE_VERSION = 23
 
 # Separate raw key (not versioned/aged like the main report - see
 # `cache.read_raw`) for the trend chart's accumulating history log.
@@ -383,7 +386,7 @@ def _cohort_ticket_debug(
     created = conversation.get("created_at")
     stat_reply = stats.get("first_admin_reply_at")
     override_reply = reply_overrides.get(conversation["id"])
-    reply = stat_reply or override_reply
+    reply = _first_reply_at(conversation, reply_overrides)
     priority = _priority(conversation) or "(blank)"
     eligible = priority in ("Urgent", "High")
     age = _resolution_age_days_at(conversation, eval_ts)
@@ -398,7 +401,11 @@ def _cohort_ticket_debug(
         "state": conversation.get("state"),
         "ticketState": _ticket_state(conversation),
         "firstReplyAt": _epoch_to_iso(reply),
-        "replySource": "intercom statistics" if stat_reply else ("conversation parts" if override_reply else None),
+        "replySource": (
+            "conversation parts"
+            if override_reply and reply == override_reply and (not stat_reply or override_reply <= stat_reply)
+            else ("intercom statistics" if stat_reply else None)
+        ),
         "frBusinessHours": round(_business_hours_between(created, reply or now), 1),
         "frLabel": _first_response_label(conversation, reply_overrides, now),
         "closedAt": _epoch_to_iso(close_ts),
@@ -522,18 +529,29 @@ def _business_hours_between(start: Optional[float], end: Optional[float]) -> flo
     return total_seconds / 3600.0
 
 
+# Internal notes are teammate-only. A body on one of these is not a reply
+# to the partner, so it must not stop the first-response clock. `note_and_*`
+# is the same text plus a reopen or unsnooze in one action.
+_INTERNAL_NOTE_PART_TYPES = frozenset({"note", "note_and_reopen", "note_and_unsnooze"})
+
+
+def _is_internal_note(part: Dict[str, Any]) -> bool:
+    return part.get("part_type") in _INTERNAL_NOTE_PART_TYPES
+
+
 def _first_customer_facing_reply_at(conversation_parts: List[Dict[str, Any]]) -> Optional[float]:
-    """Earliest epoch among `conversation_parts` that's a genuine
-    customer-facing reply: author admin/bot, not an internal note, non-empty
-    body (a `comment` or an `assignment` *with* a body both count - neither
-    always sets `statistics.first_admin_reply_at`, which is why this exists
-    at all - see module docstring)."""
+    """Earliest epoch among `conversation_parts` that's a message from
+    Stellic to the partner: author admin/bot, not an internal note, non-empty
+    body. A `comment` and an `assignment` with a body both count — the
+    assignment case is the usual first reply, and Intercom's
+    `statistics.first_admin_reply_at` often points at a later comment
+    instead (see module docstring)."""
     earliest: Optional[float] = None
     for part in conversation_parts or []:
         author = part.get("author") or {}
         if author.get("type") not in ("admin", "bot"):
             continue
-        if part.get("part_type") == "note":
+        if _is_internal_note(part):
             continue
         if not (part.get("body") or "").strip():
             continue
@@ -541,6 +559,23 @@ def _first_customer_facing_reply_at(conversation_parts: List[Dict[str, Any]]) ->
         if created_at and (earliest is None or created_at < earliest):
             earliest = created_at
     return earliest
+
+
+def _first_reply_at(conversation: Dict[str, Any], reply_overrides: Dict[str, Optional[float]]) -> Optional[float]:
+    """When the first-response clock stops.
+
+    Prefer the earlier of Intercom's `statistics.first_admin_reply_at` and
+    the parts scan. The scan is the earliest Stellic part with a body (see
+    `_first_customer_facing_reply_at`); the statistic is only a fallback for
+    tickets whose parts we have not fetched, and it loses when the scan
+    found an earlier message."""
+    stat = (conversation.get("statistics") or {}).get("first_admin_reply_at")
+    cid = conversation.get("id")
+    scanned = reply_overrides.get(cid)
+    if scanned is None and cid is not None:
+        scanned = reply_overrides.get(str(cid))
+    found = [ts for ts in (stat, scanned) if ts]
+    return min(found) if found else None
 
 
 def _verify_replies(client: IntercomClient, conversations: List[Dict[str, Any]]) -> Dict[str, Optional[float]]:
@@ -664,7 +699,7 @@ def _stellic_response_times(conversation_parts: List[Dict[str, Any]]) -> List[fl
         author = part.get("author") or {}
         if author.get("type") not in allowed:
             continue
-        if part.get("part_type") == "note":
+        if _is_internal_note(part):
             continue
         if not (part.get("body") or "").strip():
             continue
@@ -694,16 +729,36 @@ def _collect_stellic_responses(
     The same fetch also yields each ticket's linked Linear issue identifiers
     (`_linear_issue_ids`), cached alongside and returned as "linearByTicket".
 
+    The same fetch records `firstReplyAt`: the earliest Stellic message with
+    a body, including bots and ignoring the engagement window, so the
+    first-response SLA can see an assignment Intercom's statistic skipped.
+    Older cache entries have no `firstReplyAt`; the earliest stored reply
+    stands in until that ticket is fetched again.
+
     Returns {"byTicket": {conversation_id: [epoch, ...]},
-    "linearByTicket": {conversation_id: [identifier, ...]}, "complete": bool,
+    "linearByTicket": {conversation_id: [identifier, ...]},
+    "firstReplyByTicket": {conversation_id: epoch}, "complete": bool,
     "notFetched": int}."""
     stored = cache.read_raw(ENGAGEMENT_CACHE_KEY) or {}
     cached: Dict[str, Any] = stored.get("tickets") or {}
 
     by_ticket: Dict[str, List[float]] = {}
     linear_by_ticket: Dict[str, List[str]] = {}
+    first_reply_by_ticket: Dict[str, float] = {}
     fresh: Dict[str, Any] = {}
     to_fetch: List[Dict[str, Any]] = []
+
+    def _remember_first_reply(cid: str, entry: Dict[str, Any]) -> None:
+        if "firstReplyAt" in entry:
+            first = entry.get("firstReplyAt")
+        else:
+            # Written before first-response used the parts scan. The stored
+            # replies are already the human, non-note bodies in the window.
+            stored = entry.get("replies") or []
+            first = min(stored) if stored else None
+        if first:
+            first_reply_by_ticket[cid] = first
+
     for conversation in conversations:
         cid = str(conversation["id"])
         entry = cached.get(cid)
@@ -711,6 +766,7 @@ def _collect_stellic_responses(
             fresh[cid] = entry
             by_ticket[cid] = [t for t in entry.get("replies") or [] if t >= since_ts]
             linear_by_ticket[cid] = list(entry.get("linear") or [])
+            _remember_first_reply(cid, entry)
         else:
             to_fetch.append(conversation)
 
@@ -726,6 +782,7 @@ def _collect_stellic_responses(
             conversation.get("updated_at"),
             _stellic_response_times(parts),
             _linear_issue_ids(parts),
+            _first_customer_facing_reply_at(parts),
         )
 
     if deadline is None:
@@ -745,17 +802,25 @@ def _collect_stellic_responses(
                         by_ticket[cid] = [t for t in stale.get("replies") or [] if t >= since_ts]
                         if "linear" in stale:
                             linear_by_ticket[cid] = list(stale.get("linear") or [])
+                        _remember_first_reply(cid, stale)
                     not_fetched += 1
                 break
             for result in pool.map(_fetch, chunk):
                 if result is None:
                     not_fetched += 1
                     continue
-                cid, updated_at, times, linear_ids = result
+                cid, updated_at, times, linear_ids, first_reply_at = result
                 replies = [t for t in times if t >= since_ts]
-                fresh[cid] = {"updatedAt": updated_at, "replies": replies, "linear": linear_ids}
+                fresh[cid] = {
+                    "updatedAt": updated_at,
+                    "replies": replies,
+                    "linear": linear_ids,
+                    "firstReplyAt": first_reply_at,
+                }
                 by_ticket[cid] = replies
                 linear_by_ticket[cid] = linear_ids
+                if first_reply_at:
+                    first_reply_by_ticket[cid] = first_reply_at
 
     try:
         cache.write_raw(ENGAGEMENT_CACHE_KEY, {"updatedAt": now, "tickets": fresh})
@@ -764,6 +829,7 @@ def _collect_stellic_responses(
     return {
         "byTicket": by_ticket,
         "linearByTicket": linear_by_ticket,
+        "firstReplyByTicket": first_reply_by_ticket,
         "complete": not_fetched == 0,
         "notFetched": not_fetched,
     }
@@ -841,9 +907,7 @@ def _fr_breach(conversation: Dict[str, Any], reply_overrides: Dict[str, Optional
     created = conversation.get("created_at")
     if not created:
         return False
-    reply = (conversation.get("statistics") or {}).get("first_admin_reply_at") or reply_overrides.get(
-        conversation["id"]
-    )
+    reply = _first_reply_at(conversation, reply_overrides)
     if reply:
         return _business_hours_between(created, reply) > FR_TARGET_HOURS
     # Never answered - only a breach once the business-hour clock has
@@ -857,9 +921,7 @@ def _first_response_label(conversation: Dict[str, Any], reply_overrides: Dict[st
     created = conversation.get("created_at")
     if not created:
         return "Pending"
-    reply = (conversation.get("statistics") or {}).get("first_admin_reply_at") or reply_overrides.get(
-        conversation["id"]
-    )
+    reply = _first_reply_at(conversation, reply_overrides)
     if reply:
         return "Met" if _business_hours_between(created, reply) <= FR_TARGET_HOURS else "Not Met"
     return "Pending" if _business_hours_between(created, now) <= FR_TARGET_HOURS else "Not Met"
@@ -990,9 +1052,7 @@ def _ticket_record(
     out_of_resolution = bool(
         created and (now - created) / 86400.0 > RES_TARGET_DAYS and priority in ("Urgent", "High")
     )
-    first_reply = (conversation.get("statistics") or {}).get("first_admin_reply_at") or reply_overrides.get(
-        conversation["id"]
-    )
+    first_reply = _first_reply_at(conversation, reply_overrides)
     return {
         "id": conversation.get("id"),
         "url": _conversation_url(conversation.get("id")),
@@ -1247,6 +1307,13 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
         reply_overrides = reply_future.result()
         contact_name_map = contact_name_future.result()
         engagement = engagement_future.result()
+
+    # Parts-scan timestamps (assignment bodies included, notes excluded).
+    # Earlier than Intercom's statistic when both exist — see `_first_reply_at`.
+    for cid, ts in (engagement.get("firstReplyByTicket") or {}).items():
+        prev = reply_overrides.get(cid)
+        if ts and (prev is None or ts < prev):
+            reply_overrides[cid] = ts
 
     linear_by_ticket = engagement.get("linearByTicket") or {}
     issue_types = _issue_types_for([i for ids in linear_by_ticket.values() for i in ids], now)
