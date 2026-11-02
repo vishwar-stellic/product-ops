@@ -1032,6 +1032,26 @@ body {
   margin: 10px 0 0;
 }
 
+.partner-report-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.partner-report-picker select {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font: inherit;
+  font-weight: 500;
+  min-width: 240px;
+}
+
 .trend-column-picker {
   display: flex;
   flex-wrap: wrap;

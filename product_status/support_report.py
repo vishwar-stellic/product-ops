@@ -162,7 +162,7 @@ SUPPORT_REPORT_CACHE_KEY = "dashboard-support-report"
 # Bump whenever this module's output shape or underlying metric logic
 # changes - see `milestones_report.py:MILESTONES_REPORT_CACHE_VERSION` for
 # why (same cache has no schema of its own).
-SUPPORT_REPORT_CACHE_VERSION = 23
+SUPPORT_REPORT_CACHE_VERSION = 24
 
 # Separate raw key (not versioned/aged like the main report - see
 # `cache.read_raw`) for the trend chart's accumulating history log.
@@ -379,6 +379,7 @@ def _cohort_ticket_debug(
     reply_overrides: Dict[str, Optional[float]],
     eval_ts: float,
     now: float,
+    company_map: Dict[str, str],
 ) -> Dict[str, Any]:
     """Per-ticket inputs and outcomes behind the weekly cohort bars, so the
     dashboard's debug panel can show exactly what each bar counted."""
@@ -396,6 +397,7 @@ def _cohort_ticket_debug(
         "url": _conversation_url(conversation.get("id")),
         "description": _ticket_description(conversation),
         "squad": _squad_for(conversation) or "",
+        "partnerName": partner_name(conversation, company_map),
         "createdAt": _epoch_to_iso(created),
         "priority": priority,
         "state": conversation.get("state"),
@@ -421,6 +423,7 @@ def _build_weekly_sla_cohorts(
     cohort_conversations: List[Dict[str, Any]],
     reply_overrides: Dict[str, Optional[float]],
     now: float,
+    company_map: Dict[str, str],
 ) -> List[Dict[str, Any]]:
     """One row per Pacific calendar week (cohort = Key User tickets created
     that week, in any state today): % resolution SLA met (Urgent/High,
@@ -492,7 +495,7 @@ def _build_weekly_sla_cohorts(
                 "byColumn": by_column,
                 # Every cohort ticket once (the dashboard filters by squad
                 # for the debug panel) - see `_cohort_ticket_debug`.
-                "tickets": [_cohort_ticket_debug(c, reply_overrides, eval_ts, now) for c in cohort],
+                "tickets": [_cohort_ticket_debug(c, reply_overrides, eval_ts, now, company_map) for c in cohort],
             }
         )
     return rows
@@ -1353,7 +1356,7 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
         "weekStartAt": datetime.fromtimestamp(week_start, timezone.utc).isoformat(),
         "frTargetHours": FR_TARGET_HOURS,
         "resTargetDays": RES_TARGET_DAYS,
-        "weeklyCohorts": _build_weekly_sla_cohorts(cohort_raw, reply_overrides, now),
+        "weeklyCohorts": _build_weekly_sla_cohorts(cohort_raw, reply_overrides, now, company_map),
         "dailyEngagement": _build_daily_engagement(ku_updated, engagement, cohort_since, now),
         "engagement": {
             "complete": engagement["complete"],

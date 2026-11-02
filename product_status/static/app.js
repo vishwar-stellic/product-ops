@@ -1508,9 +1508,12 @@ let supportReportActiveMetric = "totalOpenKU";
 const SUPPORT_REPORT_SUBTABS = [
   { key: "open", label: "Open Tickets" },
   { key: "performance", label: "Performance" },
+  { key: "partner", label: "Partner Report" },
   { key: "stats", label: "Stats" },
 ];
 let supportReportSubtab = "open";
+// Partner Report sub-tab: which institution the weekly SLA bars are limited to.
+let supportReportPartner = "";
 const supportReportFilters = {
   squad: [],
   createdDateFrom: "",
@@ -2517,7 +2520,7 @@ function renderSupportReportDebug(options = {}) {
   if (sel.seriesKey === SUPPORT_REPORT_RESPONSES_SERIES.key) {
     return options.responsesOnly ? renderSupportReportResponsesDebug(sel) : placeholder;
   }
-  const week = (supportReportData.weeklyCohorts || []).find((w) => w.weekStartAt === sel.weekStartAt);
+  const week = supportReportChartCohorts().find((w) => w.weekStartAt === sel.weekStartAt);
   if (!week) return placeholder;
 
   const isFirstResponse = sel.seriesKey === "weeklyPctFirstResponseMet";
@@ -2633,11 +2636,12 @@ function renderSupportReportDebug(options = {}) {
       .join("");
   }
 
+  const partnerLabel = supportReportSubtab === "partner" ? supportReportSelectedPartner() : "";
   return `
     <div class="squad-block support-debug">
-      <h3 class="block-title">${escapeHtml(columnLabel)}: ${escapeHtml(seriesLabel)} · week of ${escapeHtml(
-    formatSupportReportCohortWeek(week.weekStartAt)
-  )}</h3>
+      <h3 class="block-title">${escapeHtml(columnLabel)}${partnerLabel ? ` · ${escapeHtml(partnerLabel)}` : ""}: ${escapeHtml(
+    seriesLabel
+  )} · week of ${escapeHtml(formatSupportReportCohortWeek(week.weekStartAt))}</h3>
       <ul class="debug-stats">${statsHtml}</ul>
       <p class="debug-reconcile">${escapeHtml(reconcileHtml)}</p>
       <table class="data-table filter-table sf-table">
@@ -2651,7 +2655,9 @@ function selectSupportReportDebug(selection) {
   supportReportDebugSelection = selection;
   const el = els.supportReportContainer && els.supportReportContainer.querySelector(".support-debug");
   if (!el) return;
-  el.outerHTML = renderSupportReportDebug({ responsesOnly: supportReportSubtab !== "performance" });
+  el.outerHTML = renderSupportReportDebug({
+    responsesOnly: supportReportSubtab !== "performance" && supportReportSubtab !== "partner",
+  });
   enhanceSupportReportTables();
   const fresh = els.supportReportContainer.querySelector(".support-debug");
   if (fresh) fresh.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -3022,6 +3028,76 @@ function refreshSupportReportTrendLegendAndChart() {
   const legendEl = els.supportReportContainer && els.supportReportContainer.querySelector(".trend-legend");
   if (legendEl) legendEl.innerHTML = renderSupportReportTrendLegend();
   mountSupportReportTrendChart();
+}
+
+// Institutions that appear on any weekly-cohort ticket (the Partner Report
+// dropdown). Blank names collapse to "(blank)" so the option still selects.
+function supportReportPartnerNames() {
+  const names = new Set();
+  ((supportReportData && supportReportData.weeklyCohorts) || []).forEach((week) => {
+    (week.tickets || []).forEach((ticket) => names.add(supportReportFilterLabel(ticket.partnerName)));
+  });
+  return [...names].sort((a, b) => a.localeCompare(b));
+}
+
+function supportReportSelectedPartner() {
+  return supportReportPartner && supportReportPartnerNames().includes(supportReportPartner)
+    ? supportReportPartner
+    : "";
+}
+
+// Same percentages the Performance bars use, recomputed from a ticket list
+// so a single partner can reuse the chart. Matches `_build_weekly_sla_cohorts`.
+function supportReportColumnStats(tickets) {
+  const eligible = tickets.filter((t) => t.resolutionEligible);
+  const metRes = eligible.filter((t) => t.resolutionLabel === "Met");
+  const pendingRes = eligible.filter((t) => t.resolutionLabel === "Pending");
+  const breached = eligible.filter((t) => t.resolutionLabel === "Breached");
+  const frMet = tickets.filter((t) => t.frLabel === "Met");
+  const frNot = tickets.filter((t) => t.frLabel === "Not Met");
+  const pct = (num, den) => (den ? Math.round((1000 * num) / den) / 10 : null);
+  return {
+    pctResolutionSlaMet: pct(metRes.length, eligible.length),
+    pctResolutionSlaPotential: pct(metRes.length + pendingRes.length, eligible.length),
+    pctFirstResponseSlaMet: pct(frMet.length, frMet.length + frNot.length),
+    resolutionEligible: eligible.length,
+    resolutionGraded: metRes.length + breached.length,
+    resolutionPending: pendingRes.length,
+    resolutionSlaMetCount: metRes.length,
+    firstResponseGraded: frMet.length + frNot.length,
+    firstResponseSlaMetCount: frMet.length,
+  };
+}
+
+// Performance uses the report's cohorts. Partner Report uses the same weeks
+// with tickets and bar numbers limited to the selected institution.
+function supportReportChartCohorts() {
+  const weeks = (supportReportData && supportReportData.weeklyCohorts) || [];
+  const partner = supportReportSubtab === "partner" ? supportReportSelectedPartner() : "";
+  if (!partner) return supportReportSubtab === "partner" ? [] : weeks;
+  const columns = supportReportTrendColumnOptions().map((opt) => opt.key);
+  return weeks.map((week) => {
+    const tickets = (week.tickets || []).filter((t) => supportReportFilterLabel(t.partnerName) === partner);
+    const byColumn = {};
+    columns.forEach((col) => {
+      const scoped = col === "TOTAL" ? tickets : tickets.filter((t) => t.squad === col);
+      byColumn[col] = supportReportColumnStats(scoped);
+    });
+    return { ...week, tickets, byColumn };
+  });
+}
+
+function renderSupportReportPartnerPicker() {
+  const selected = supportReportSelectedPartner();
+  const options = [`<option value="">Select a partner</option>`]
+    .concat(
+      supportReportPartnerNames().map(
+        (name) =>
+          `<option value="${escapeHtml(name)}"${name === selected ? " selected" : ""}>${escapeHtml(name)}</option>`
+      )
+    )
+    .join("");
+  return `<label class="partner-report-picker">Partner <select id="support-partner-select">${options}</select></label>`;
 }
 
 // Bars-only chart for the Performance sub-tab: one group per weekly cohort
@@ -3510,9 +3586,9 @@ let supportTrendResizeObserver = null;
 function mountSupportReportTrendChart() {
   const wrap = els.supportReportContainer && els.supportReportContainer.querySelector(".trend-svg-wrap");
   const points = supportReportTrendChartPoints();
-  const performance = supportReportSubtab === "performance";
+  const performance = supportReportSubtab === "performance" || supportReportSubtab === "partner";
   const stats = supportReportSubtab === "stats";
-  const weeklyCohorts = (supportReportData && supportReportData.weeklyCohorts) || [];
+  const weeklyCohorts = supportReportChartCohorts();
   if (!wrap || (performance ? !weeklyCohorts.length : stats ? !supportReportData : points.length < 2)) return;
   const draw = () => {
     const width = Math.max(300, Math.round(wrap.clientWidth));
@@ -3630,7 +3706,9 @@ function renderSupportReportTrendLegend() {
     }"></span>${escapeHtml(p)}</span>`;
   }).join("");
   if (supportReportSubtab === "stats") return priorityLegend;
-  return supportReportSubtab === "performance" ? barLegend : lineLegend + responsesLegend;
+  return supportReportSubtab === "performance" || supportReportSubtab === "partner"
+    ? barLegend
+    : lineLegend + responsesLegend;
 }
 
 function renderSupportReportColumnPicker() {
@@ -3669,26 +3747,42 @@ function selectSupportReportStatsView(value) {
 // Performance sub-tab: weekly SLA % bars only. Clicking a bar fills the debug
 // table below (see `renderSupportReportDebug`).
 function renderSupportReportPerformanceChart() {
-  const weeklyCohorts = (supportReportData && supportReportData.weeklyCohorts) || [];
+  const partnerTab = supportReportSubtab === "partner";
+  const partner = partnerTab ? supportReportSelectedPartner() : "";
+  const picker = partnerTab ? renderSupportReportPartnerPicker() : "";
+  const weeklyCohorts = supportReportChartCohorts();
+  if (partnerTab && !partner) {
+    return `
+      <div class="squad-block support-trend-chart">
+        <h3 class="block-title">Weekly SLA performance</h3>
+        <div class="trend-controls">${picker}</div>
+        <p class="empty-note">Select a partner to see that partner's first-response and resolution SLA for the last 6 weeks.</p>
+      </div>`;
+  }
   if (!weeklyCohorts.length) {
     return `
       <div class="squad-block support-trend-chart">
         <h3 class="block-title">Weekly SLA performance</h3>
+        ${picker ? `<div class="trend-controls">${picker}</div>` : ""}
         <p class="empty-note">No weekly cohort data yet — it's computed each time the report refreshes.</p>
       </div>`;
   }
+  const scopeNote = partner
+    ? `Key User tickets created for ${partner} in each of the last 6 Pacific calendar weeks.`
+    : "Last 6 Pacific calendar weeks (tickets created that week).";
   return `
     <div class="squad-block support-trend-chart">
       <h3 class="block-title">Weekly SLA performance <span class="label-badge">Last ${weeklyCohorts.length} week${
     weeklyCohorts.length === 1 ? "" : "s"
   }</span></h3>
       <div class="trend-controls">
+        ${picker}
         <div class="trend-column-picker">${renderSupportReportColumnPicker()}</div>
       </div>
       <div class="trend-svg-wrap"></div>
       <div class="trend-legend">${renderSupportReportTrendLegend()}</div>
       <p class="empty-note trend-cohort-note">
-        Last 6 Pacific calendar weeks (tickets created that week). Green = % Urgent/High that met resolution SLA; blue = % of that week's tickets (any state) whose first response came within the SLA window (tickets still awaiting a reply inside the window are excluded). For the green bar, every Urgent/High ticket is in the denominator, so recent weeks start low: the solid part is the share already met, and the hatched part (↑) is open tickets still inside the 21-day window that could still be met. Click a bar to see the tickets behind it.
+        ${escapeHtml(scopeNote)} Green = % Urgent/High that met resolution SLA; blue = % of that week's tickets (any state) whose first response came within the SLA window (tickets still awaiting a reply inside the window are excluded). For the green bar, every Urgent/High ticket is in the denominator, so recent weeks start low: the solid part is the share already met, and the hatched part (↑) is open tickets still inside the 21-day window that could still be met. Click a bar to see the tickets behind it.
       </p>
     </div>`;
 }
@@ -3725,7 +3819,9 @@ function renderSupportReportStatsChart() {
 
 function renderSupportReportTrendChart() {
   if (supportReportSubtab === "stats") return renderSupportReportStatsChart();
-  if (supportReportSubtab === "performance") return renderSupportReportPerformanceChart();
+  if (supportReportSubtab === "performance" || supportReportSubtab === "partner") {
+    return renderSupportReportPerformanceChart();
+  }
   const points = supportReportTrendChartPoints();
   const totalStored =
     (supportReportHistoryData && supportReportHistoryData.totalPointsStored) || points.length;
@@ -3821,11 +3917,12 @@ function renderSupportReport(data) {
     return;
   }
 
-  if (supportReportSubtab === "performance") {
+  if (supportReportSubtab === "performance" || supportReportSubtab === "partner") {
+    const showDebug = supportReportSubtab === "performance" || supportReportSelectedPartner();
     els.supportReportContainer.innerHTML = `
     ${subtabBar}
     ${renderSupportReportTrendChart()}
-    ${renderSupportReportDebug()}`;
+    ${showDebug ? renderSupportReportDebug() : ""}`;
     mountSupportReportTrendChart();
     enhanceSupportReportTables();
     updateSupportReportUpdatedAt(data);
@@ -3955,6 +4052,12 @@ if (els.supportReportContainer) {
   });
 
   els.supportReportContainer.addEventListener("change", (event) => {
+    if (event.target.id === "support-partner-select") {
+      supportReportPartner = event.target.value;
+      supportReportDebugSelection = null;
+      if (supportReportData) renderSupportReport(supportReportData);
+      return;
+    }
     if (event.target.name === "trend-column") {
       if (supportReportSubtab === "stats") {
         selectSupportReportStatsView(event.target.value);
