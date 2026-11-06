@@ -747,7 +747,7 @@ using Google sign-in ("Signing in" above), also set
 `/auth/google/callback` is an authorized redirect URI on the OAuth Client
 ID - a redeploy is needed after adding/changing env vars for them to take
 effect. For the **Support Report** tab, also set `INTERCOM_ACCESS_TOKEN`
-(see `.env.example`). Note `vercel.json` sets `maxDuration: 300` on
+(see `.env.example`). Note `vercel.json` sets `maxDuration: 800` on
 `main.py` - a full Support Report refresh takes roughly a minute (several
 whole-workspace Intercom pulls, run concurrently - see
 `support_report.py`'s module docstring), well past Vercel's old 60s

@@ -183,10 +183,12 @@ ENGAGEMENT_CACHE_KEY = "dashboard-support-report-replies"
 # series is meant to show human engagement.
 ENGAGEMENT_COUNT_BOTS = False
 # Stop fetching new ticket parts once the whole refresh has been running this
-# long (cold-cache protection: `vercel.json` caps the function at 300s and the
-# Intercom searches alone can take ~200s, so the first refresh after deploy
-# may only get partway; later refreshes finish the job from the cache).
-ENGAGEMENT_DEADLINE_SECONDS = 235.0
+# long. `vercel.json` caps `main.py` at 800s (the Pro plan maximum for this
+# app's Python version). The Intercom searches alone can take ~200s, and the
+# Linear label lookup plus the cache write still have to finish after this
+# deadline, so it stops at 730s and leaves ~70s. A refresh that does not
+# reach every ticket continues from the cache on the next run.
+ENGAGEMENT_DEADLINE_SECONDS = 730.0
 ENGAGEMENT_FETCH_CHUNK = 64
 
 # Linear issue identifier -> its "Issue Type" label, cached raw (see

@@ -1,7 +1,7 @@
 {
   "functions": {
     "main.py": {
-      "maxDuration": 300
+      "maxDuration": 800
     }
   },
   "crons": [
