@@ -97,6 +97,24 @@ def partner_name(conversation: Dict[str, Any], company_map: Dict[str, str]) -> s
     return "(unknown)"
 
 
+def partner_external_id(conversation: Dict[str, Any]) -> str:
+    """Short partner code shared by Intercom `company_id` and Vitally
+    `externalId` (e.g. "fsu"), or "" when the conversation doesn't carry one.
+    Used to match the Partner Report's PDL sheet, which is keyed by that code
+    rather than the display name."""
+    company = conversation.get("company") or {}
+    code = str(company.get("company_id") or "").strip().lower()
+    if code:
+        return code
+    for contact in ((conversation.get("contacts") or {}).get("contacts")) or []:
+        external_id = contact.get("external_id") or ""
+        if "@" in external_id:
+            code = external_id.rsplit("@", 1)[1].strip().lower()
+            if code:
+                return code
+    return ""
+
+
 _LINEAR_CUSTOMERS_QUERY = """
 query PartnerIdentityCustomers($first: Int!, $after: String) {
   customers(first: $first, after: $after) {

@@ -84,6 +84,9 @@ flags. Two different "who" fields are included per ticket:
   else the requester's email domain against a small manual map for a few
   known non-obvious domains (`partner_identity.DOMAIN_TO_PARTNER`).
   Unmatched stays "(unknown)" rather than guessing.
+- `partnerExternalId` - that same short code (`company.company_id`, else the
+  code after `@` in a contact's `external_id`), so the Partner Report can
+  match a partner to the PDL sheet. Empty when the conversation has neither.
 
 ## Trend history
 Every time this module actually runs (a cache-miss GET or a forced
@@ -151,7 +154,7 @@ from zoneinfo import ZoneInfo
 from . import cache
 from .intercom_client import IntercomClient
 from .linear_client import LinearClient, chunked
-from .partner_identity import build_company_map, partner_name
+from .partner_identity import build_company_map, partner_external_id, partner_name
 
 # Matches `notion_report.py:_PACIFIC` - "this week" resets on Pacific-time
 # Mondays, not UTC ones, to match how the team actually thinks about weeks.
@@ -162,7 +165,7 @@ SUPPORT_REPORT_CACHE_KEY = "dashboard-support-report"
 # Bump whenever this module's output shape or underlying metric logic
 # changes - see `milestones_report.py:MILESTONES_REPORT_CACHE_VERSION` for
 # why (same cache has no schema of its own).
-SUPPORT_REPORT_CACHE_VERSION = 24
+SUPPORT_REPORT_CACHE_VERSION = 25
 
 # Separate raw key (not versioned/aged like the main report - see
 # `cache.read_raw`) for the trend chart's accumulating history log.
@@ -400,6 +403,7 @@ def _cohort_ticket_debug(
         "description": _ticket_description(conversation),
         "squad": _squad_for(conversation) or "",
         "partnerName": partner_name(conversation, company_map),
+        "partnerExternalId": partner_external_id(conversation),
         "createdAt": _epoch_to_iso(created),
         "priority": priority,
         "state": conversation.get("state"),
@@ -1071,6 +1075,7 @@ def _ticket_record(
         "updatedAt": _epoch_to_iso(conversation.get("updated_at")),
         "userName": _user_name(conversation, contact_name_map),
         "partnerName": partner_name(conversation, company_map),
+        "partnerExternalId": partner_external_id(conversation),
         "assignee": _assignee_name(conversation, assignee_map),
         "priority": priority,
         "description": _ticket_description(conversation),

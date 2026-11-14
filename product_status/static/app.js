@@ -1503,17 +1503,26 @@ let supportReportHistoryData = null;
 // on first load.
 let supportReportActiveMetric = "totalOpenKU";
 // Which sub-tab of the Support Report is showing: "open" (line trend chart +
-// counts table + open-tickets table) or "performance" (weekly SLA % bars +
-// debug table for the clicked bar). Session-only, like the other view state.
+// counts table + open-tickets table), "performance" (weekly SLA % bars +
+// debug table for the clicked bar), or "partner" (tickets for one PDL's
+// partners). Session-only, like the other view state.
 const SUPPORT_REPORT_SUBTABS = [
   { key: "open", label: "Open Tickets" },
-  { key: "performance", label: "Performance" },
+  { key: "performance", label: "SLA Performance" },
   { key: "partner", label: "Partner Report" },
   { key: "stats", label: "Stats" },
 ];
 let supportReportSubtab = "open";
-// Partner Report sub-tab: which institution the weekly SLA bars are limited to.
+// SLA Performance: "" means every partner. A name limits the weekly bars to
+// that institution.
 let supportReportPartner = "";
+// Partner Report: which PDL's partners' tickets are listed. "" until one is chosen.
+let supportReportPdl = "";
+// Rows from /partner-pdl.csv ({partner, partnerName, squad, moduleLabel, pdl}).
+// One row per partner per module. null until that file is fetched.
+let supportReportPdlMap = null;
+let supportReportPdlMapError = "";
+let supportReportPdlMapLoading = false;
 const supportReportFilters = {
   squad: [],
   createdDateFrom: "",
@@ -2124,6 +2133,10 @@ function toggleSupportReportSort(key) {
     supportReportSort.key = null;
     supportReportSort.dir = "asc";
   }
+  if (supportReportSubtab === "partner" && supportReportData) {
+    renderSupportReport(supportReportData);
+    return;
+  }
   if (els.supportReportContainer) {
     els.supportReportContainer.querySelectorAll(".support-drilldown th[data-sort-key]").forEach((th) => {
       const indicator = th.querySelector(".sort-indicator");
@@ -2636,7 +2649,7 @@ function renderSupportReportDebug(options = {}) {
       .join("");
   }
 
-  const partnerLabel = supportReportSubtab === "partner" ? supportReportSelectedPartner() : "";
+  const partnerLabel = supportReportSubtab === "performance" ? supportReportSelectedPartner() : "";
   return `
     <div class="squad-block support-debug">
       <h3 class="block-title">${escapeHtml(columnLabel)}${partnerLabel ? ` · ${escapeHtml(partnerLabel)}` : ""}: ${escapeHtml(
@@ -2656,7 +2669,7 @@ function selectSupportReportDebug(selection) {
   const el = els.supportReportContainer && els.supportReportContainer.querySelector(".support-debug");
   if (!el) return;
   el.outerHTML = renderSupportReportDebug({
-    responsesOnly: supportReportSubtab !== "performance" && supportReportSubtab !== "partner",
+    responsesOnly: supportReportSubtab !== "performance",
   });
   enhanceSupportReportTables();
   const fresh = els.supportReportContainer.querySelector(".support-debug");
@@ -3030,8 +3043,8 @@ function refreshSupportReportTrendLegendAndChart() {
   mountSupportReportTrendChart();
 }
 
-// Institutions that appear on any weekly-cohort ticket (the Partner Report
-// dropdown). Blank names collapse to "(blank)" so the option still selects.
+// Institutions that appear on any weekly-cohort ticket (the SLA Performance
+// partner dropdown). Blank names collapse to "(blank)" so the option still selects.
 function supportReportPartnerNames() {
   const names = new Set();
   ((supportReportData && supportReportData.weeklyCohorts) || []).forEach((week) => {
@@ -3069,12 +3082,12 @@ function supportReportColumnStats(tickets) {
   };
 }
 
-// Performance uses the report's cohorts. Partner Report uses the same weeks
-// with tickets and bar numbers limited to the selected institution.
+// SLA Performance uses the report's cohorts. A selected partner limits each
+// week's tickets and bar numbers to that institution; the default is everyone.
 function supportReportChartCohorts() {
   const weeks = (supportReportData && supportReportData.weeklyCohorts) || [];
-  const partner = supportReportSubtab === "partner" ? supportReportSelectedPartner() : "";
-  if (!partner) return supportReportSubtab === "partner" ? [] : weeks;
+  const partner = supportReportSubtab === "performance" ? supportReportSelectedPartner() : "";
+  if (!partner) return weeks;
   const columns = supportReportTrendColumnOptions().map((opt) => opt.key);
   return weeks.map((week) => {
     const tickets = (week.tickets || []).filter((t) => supportReportFilterLabel(t.partnerName) === partner);
@@ -3089,7 +3102,7 @@ function supportReportChartCohorts() {
 
 function renderSupportReportPartnerPicker() {
   const selected = supportReportSelectedPartner();
-  const options = [`<option value="">Select a partner</option>`]
+  const options = [`<option value="">All partners</option>`]
     .concat(
       supportReportPartnerNames().map(
         (name) =>
@@ -3098,6 +3111,271 @@ function renderSupportReportPartnerPicker() {
     )
     .join("");
   return `<label class="partner-report-picker">Partner <select id="support-partner-select">${options}</select></label>`;
+}
+
+// Partner names compared to the CSV are trimmed and case-insensitive. A blank
+// ticket partner still matches a "(blank)" row if one is ever listed.
+function supportReportPartnerKey(name) {
+  return supportReportFilterLabel(name).trim().toLowerCase();
+}
+
+// Minimal CSV reader: commas, quoted fields, and "" escapes. Blank rows drop out.
+function supportReportParseCsv(text) {
+  const rows = [];
+  let row = [];
+  let cell = "";
+  let inQuotes = false;
+  const src = String(text || "").replace(/^\uFEFF/, "");
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (src[i + 1] === '"') {
+          cell += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        cell += ch;
+      }
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === ",") {
+      row.push(cell);
+      cell = "";
+    } else if (ch === "\n" || ch === "\r") {
+      if (ch === "\r" && src[i + 1] === "\n") i++;
+      row.push(cell);
+      cell = "";
+      if (row.some((c) => c.trim())) rows.push(row);
+      row = [];
+    } else {
+      cell += ch;
+    }
+  }
+  if (cell.length || row.length) {
+    row.push(cell);
+    if (row.some((c) => c.trim())) rows.push(row);
+  }
+  return rows;
+}
+
+// A partner has a separate PDL for each of these modules. Header text just has
+// to name the module ("PDL [Progress]", "progress", …).
+const SUPPORT_REPORT_PDL_MODULES = [
+  { squad: "PROG", label: "Progress", needle: "progress" },
+  { squad: "PLAN", label: "Plan", needle: "plan" },
+  { squad: "CARE", label: "Care", needle: "care" },
+  { squad: "EXP", label: "Explore", needle: "explore" },
+];
+
+function supportReportPdlRowsFromCsv(text) {
+  const rows = supportReportParseCsv(text);
+  if (!rows.length) return [];
+  const headers = rows[0].map((h) => h.trim().toLowerCase());
+  const partnerIdx = ["externalid", "external id", "partner id", "partner_id", "partner"]
+    .map((name) => headers.indexOf(name))
+    .find((idx) => idx >= 0);
+  const nameIdx = headers.indexOf("name");
+  const modules = SUPPORT_REPORT_PDL_MODULES.map((mod) => ({
+    ...mod,
+    idx: headers.findIndex((header) => header.includes(mod.needle) && (header.includes("pdl") || header === mod.needle)),
+  })).filter((mod) => mod.idx >= 0);
+  if (partnerIdx === undefined || !modules.length) {
+    throw new Error(
+      "partner-pdl.csv needs an externalId column and PDL columns for Progress, Plan, Care, or Explore"
+    );
+  }
+  const out = [];
+  rows.slice(1).forEach((row) => {
+    const partner = (row[partnerIdx] || "").trim();
+    if (!partner) return;
+    const partnerName = nameIdx >= 0 ? (row[nameIdx] || "").trim() : "";
+    modules.forEach((mod) => {
+      const pdl = (row[mod.idx] || "").trim();
+      if (!pdl) return;
+      const next = { partner, partnerName, squad: mod.squad, moduleLabel: mod.label, pdl };
+      const existing = out.findIndex(
+        (entry) => supportReportPartnerKey(entry.partner) === supportReportPartnerKey(partner) && entry.squad === mod.squad
+      );
+      if (existing >= 0) out[existing] = next;
+      else out.push(next);
+    });
+  });
+  return out;
+}
+
+function supportReportEnsurePdlMap() {
+  if (supportReportPdlMap || supportReportPdlMapError || supportReportPdlMapLoading) return;
+  supportReportPdlMapLoading = true;
+  fetch("/partner-pdl.csv")
+    .then((res) => {
+      if (!res.ok) throw new Error(`Couldn't load partner-pdl.csv (${res.status})`);
+      return res.text();
+    })
+    .then((text) => {
+      supportReportPdlMap = supportReportPdlRowsFromCsv(text);
+      supportReportPdlMapError = "";
+    })
+    .catch((err) => {
+      supportReportPdlMap = null;
+      supportReportPdlMapError = err.message || "Couldn't load the partner-to-PDL mapping.";
+    })
+    .finally(() => {
+      supportReportPdlMapLoading = false;
+      if (supportReportSubtab === "partner" && supportReportData) renderSupportReport(supportReportData);
+    });
+}
+
+function supportReportPdlNames() {
+  const seen = new Map();
+  (supportReportPdlMap || []).forEach((row) => {
+    const key = supportReportPartnerKey(row.pdl);
+    if (key && key !== "(blank)" && !seen.has(key)) seen.set(key, row.pdl);
+  });
+  return [...seen.values()].sort((a, b) => a.localeCompare(b));
+}
+
+function supportReportPdlOptionLabel(email) {
+  return String(email || "").replace(/@stellic\.com$/i, "");
+}
+
+// A ticket counts for a PDL when that person owns the ticket's module for the
+// partner. Match the short external id first, then the institution name for
+// tickets whose code hasn't been stored yet.
+function supportReportPdlRowMatchesTicket(row, ticket) {
+  if (ticket.squad !== row.squad) return false;
+  const code = String(ticket.partnerExternalId || "").trim().toLowerCase();
+  if (code && code === String(row.partner || "").trim().toLowerCase()) return true;
+  const ticketName = String(ticket.partnerName || "").trim().toLowerCase();
+  const mappedName = String(row.partnerName || "").trim().toLowerCase();
+  return Boolean(ticketName && mappedName && ticketName === mappedName);
+}
+
+function supportReportSelectedPdl() {
+  return supportReportPdlNames().includes(supportReportPdl) ? supportReportPdl : "";
+}
+
+// Open Key User tickets, plus weekly-cohort tickets that aren't still open.
+// Open records win when both exist — they carry assignee, user, and ticket type.
+function supportReportKnownTickets() {
+  const byId = new Map();
+  const areas = (supportReportData && supportReportData.areas) || [];
+  const squadLabels = {};
+  areas.forEach((area) => {
+    squadLabels[area.squad] = area.label;
+  });
+  areas.forEach((area) => {
+    ((area.metrics && area.metrics.openKUTickets) || []).forEach((ticket) => {
+      if (ticket.id != null) byId.set(String(ticket.id), ticket);
+    });
+  });
+  ((supportReportData && supportReportData.weeklyCohorts) || []).forEach((week) => {
+    (week.tickets || []).forEach((ticket) => {
+      const id = ticket.id != null ? String(ticket.id) : "";
+      if (!id || byId.has(id)) return;
+      byId.set(id, {
+        ...ticket,
+        squadLabel: squadLabels[ticket.squad] || ticket.squad || "—",
+        firstResponseSLA: ticket.frLabel || "",
+        conversationState: ticket.state,
+        ticketType: ticket.ticketType || "-",
+        userName: ticket.userName || "",
+        assignee: ticket.assignee || "",
+      });
+    });
+  });
+  return [...byId.values()];
+}
+
+function supportReportTicketsForPdl(pdl) {
+  const pdlKey = supportReportPartnerKey(pdl);
+  const rows = (supportReportPdlMap || []).filter((row) => supportReportPartnerKey(row.pdl) === pdlKey);
+  return supportReportKnownTickets().filter((ticket) => rows.some((row) => supportReportPdlRowMatchesTicket(row, ticket)));
+}
+
+function renderSupportReportPdlPicker() {
+  const selected = supportReportSelectedPdl();
+  const options = [`<option value="">Select a PDL</option>`]
+    .concat(
+      supportReportPdlNames().map(
+        (name) =>
+          `<option value="${escapeHtml(name)}"${name === selected ? " selected" : ""}>${escapeHtml(
+            supportReportPdlOptionLabel(name)
+          )}</option>`
+      )
+    )
+    .join("");
+  return `<label class="partner-report-picker">PDL <select id="support-pdl-select">${options}</select></label>`;
+}
+
+function renderSupportReportPartnerReport() {
+  if (supportReportPdlMapError) {
+    return `
+      <div class="squad-block">
+        <h3 class="block-title">Tickets by PDL</h3>
+        <p class="empty-note">${escapeHtml(supportReportPdlMapError)}</p>
+      </div>`;
+  }
+  if (!supportReportPdlMap) {
+    supportReportEnsurePdlMap();
+    return `
+      <div class="squad-block">
+        <h3 class="block-title">Tickets by PDL</h3>
+        <p class="empty-note">Loading the partner-to-PDL mapping…</p>
+      </div>`;
+  }
+  if (!supportReportPdlMap.length) {
+    return `
+      <div class="squad-block">
+        <h3 class="block-title">Tickets by PDL</h3>
+        <p class="empty-note">No partner-to-PDL rows yet. partner-pdl.csv needs an externalId column and PDL columns for Progress, Plan, Care, and Explore.</p>
+      </div>`;
+  }
+  const picker = renderSupportReportPdlPicker();
+  const selected = supportReportSelectedPdl();
+  if (!selected) {
+    return `
+      <div class="squad-block">
+        <h3 class="block-title">Tickets by PDL</h3>
+        <div class="trend-controls">${picker}</div>
+        <p class="empty-note">Select a PDL to list tickets for that PDL's partners.</p>
+      </div>`;
+  }
+  const tickets = supportReportSortedTickets(supportReportTicketsForPdl(selected));
+  const byPartner = new Map();
+  supportReportPdlMap
+    .filter((row) => supportReportPartnerKey(row.pdl) === supportReportPartnerKey(selected))
+    .forEach((row) => {
+      const key = supportReportPartnerKey(row.partner);
+      if (!byPartner.has(key)) byPartner.set(key, { label: row.partnerName || row.partner, rows: [] });
+      byPartner.get(key).rows.push(row);
+    });
+  const partnerSummary = [...byPartner.values()]
+    .map((entry) => `${entry.label} (${entry.rows.map((row) => row.moduleLabel).join(", ")})`)
+    .sort((a, b) => a.localeCompare(b));
+  const missing = [...byPartner.values()]
+    .filter((entry) => !entry.rows.some((row) => tickets.some((ticket) => supportReportPdlRowMatchesTicket(row, ticket))))
+    .map((entry) => entry.label)
+    .sort((a, b) => a.localeCompare(b));
+  return `
+    <div class="squad-block support-drilldown">
+      <h3 class="block-title">${escapeHtml(supportReportPdlOptionLabel(selected))} <span class="label-badge">${
+    tickets.length
+  } ticket${tickets.length === 1 ? "" : "s"}</span></h3>
+      <div class="trend-controls">${picker}</div>
+      <p class="empty-note">Partners: ${escapeHtml(partnerSummary.join("; "))}. A ticket is listed when this person is that partner's PDL for the ticket's module. Open Key User tickets, plus any other Key User ticket created in the last 6 weeks.</p>
+      ${
+        missing.length
+          ? `<p class="empty-note">No tickets in this report for: ${escapeHtml(missing.join(", "))}.</p>`
+          : ""
+      }
+      <table class="data-table drilldown-table">
+        <thead><tr>${renderSupportReportSortableHeaders()}</tr></thead>
+        <tbody>${renderSupportReportTicketRows(tickets)}</tbody>
+      </table>
+    </div>`;
 }
 
 // Bars-only chart for the Performance sub-tab: one group per weekly cohort
@@ -3586,7 +3864,7 @@ let supportTrendResizeObserver = null;
 function mountSupportReportTrendChart() {
   const wrap = els.supportReportContainer && els.supportReportContainer.querySelector(".trend-svg-wrap");
   const points = supportReportTrendChartPoints();
-  const performance = supportReportSubtab === "performance" || supportReportSubtab === "partner";
+  const performance = supportReportSubtab === "performance";
   const stats = supportReportSubtab === "stats";
   const weeklyCohorts = supportReportChartCohorts();
   if (!wrap || (performance ? !weeklyCohorts.length : stats ? !supportReportData : points.length < 2)) return;
@@ -3616,7 +3894,7 @@ function mountSupportReportTrendChart() {
           supportReportTrendColumnLabel(supportReportTrendColumn),
           supportReportTrendHiddenSeries
         )
-      : // Open Tickets tab: lines only - weekly bars live on the Performance tab.
+      : // Open Tickets tab: lines only - weekly bars live on the SLA Performance tab.
         renderSupportReportTrendSVG(
           points,
           width,
@@ -3706,9 +3984,7 @@ function renderSupportReportTrendLegend() {
     }"></span>${escapeHtml(p)}</span>`;
   }).join("");
   if (supportReportSubtab === "stats") return priorityLegend;
-  return supportReportSubtab === "performance" || supportReportSubtab === "partner"
-    ? barLegend
-    : lineLegend + responsesLegend;
+  return supportReportSubtab === "performance" ? barLegend : lineLegend + responsesLegend;
 }
 
 function renderSupportReportColumnPicker() {
@@ -3747,29 +4023,20 @@ function selectSupportReportStatsView(value) {
 // Performance sub-tab: weekly SLA % bars only. Clicking a bar fills the debug
 // table below (see `renderSupportReportDebug`).
 function renderSupportReportPerformanceChart() {
-  const partnerTab = supportReportSubtab === "partner";
-  const partner = partnerTab ? supportReportSelectedPartner() : "";
-  const picker = partnerTab ? renderSupportReportPartnerPicker() : "";
+  const partner = supportReportSelectedPartner();
+  const picker = renderSupportReportPartnerPicker();
   const weeklyCohorts = supportReportChartCohorts();
-  if (partnerTab && !partner) {
-    return `
-      <div class="squad-block support-trend-chart">
-        <h3 class="block-title">Weekly SLA performance</h3>
-        <div class="trend-controls">${picker}</div>
-        <p class="empty-note">Select a partner to see that partner's first-response and resolution SLA for the last 6 weeks.</p>
-      </div>`;
-  }
   if (!weeklyCohorts.length) {
     return `
       <div class="squad-block support-trend-chart">
         <h3 class="block-title">Weekly SLA performance</h3>
-        ${picker ? `<div class="trend-controls">${picker}</div>` : ""}
+        <div class="trend-controls">${picker}</div>
         <p class="empty-note">No weekly cohort data yet — it's computed each time the report refreshes.</p>
       </div>`;
   }
   const scopeNote = partner
     ? `Key User tickets created for ${partner} in each of the last 6 Pacific calendar weeks.`
-    : "Last 6 Pacific calendar weeks (tickets created that week).";
+    : "Last 6 Pacific calendar weeks (tickets created that week), across every partner.";
   return `
     <div class="squad-block support-trend-chart">
       <h3 class="block-title">Weekly SLA performance <span class="label-badge">Last ${weeklyCohorts.length} week${
@@ -3819,7 +4086,7 @@ function renderSupportReportStatsChart() {
 
 function renderSupportReportTrendChart() {
   if (supportReportSubtab === "stats") return renderSupportReportStatsChart();
-  if (supportReportSubtab === "performance" || supportReportSubtab === "partner") {
+  if (supportReportSubtab === "performance") {
     return renderSupportReportPerformanceChart();
   }
   const points = supportReportTrendChartPoints();
@@ -3851,7 +4118,7 @@ function renderSupportReportTrendChart() {
       <div class="trend-svg-wrap"></div>
       <div class="trend-legend">${legend}</div>
       <p class="empty-note trend-cohort-note">
-        Last ${SUPPORT_REPORT_TREND_CHART_MAX_POINTS} days, one point per day (the day's latest refresh). Weekly SLA bars are on the Performance tab.
+        Last ${SUPPORT_REPORT_TREND_CHART_MAX_POINTS} days, one point per day (the day's latest refresh). Weekly SLA bars are on the SLA Performance tab.
         The orange line has one point per snapshot, showing the number of customer-facing replies Stellic sent on Key User tickets during that snapshot's Pacific calendar day (the latest day is partial) — counted by the day the reply was sent, on any Key User ticket whether or not it closed (human teammates only; internal notes and bot replies excluded). Click a dot to see which tickets were responded to.${
           supportReportData && supportReportData.engagement && supportReportData.engagement.complete === false
             ? ` <strong>Still filling in:</strong> ${supportReportData.engagement.ticketsNotYetFetched} ticket(s) haven't been scanned yet, so recent counts may be low until the next refresh.`
@@ -3917,12 +4184,20 @@ function renderSupportReport(data) {
     return;
   }
 
-  if (supportReportSubtab === "performance" || supportReportSubtab === "partner") {
-    const showDebug = supportReportSubtab === "performance" || supportReportSelectedPartner();
+  if (supportReportSubtab === "partner") {
+    els.supportReportContainer.innerHTML = `
+    ${subtabBar}
+    ${renderSupportReportPartnerReport()}`;
+    enhanceSupportReportTables();
+    updateSupportReportUpdatedAt(data);
+    return;
+  }
+
+  if (supportReportSubtab === "performance") {
     els.supportReportContainer.innerHTML = `
     ${subtabBar}
     ${renderSupportReportTrendChart()}
-    ${showDebug ? renderSupportReportDebug() : ""}`;
+    ${renderSupportReportDebug()}`;
     mountSupportReportTrendChart();
     enhanceSupportReportTables();
     updateSupportReportUpdatedAt(data);
@@ -4055,6 +4330,11 @@ if (els.supportReportContainer) {
     if (event.target.id === "support-partner-select") {
       supportReportPartner = event.target.value;
       supportReportDebugSelection = null;
+      if (supportReportData) renderSupportReport(supportReportData);
+      return;
+    }
+    if (event.target.id === "support-pdl-select") {
+      supportReportPdl = event.target.value;
       if (supportReportData) renderSupportReport(supportReportData);
       return;
     }
