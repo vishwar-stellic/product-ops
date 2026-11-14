@@ -974,12 +974,14 @@ body {
   white-space: nowrap;
 }
 
-.filter-table td a {
+.filter-table td a,
+.drilldown-table td a {
   color: var(--text);
   text-decoration: none;
 }
 
-.filter-table td a:hover {
+.filter-table td a:hover,
+.drilldown-table td a:hover {
   color: var(--accent);
   text-decoration: underline;
 }
