@@ -127,9 +127,11 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from html import escape
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -201,6 +203,9 @@ _AUTH_PUBLIC_PATHS = {
     # pattern as `_require_partner_insights_access` gating its own routes
     # independently of this Google-login middleware.
     "/api/cron/refresh-support-report",
+    # Every other Wednesday, noon Asia/Karachi. The schedule in vercel.json
+    # fires weekly; `epd_report_publish_due` keeps every other Wednesday.
+    "/api/cron/publish-epd-report",
     # Machine-to-machine: the eve escalation agent reads the partner
     # list here - see `_require_internal_secret` for the real gate.
     "/api/internal/partner-registry",
@@ -846,6 +851,53 @@ def cron_refresh_support_report(request: Request):
     if errors:
         raise HTTPException(status_code=500, detail="; ".join(errors))
     return results
+
+
+# Noon in Karachi (UTC+5, no daylight saving) is 07:00 UTC, which is the
+# Wednesday schedule in vercel.json. The first run is Wednesday 25 Nov 2026;
+# every later run is 14 days after that.
+_KARACHI = ZoneInfo("Asia/Karachi")
+_EPD_PUBLISH_ANCHOR = date(2026, 11, 25)
+
+
+def epd_report_publish_due(now: Optional[datetime] = None) -> bool:
+    """True on the Wednesdays the EPD Report should be published: noon Karachi,
+    every two weeks, starting 25 Nov 2026."""
+    current = now.astimezone(_KARACHI) if now is not None else datetime.now(_KARACHI)
+    today = current.date()
+    if today.weekday() != 2:
+        return False
+    return (today - _EPD_PUBLISH_ANCHOR).days % 14 == 0
+
+
+@app.get("/api/cron/publish-epd-report")
+def cron_publish_epd_report(request: Request):
+    """Publish a new EPD Report Notion page every other Wednesday at noon
+    Karachi. Vercel Cron calls this every Wednesday at 07:00 UTC (see
+    vercel.json); Wednesdays that aren't a publish week return without
+    writing a page. The page matches a default Publish to Notion: fresh
+    Linear data, sprint sections omitted, every current-quarter project
+    included, under the Product Ops Reports page."""
+    _require_cron_secret(request)
+    if not epd_report_publish_due():
+        return {"published": False, "reason": "not a publish Wednesday"}
+    try:
+        teams = _get_dashboard_teams()
+        dashboard_data = {"summitLabel": DEFAULT_SUMMIT_LABEL, "squads": _get_squads(teams, force=True)}
+        result = publish_dashboard_to_notion(
+            dashboard_data,
+            skip_sprint_data=True,
+            only_star_projects=False,
+            public_base_url=notion_refresh_public_base_url(str(request.base_url)) or None,
+            refresh_token=notion_refresh_token(),
+        )
+    except NotionError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except LinearGraphQLError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"published": True, **result}
 
 
 def _require_internal_secret(request: Request) -> None:
