@@ -2183,7 +2183,9 @@ function updateSupportReportDrilldownRows() {
   const tbody = els.supportReportContainer.querySelector(".support-drilldown tbody");
   const badge = els.supportReportContainer.querySelector(".support-drilldown .label-badge");
   if (!tbody) return;
-  const allTickets = supportReportTicketsForMetric(supportReportData, supportReportActiveMetric);
+  const allTickets = supportReportScopeTickets(
+    supportReportTicketsForMetric(supportReportData, supportReportActiveMetric)
+  );
   const filtered = supportReportSortedTickets(supportReportFilteredTickets(allTickets));
   tbody.innerHTML = renderSupportReportTicketRows(filtered);
   if (badge) badge.textContent = `${filtered.length} of ${allTickets.length}`;
@@ -2192,7 +2194,9 @@ function updateSupportReportDrilldownRows() {
 function renderSupportReportDrilldown() {
   if (!supportReportData || !supportReportActiveMetric) return "";
   const row = SUPPORT_REPORT_ROWS.find((r) => r.key === supportReportActiveMetric);
-  const allTickets = supportReportTicketsForMetric(supportReportData, supportReportActiveMetric);
+  const allTickets = supportReportScopeTickets(
+    supportReportTicketsForMetric(supportReportData, supportReportActiveMetric)
+  );
   const filtered = supportReportSortedTickets(supportReportFilteredTickets(allTickets));
 
   // Filter dropdown options are derived from the full (unfiltered) ticket
@@ -3043,12 +3047,20 @@ function refreshSupportReportTrendLegendAndChart() {
   mountSupportReportTrendChart();
 }
 
-// Institutions that appear on any weekly-cohort ticket (the SLA Performance
-// partner dropdown). Blank names collapse to "(blank)" so the option still selects.
+// Institutions for the Partner dropdown on SLA Performance and Open Tickets.
+// Weekly cohorts cover the SLA chart; open, new, and closed Key User tickets
+// cover the Open Tickets counts. Blank names collapse to "(blank)".
 function supportReportPartnerNames() {
   const names = new Set();
+  const add = (ticket) => names.add(supportReportFilterLabel(ticket && ticket.partnerName));
   ((supportReportData && supportReportData.weeklyCohorts) || []).forEach((week) => {
-    (week.tickets || []).forEach((ticket) => names.add(supportReportFilterLabel(ticket.partnerName)));
+    (week.tickets || []).forEach(add);
+  });
+  ((supportReportData && supportReportData.areas) || []).forEach((area) => {
+    const metrics = area.metrics || {};
+    ["openKUTickets", "newKUTickets", "closedKUTickets"].forEach((key) => {
+      (metrics[key] || []).forEach(add);
+    });
   });
   return [...names].sort((a, b) => a.localeCompare(b));
 }
@@ -3057,6 +3069,18 @@ function supportReportSelectedPartner() {
   return supportReportPartner && supportReportPartnerNames().includes(supportReportPartner)
     ? supportReportPartner
     : "";
+}
+
+// Open Tickets uses the same Partner dropdown as SLA Performance. Empty means
+// every institution; a name limits the counts table and the ticket list.
+function supportReportOpenTabPartner() {
+  return supportReportSubtab === "open" ? supportReportSelectedPartner() : "";
+}
+
+function supportReportScopeTickets(tickets) {
+  const partner = supportReportOpenTabPartner();
+  if (!partner) return tickets;
+  return tickets.filter((ticket) => supportReportFilterLabel(ticket.partnerName) === partner);
 }
 
 // Same percentages the Performance bars use, recomputed from a ticket list
@@ -4146,8 +4170,12 @@ function renderSupportReport(data) {
           )}">${escapeHtml(area.label)}</th>`
       )
       .join("");
+  const openTabPartner = supportReportOpenTabPartner();
   const bodyRows = SUPPORT_REPORT_ROWS.map((row) => {
-    const values = areas.map((area) => (area.metrics ? area.metrics[row.key] : null));
+    const values = areas.map((area) => {
+      if (!openTabPartner) return area.metrics ? area.metrics[row.key] : null;
+      return supportReportScopeTickets(supportReportTicketsForMetric({ areas: [area] }, row.key)).length;
+    });
     const total = values.reduce((sum, v) => sum + (typeof v === "number" ? v : 0), 0);
     const cells =
       `<td class="num support-squad-col support-total-col${colHighlight("TOTAL")}" data-col-key="TOTAL">${total}</td>` +
@@ -4209,8 +4237,13 @@ function renderSupportReport(data) {
     ${renderSupportReportTrendChart()}
     ${renderSupportReportDebug({ responsesOnly: true })}
     <div class="squad-block">
+      <div class="trend-controls">${renderSupportReportPartnerPicker()}</div>
       <p class="quality-definitions" style="list-style: none; padding-left: 0;">
-        Key User tickets only. "Open" means Intercom state open or snoozed. First response SLA is
+        ${
+          openTabPartner
+            ? `Counts and the ticket list are for ${escapeHtml(openTabPartner)}. `
+            : ""
+        }Key User tickets only. "Open" means Intercom state open or snoozed. First response SLA is
         ${data.frTargetHours} business hours (weekends don't count); resolution SLA is ${data.resTargetDays}
         calendar days for Urgent/High priority tickets. "This week" is week-to-date (resets every Monday,
         Pacific time)${
