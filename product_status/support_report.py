@@ -849,6 +849,7 @@ def _build_daily_engagement(
     engagement: Dict[str, Any],
     since_ts: float,
     now: float,
+    company_map: Dict[str, str],
 ) -> List[Dict[str, Any]]:
     """One row per Pacific calendar day from `since_ts` through today: per
     Total/squad, how many Stellic responses went out on Key User tickets that
@@ -884,6 +885,7 @@ def _build_daily_engagement(
                     "url": _conversation_url(c.get("id")),
                     "description": _ticket_description(c),
                     "squad": _squad_for(c) or "",
+                    "partnerName": partner_name(c, company_map),
                     "createdAt": _epoch_to_iso(c.get("created_at")),
                     "priority": _priority(c) or "(blank)",
                     "state": c.get("state"),
@@ -1146,9 +1148,47 @@ def _area_metrics(
     }
 
 
+def _partner_chart_label(name: Optional[str]) -> str:
+    """Partner key stored on a trend snapshot. Matches the dashboard's
+    `supportReportFilterLabel` (`value || "(blank)"`)."""
+    return name or "(blank)"
+
+
+def _history_by_partner(report: Dict[str, Any]) -> Dict[str, Dict[str, Dict[str, int]]]:
+    """Per partner, the same five counts the chart logs for everyone: each
+    value is that partner's tickets inside the area metric the Total row
+    already summed. A later partner filter reads this instead of recomputing
+    a different series."""
+    partners: Dict[str, Dict[str, Dict[str, int]]] = {}
+
+    def bump(partner: str, metric: str, squad: str) -> None:
+        by_metric = partners.setdefault(partner, {})
+        by_squad = by_metric.setdefault(metric, {})
+        by_squad[squad] = by_squad.get(squad, 0) + 1
+        by_squad["TOTAL"] = by_squad.get("TOTAL", 0) + 1
+
+    for area in report.get("areas") or []:
+        metrics = area.get("metrics") or {}
+        squad = area.get("squad") or ""
+        open_tickets = metrics.get("openKUTickets") or []
+        for ticket in open_tickets:
+            partner = _partner_chart_label(ticket.get("partnerName"))
+            bump(partner, "totalOpenKU", squad)
+            if ticket.get("firstResponseSLA") == "Not Met":
+                bump(partner, "outOfFirstResponseSLA", squad)
+            if ticket.get("outOfResolutionSLA"):
+                bump(partner, "outOfResolutionSLA", squad)
+        for ticket in metrics.get("newKUTickets") or []:
+            bump(_partner_chart_label(ticket.get("partnerName")), "newKUThisWeek", squad)
+        for ticket in metrics.get("closedKUTickets") or []:
+            bump(_partner_chart_label(ticket.get("partnerName")), "closedKUThisWeek", squad)
+    return partners
+
+
 def _history_snapshot(report: Dict[str, Any]) -> Dict[str, Any]:
     """One point-in-time row for the trend chart: per metric key, the Total
-    across squads plus each squad's own value - see module docstring."""
+    across squads plus each squad's own value, and the same counts split by
+    partner (`byPartner`) - see module docstring."""
     metrics: Dict[str, Dict[str, int]] = {}
     for row in SUPPORT_REPORT_METRIC_KEYS:
         by_squad: Dict[str, int] = {}
@@ -1160,7 +1200,164 @@ def _history_snapshot(report: Dict[str, Any]) -> Dict[str, Any]:
                 total += value
         by_squad["TOTAL"] = total
         metrics[row] = by_squad
-    return {"at": report["generatedAt"], "metrics": metrics}
+    return {"at": report["generatedAt"], "metrics": metrics, "byPartner": _history_by_partner(report)}
+
+
+def _open_at(conversation: Dict[str, Any], eval_ts: float, close_mode: str) -> bool:
+    """Whether this ticket was in the open register at `eval_ts`.
+
+    `close_mode` chooses the timestamp that ends the open interval:
+    `last` uses the resolution-clock close (latest close, or the update that
+    marked a resolved ticket status); `first` uses `statistics.first_close_at`
+    for a conversation that is closed now. A ticket with no close is open
+    from creation onward."""
+    created = conversation.get("created_at")
+    if not created or created >= eval_ts:
+        return False
+    if close_mode == "first" and conversation.get("state") == "closed":
+        stats = conversation.get("statistics") or {}
+        close_ts = stats.get("first_close_at") or stats.get("last_close_at") or conversation.get("updated_at")
+    else:
+        close_ts, _ = _resolution_close_ts(conversation)
+    return close_ts is None or close_ts >= eval_ts
+
+
+def _partner_metrics_at(
+    conversations: List[Dict[str, Any]],
+    eval_ts: float,
+    company_map: Dict[str, str],
+    close_mode: str,
+) -> Dict[str, Dict[str, Dict[str, int]]]:
+    """The five chart counts at `eval_ts`, split by partner and squad.
+
+    Same rules as `_area_metrics`: Key User tickets only, squad from Product
+    Area, open means open or snoozed and not a resolved ticket status, "this
+    week" is Pacific week-to-date, first response uses the business-hour
+    clock as of `eval_ts`, resolution is Urgent/High older than
+    `RES_TARGET_DAYS`."""
+    week_start = _current_week_start(eval_ts)
+    partners: Dict[str, Dict[str, Dict[str, int]]] = {}
+
+    def bump(partner: str, metric: str, squad: str) -> None:
+        by_metric = partners.setdefault(partner, {})
+        by_squad = by_metric.setdefault(metric, {})
+        by_squad[squad] = by_squad.get(squad, 0) + 1
+        by_squad["TOTAL"] = by_squad.get("TOTAL", 0) + 1
+
+    for conversation in conversations:
+        if not _is_key_user(conversation):
+            continue
+        squad = _squad_for(conversation)
+        if not squad:
+            continue
+        partner = _partner_chart_label(partner_name(conversation, company_map))
+        created = conversation.get("created_at")
+        if _open_at(conversation, eval_ts, close_mode):
+            bump(partner, "totalOpenKU", squad)
+            if _fr_breach(conversation, {}, eval_ts):
+                bump(partner, "outOfFirstResponseSLA", squad)
+            if (
+                created
+                and (eval_ts - created) / 86400.0 > RES_TARGET_DAYS
+                and _priority(conversation) in ("Urgent", "High")
+            ):
+                bump(partner, "outOfResolutionSLA", squad)
+        if created and week_start <= created < eval_ts:
+            bump(partner, "newKUThisWeek", squad)
+        first_close = (conversation.get("statistics") or {}).get("first_close_at")
+        if first_close and week_start <= first_close < eval_ts:
+            bump(partner, "closedKUThisWeek", squad)
+    return partners
+
+
+def _partner_total(by_partner: Dict[str, Dict[str, Dict[str, int]]], metric: str, squad: str = "TOTAL") -> int:
+    return sum((metrics.get(metric) or {}).get(squad, 0) for metrics in by_partner.values())
+
+
+def backfill_partner_history(client: Optional[IntercomClient] = None) -> Dict[str, Any]:
+    """One-time: fill `byPartner` on trend snapshots that predate the partner
+    split. Each older point is the same five counts, evaluated at that
+    snapshot's time from the tickets Intercom still has. The snapshot taken
+    from the current report keeps the split already counted off that report."""
+    client = client or IntercomClient()
+    existing = cache.read_raw(SUPPORT_REPORT_HISTORY_KEY) or {}
+    points = existing.get("points") or []
+    if not points:
+        return {"points": 0}
+
+    times = []
+    for point in points:
+        try:
+            times.append(datetime.fromisoformat(str(point["at"]).replace("Z", "+00:00")).timestamp())
+        except ValueError:
+            continue
+    earliest_week = _current_week_start(min(times))
+    since = int(earliest_week)
+    print(f"[backfill] loading tickets touched since {datetime.fromtimestamp(since, timezone.utc).isoformat()}", flush=True)
+
+    def _search(query: Dict[str, Any]) -> List[Dict[str, Any]]:
+        return list(client.search_conversations(query))
+
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        open_f = pool.submit(_search, {"field": "state", "operator": "=", "value": "open"})
+        snoozed_f = pool.submit(_search, {"field": "state", "operator": "=", "value": "snoozed"})
+        created_f = pool.submit(_search, {"field": "created_at", "operator": ">=", "value": since})
+        first_close_f = pool.submit(
+            _search, {"field": "statistics.first_close_at", "operator": ">=", "value": since}
+        )
+        company_f = pool.submit(lambda: build_company_map(client))
+        batches = [open_f.result(), snoozed_f.result(), created_f.result(), first_close_f.result()]
+        company_map = company_f.result()
+    by_id: Dict[str, Dict[str, Any]] = {}
+    for batch in batches:
+        for conversation in batch:
+            cid = conversation.get("id")
+            if cid is not None:
+                by_id[str(cid)] = conversation
+    conversations = list(by_id.values())
+    print(f"[backfill] {len(conversations)} conversations", flush=True)
+
+    cached = cache.peek(SUPPORT_REPORT_CACHE_KEY) or {}
+    live_report = cached.get("data") if isinstance(cached.get("data"), dict) else None
+    live_at = (live_report or {}).get("generatedAt")
+    live_split = _history_by_partner(live_report) if live_report else None
+
+    scored = []
+    for mode in ("last", "first"):
+        deltas = []
+        built = []
+        for point in points:
+            try:
+                eval_ts = datetime.fromisoformat(str(point["at"]).replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                built.append(point)
+                continue
+            if live_split is not None and point.get("at") == live_at:
+                split = live_split
+            else:
+                split = _partner_metrics_at(conversations, eval_ts, company_map, mode)
+            stored = point.get("metrics") or {}
+            for metric in SUPPORT_REPORT_METRIC_KEYS:
+                deltas.append(abs(_partner_total(split, metric) - (stored.get(metric) or {}).get("TOTAL", 0)))
+            built.append({**point, "byPartner": split})
+        scored.append((sum(deltas), mode, built))
+        print(f"[backfill] close mode {mode}: total absolute gap {sum(deltas)}", flush=True)
+
+    scored.sort(key=lambda item: item[0])
+    gap, mode, rebuilt = scored[0]
+    for point in rebuilt:
+        stored = point.get("metrics") or {}
+        split = point.get("byPartner") or {}
+        parts = []
+        for metric in SUPPORT_REPORT_METRIC_KEYS:
+            got = _partner_total(split, metric)
+            expected = (stored.get(metric) or {}).get("TOTAL", 0)
+            parts.append(f"{metric} {got}/{expected}")
+        print(f"[backfill] {point.get('at')} {'; '.join(parts)}", flush=True)
+    cache.write_raw(SUPPORT_REPORT_HISTORY_KEY, {"points": rebuilt})
+    days = len(_latest_point_per_day(rebuilt))
+    print(f"[backfill] wrote {len(rebuilt)} snapshots ({days} days) using close mode {mode}, gap {gap}", flush=True)
+    return {"points": len(rebuilt), "days": days, "closeMode": mode, "gap": gap}
 
 
 def _record_history(report: Dict[str, Any]) -> None:
@@ -1364,7 +1561,7 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
         "frTargetHours": FR_TARGET_HOURS,
         "resTargetDays": RES_TARGET_DAYS,
         "weeklyCohorts": _build_weekly_sla_cohorts(cohort_raw, reply_overrides, now, company_map),
-        "dailyEngagement": _build_daily_engagement(ku_updated, engagement, cohort_since, now),
+        "dailyEngagement": _build_daily_engagement(ku_updated, engagement, cohort_since, now, company_map),
         "engagement": {
             "complete": engagement["complete"],
             "ticketsTracked": len(engagement["byTicket"]),

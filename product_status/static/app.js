@@ -2468,9 +2468,7 @@ let supportReportDebugSelection = null; // { weekStartAt (or dayStartAt, for res
 // Open Tickets tab: the tickets Stellic responded to on one Pacific day (from
 // `dailyEngagement`, see support_report.py `_build_daily_engagement`).
 function renderSupportReportResponsesDebug(sel) {
-  const day = ((supportReportData && supportReportData.dailyEngagement) || []).find(
-    (d) => d.dayStartAt === sel.weekStartAt
-  );
+  const day = supportReportEngagementDays().find((d) => d.dayStartAt === sel.weekStartAt);
   if (!day) return `<div class="support-debug"></div>`;
   const columnLabel = supportReportTrendColumnLabel(sel.column);
   const reported = (day.byColumn && day.byColumn[sel.column]) || {};
@@ -2494,16 +2492,22 @@ function renderSupportReportResponsesDebug(sel) {
     .join("");
   return `
     <div class="squad-block support-debug">
-      <h3 class="block-title">${escapeHtml(columnLabel)}: ${escapeHtml(SUPPORT_REPORT_RESPONSES_SERIES.label)} · ${escapeHtml(
-    formatSupportReportCohortWeek(day.dayStartAt)
-  )}${day.partial ? " (so far today)" : ""}</h3>
+      <h3 class="block-title">${escapeHtml(columnLabel)}: ${escapeHtml(SUPPORT_REPORT_RESPONSES_SERIES.label)} · ${
+    day.weekSpan ? "week of " : ""
+  }${escapeHtml(formatSupportReportCohortWeek(day.dayStartAt))}${
+    day.partial ? (day.weekSpan ? " (so far)" : " (so far today)") : ""
+  }</h3>
       <ul class="debug-stats">
-        <li>Stellic responses sent ${day.partial ? "so far today" : "that day"}: <strong>${total}</strong></li>
+        <li>Stellic responses sent ${
+          day.weekSpan ? (day.partial ? "so far this week" : "that week") : day.partial ? "so far today" : "that day"
+        }: <strong>${total}</strong></li>
         <li>Key User tickets responded to: <strong>${respTickets.length}</strong></li>
         <li>Average responses per ticket: <strong>${respTickets.length ? (total / respTickets.length).toFixed(1) : "—"}</strong></li>
         <li>Counted: customer-facing replies by a Stellic teammate (internal notes${
           supportReportData.engagement && supportReportData.engagement.countsBots ? "" : " and bot/Fin replies"
-        } excluded), by the Pacific day they were sent — regardless of when the ticket was created or whether it closed.</li>
+        } excluded), by the Pacific ${
+          day.weekSpan ? "week" : "day"
+        } they were sent — regardless of when the ticket was created or whether it closed.</li>
       </ul>
       <p class="debug-reconcile">${escapeHtml(
         `Chart reported ${reported.stellicResponses ?? "—"} responses on ${reported.ticketsResponded ?? "—"} tickets — ${
@@ -2705,10 +2709,13 @@ function supportReportPacificDayLabel(iso) {
   });
 }
 
-function supportReportResponsesTooltip({ columnLabel, dayStartAt, partial, responses, tickets }) {
+function supportReportResponsesTooltip({ columnLabel, dayStartAt, partial, responses, tickets, weekSpan }) {
+  const when = weekSpan
+    ? `Week of ${formatSupportReportCohortWeek(dayStartAt)}${partial ? " (so far)" : ""}`
+    : `${formatSupportReportCohortWeek(dayStartAt)}${partial ? " (so far today)" : ""}`;
   return [
     columnLabel,
-    `${formatSupportReportCohortWeek(dayStartAt)}${partial ? " (so far today)" : ""}`,
+    when,
     `Stellic responses sent: ${responses}`,
     `Across ${tickets} Key User ticket${tickets === 1 ? "" : "s"}`,
     "Click for the tickets",
@@ -2965,6 +2972,7 @@ function renderSupportReportTrendSVG(points, width, column, columnLabel, hiddenS
             partial: !!p.d.partial,
             responses: p.v,
             tickets: p.tickets,
+            weekSpan: !!p.d.weekSpan,
           })
         );
         return (
@@ -3047,9 +3055,10 @@ function refreshSupportReportTrendLegendAndChart() {
   mountSupportReportTrendChart();
 }
 
-// Institutions for the Partner dropdown on SLA Performance and Open Tickets.
-// Weekly cohorts cover the SLA chart; open, new, and closed Key User tickets
-// cover the Open Tickets counts. Blank names collapse to "(blank)".
+// Institutions for the Partner dropdown on SLA Performance, Open Tickets, and
+// Stats. Weekly cohorts cover the SLA chart; open, new, and closed Key User
+// tickets cover the Open Tickets counts and the Stats chart. Blank names
+// collapse to "(blank)".
 function supportReportPartnerNames() {
   const names = new Set();
   const add = (ticket) => names.add(supportReportFilterLabel(ticket && ticket.partnerName));
@@ -3083,6 +3092,109 @@ function supportReportScopeTickets(tickets) {
   return tickets.filter((ticket) => supportReportFilterLabel(ticket.partnerName) === partner);
 }
 
+function supportReportPartnerIdMap() {
+  const map = new Map();
+  const add = (ticket) => {
+    if (ticket && ticket.id != null && ticket.partnerName) {
+      map.set(String(ticket.id), supportReportFilterLabel(ticket.partnerName));
+    }
+  };
+  ((supportReportData && supportReportData.weeklyCohorts) || []).forEach((week) => {
+    (week.tickets || []).forEach(add);
+  });
+  ((supportReportData && supportReportData.areas) || []).forEach((area) => {
+    const metrics = area.metrics || {};
+    ["openKUTickets", "newKUTickets", "closedKUTickets"].forEach((key) => {
+      (metrics[key] || []).forEach(add);
+    });
+  });
+  return map;
+}
+
+function supportReportEngagementPartner(ticket, idMap) {
+  if (!ticket) return "";
+  if (ticket.partnerName) return supportReportFilterLabel(ticket.partnerName);
+  return (idMap && idMap.get(String(ticket.id))) || "";
+}
+
+// The five Open Tickets counts, by squad. An empty partner is every
+// institution. The counts table and each trend-chart point both read this:
+// a chart point is the snapshot logged when the report refreshed.
+function supportReportMetricsByColumn(partner) {
+  const columns = supportReportTrendColumnOptions().map((opt) => opt.key);
+  const metrics = {};
+  SUPPORT_REPORT_ROWS.forEach((row) => {
+    let tickets = supportReportTicketsForMetric(supportReportData, row.key);
+    if (partner) {
+      tickets = tickets.filter((ticket) => supportReportFilterLabel(ticket.partnerName) === partner);
+    }
+    const byColumn = {};
+    columns.forEach((col) => {
+      byColumn[col] = (col === "TOTAL" ? tickets : tickets.filter((ticket) => ticket.squad === col)).length;
+    });
+    metrics[row.key] = byColumn;
+  });
+  return metrics;
+}
+
+function supportReportEmptyMetrics() {
+  const columns = supportReportTrendColumnOptions().map((opt) => opt.key);
+  const metrics = {};
+  SUPPORT_REPORT_ROWS.forEach((row) => {
+    const byColumn = {};
+    columns.forEach((col) => {
+      byColumn[col] = 0;
+    });
+    metrics[row.key] = byColumn;
+  });
+  return metrics;
+}
+
+function supportReportActiveTrendPoints() {
+  const partner = supportReportOpenTabPartner();
+  const points = supportReportTrendChartPoints();
+  if (!partner) return points;
+  // Same daily snapshots as All partners. A snapshot that has a partner
+  // split counts this partner (zero when they had no tickets that day). The
+  // snapshot for the report on screen is counted from that report's tickets
+  // when the split was not stored with it.
+  const liveAt = supportReportData && supportReportData.generatedAt;
+  const scoped = [];
+  points.forEach((point) => {
+    if (point.byPartner) {
+      scoped.push({ at: point.at, metrics: point.byPartner[partner] || supportReportEmptyMetrics() });
+      return;
+    }
+    if (liveAt && point.at === liveAt) scoped.push({ at: point.at, metrics: supportReportMetricsByColumn(partner) });
+  });
+  if (!scoped.length && liveAt) scoped.push({ at: liveAt, metrics: supportReportMetricsByColumn(partner) });
+  return scoped;
+}
+
+// One row per Pacific day. A selected partner keeps that day's replies and
+// limits them to the partner's tickets.
+function supportReportEngagementDays() {
+  const days = (supportReportData && supportReportData.dailyEngagement) || [];
+  const partner = supportReportOpenTabPartner();
+  if (!partner) return days;
+  const idMap = supportReportPartnerIdMap();
+  const columns = supportReportTrendColumnOptions().map((opt) => opt.key);
+  return days.map((day) => {
+    const tickets = (day.tickets || []).filter(
+      (ticket) => supportReportEngagementPartner(ticket, idMap) === partner
+    );
+    const byColumn = {};
+    columns.forEach((col) => {
+      const scoped = col === "TOTAL" ? tickets : tickets.filter((ticket) => ticket.squad === col);
+      byColumn[col] = {
+        stellicResponses: scoped.reduce((sum, ticket) => sum + (ticket.responses || 0), 0),
+        ticketsResponded: scoped.length,
+      };
+    });
+    return { ...day, byColumn, tickets };
+  });
+}
+
 // Same percentages the Performance bars use, recomputed from a ticket list
 // so a single partner can reuse the chart. Matches `_build_weekly_sla_cohorts`.
 function supportReportColumnStats(tickets) {
@@ -3106,15 +3218,16 @@ function supportReportColumnStats(tickets) {
   };
 }
 
-// SLA Performance uses the report's cohorts. A selected partner limits each
-// week's tickets and bar numbers to that institution; the default is everyone.
+// SLA Performance cohorts. An empty partner is every institution; both paths
+// recompute the bar numbers from the week's tickets.
 function supportReportChartCohorts() {
   const weeks = (supportReportData && supportReportData.weeklyCohorts) || [];
   const partner = supportReportSubtab === "performance" ? supportReportSelectedPartner() : "";
-  if (!partner) return weeks;
   const columns = supportReportTrendColumnOptions().map((opt) => opt.key);
   return weeks.map((week) => {
-    const tickets = (week.tickets || []).filter((t) => supportReportFilterLabel(t.partnerName) === partner);
+    const tickets = (week.tickets || []).filter(
+      (t) => !partner || supportReportFilterLabel(t.partnerName) === partner
+    );
     const byColumn = {};
     columns.forEach((col) => {
       const scoped = col === "TOTAL" ? tickets : tickets.filter((t) => t.squad === col);
@@ -3554,10 +3667,19 @@ function supportReportStatsHiddenKey(priority) {
 // (current month included), plus a leading "Older" bucket for everything
 // created before that - counts of currently open Key User tickets by
 // priority, scoped to the selected Total / squad radio.
-function supportReportStatsBuckets(column) {
+// Open Key User tickets for the Stats tab. An empty partner is every
+// institution. `column` "TOTAL" (or omitted) is every squad.
+function supportReportStatsOpenTickets(column) {
   const areas = (supportReportData && supportReportData.areas) || [];
-  const scopedAreas = column === "TOTAL" ? areas : areas.filter((a) => a.squad === column);
-  const tickets = scopedAreas.flatMap((a) => (a.metrics && a.metrics.openKUTickets) || []);
+  const scopedAreas = !column || column === "TOTAL" ? areas : areas.filter((a) => a.squad === column);
+  let tickets = scopedAreas.flatMap((a) => (a.metrics && a.metrics.openKUTickets) || []);
+  const partner = supportReportSubtab === "stats" ? supportReportSelectedPartner() : "";
+  if (partner) tickets = tickets.filter((ticket) => supportReportFilterLabel(ticket.partnerName) === partner);
+  return tickets;
+}
+
+function supportReportStatsBuckets(column) {
+  const tickets = supportReportStatsOpenTickets(column);
 
   const now = new Date();
   const months = [];
@@ -3612,8 +3734,7 @@ function supportReportAssigneeFirstName(name) {
 }
 
 function supportReportStatsAssigneeBuckets() {
-  const areas = (supportReportData && supportReportData.areas) || [];
-  const tickets = areas.flatMap((a) => (a.metrics && a.metrics.openKUTickets) || []);
+  const tickets = supportReportStatsOpenTickets("TOTAL");
   const byName = new Map();
   tickets.forEach((t) => {
     const name = supportReportFilterLabel(t.assignee);
@@ -3650,10 +3771,8 @@ function supportReportStatsSortTickets(tickets) {
 }
 
 function supportReportStatsAssigneeTickets(name) {
-  const areas = (supportReportData && supportReportData.areas) || [];
   return supportReportStatsSortTickets(
-    areas
-      .flatMap((a) => (a.metrics && a.metrics.openKUTickets) || [])
+    supportReportStatsOpenTickets("TOTAL")
       .filter((t) => supportReportFilterLabel(t.assignee) === name)
       .filter(supportReportStatsPriorityVisible)
   );
@@ -3887,7 +4006,7 @@ let supportTrendResizeObserver = null;
 // div's *actual* pixel width - see `renderSupportReportTrendSVG`'s comment.
 function mountSupportReportTrendChart() {
   const wrap = els.supportReportContainer && els.supportReportContainer.querySelector(".trend-svg-wrap");
-  const points = supportReportTrendChartPoints();
+  const points = supportReportActiveTrendPoints();
   const performance = supportReportSubtab === "performance";
   const stats = supportReportSubtab === "stats";
   const weeklyCohorts = supportReportChartCohorts();
@@ -3926,7 +4045,7 @@ function mountSupportReportTrendChart() {
           supportReportTrendColumnLabel(supportReportTrendColumn),
           supportReportTrendHiddenSeries,
           null,
-          (supportReportData && supportReportData.dailyEngagement) || []
+          supportReportEngagementDays()
         );
     attachTrendTooltipHandlers(wrap);
   };
@@ -3971,13 +4090,14 @@ function supportReportTrendColumnLabel(key) {
 function renderSupportReportTrendLegend() {
   const lineLegend = SUPPORT_REPORT_ROWS.map((row, idx) => {
     const hidden = supportReportTrendHiddenSeries.has(row.key);
+    const label = row.label;
     return `<span class="trend-legend-item${
       hidden ? " trend-legend-item-hidden" : ""
     }" data-series-key="${escapeHtml(row.key)}" title="Click to ${
       hidden ? "show" : "hide"
     } this line" role="button"><span class="trend-legend-swatch" style="background:${
       SUPPORT_REPORT_TREND_COLORS[idx % SUPPORT_REPORT_TREND_COLORS.length]
-    }"></span>${escapeHtml(row.label)}</span>`;
+    }"></span>${escapeHtml(label)}</span>`;
   }).join("");
   const barLegend = SUPPORT_REPORT_WEEKLY_BAR_SERIES.map((row, idx) => {
     const hidden = supportReportTrendHiddenSeries.has(row.key);
@@ -4082,14 +4202,17 @@ function renderSupportReportPerformanceChart() {
 // each bar stacked by priority.
 function renderSupportReportStatsChart() {
   const byAssignee = supportReportStatsView === SUPPORT_REPORT_STATS_ASSIGNEE;
+  const partner = supportReportSelectedPartner();
+  const picker = renderSupportReportPartnerPicker();
   const { ticketCount } = byAssignee
     ? supportReportStatsAssigneeBuckets()
     : supportReportStatsBuckets(supportReportTrendColumn);
+  const who = partner ? ` for ${escapeHtml(partner)}` : "";
   const note = byAssignee
-    ? `Currently open Key User tickets (Intercom state open or snoozed) across all squads, one bar per Intercom
+    ? `Currently open Key User tickets (Intercom state open or snoozed)${who}, across all squads, one bar per Intercom
         assignee (a team name with "(team)" when it's assigned to a team and not a person), biggest first and
         stacked by priority. The number on top of each bar is its total. Click a name or a bar to list that person's tickets below; click a legend item to hide a priority.`
-    : `Currently open Key User tickets (Intercom state open or snoozed), grouped by the month they were created
+    : `Currently open Key User tickets (Intercom state open or snoozed)${who}, grouped by the month they were created
         (last ${SUPPORT_REPORT_STATS_MONTHS} months; everything earlier is in "Older") and stacked by priority.
         The number on top of each bar is its total. Click a month's bar or label to list that month's tickets below; click a legend item to hide a priority.`;
   return `
@@ -4098,6 +4221,7 @@ function renderSupportReportStatsChart() {
     ticketCount === 1 ? "" : "s"
   }</span></h3>
       <div class="trend-controls">
+        ${picker}
         <div class="trend-column-picker">${renderSupportReportColumnPicker()}</div>
       </div>
       <div class="trend-svg-wrap"></div>
@@ -4113,42 +4237,44 @@ function renderSupportReportTrendChart() {
   if (supportReportSubtab === "performance") {
     return renderSupportReportPerformanceChart();
   }
-  const points = supportReportTrendChartPoints();
+  const partner = supportReportOpenTabPartner();
+  const picker = renderSupportReportPartnerPicker();
+  const points = supportReportActiveTrendPoints();
   const totalStored =
     (supportReportHistoryData && supportReportHistoryData.totalPointsStored) || points.length;
   if (points.length < 2) {
+    const emptyNote = partner
+      ? `Not enough daily snapshots yet to chart ${partner}. The chart uses the same counts as the table, one point per day, logged when the report refreshes. The next refresh on a later day adds the second point.`
+      : `Not enough history yet to chart a trend — one point is logged every time this report actually refreshes (once a day at most, or whenever someone hits Update), not on every page view. Check back after a couple of refreshes.`;
     return `
       <div class="squad-block support-trend-chart">
         <h3 class="block-title">Trend</h3>
-        <p class="empty-note">
-          Not enough history yet to chart a trend — one point is logged every time this report actually refreshes
-          (once a day at most, or whenever someone hits Update), not on every page view. Check back after a couple
-          of refreshes.
-        </p>
+        <div class="trend-controls">${picker}</div>
+        <p class="empty-note">${escapeHtml(emptyNote)}</p>
       </div>`;
   }
   const legend = renderSupportReportTrendLegend();
   const columnPicker = renderSupportReportColumnPicker();
+  const badge = `Last ${points.length} day${points.length === 1 ? "" : "s"}${
+    !partner && totalStored > points.length ? ` (${totalStored} stored)` : ""
+  }`;
+  const who = partner ? ` for ${partner}` : "";
+  const whoseTickets = partner ? `${partner}'s Key User tickets` : "Key User tickets";
+  const note = `Last ${SUPPORT_REPORT_TREND_CHART_MAX_POINTS} days, one point per day (the day's latest refresh)${who}. Weekly SLA bars are on the SLA Performance tab. The orange line has one point per snapshot, showing the number of customer-facing replies Stellic sent on ${whoseTickets} during that snapshot's Pacific calendar day (the latest day is partial) — counted by the day the reply was sent, on any Key User ticket whether or not it closed (human teammates only; internal notes and bot replies excluded). Click a dot to see which tickets were responded to.${
+    supportReportData && supportReportData.engagement && supportReportData.engagement.complete === false
+      ? ` Still filling in: ${supportReportData.engagement.ticketsNotYetFetched} ticket(s) haven't been scanned yet, so recent counts may be low until the next refresh.`
+      : ""
+  }`;
   return `
     <div class="squad-block support-trend-chart">
-      <h3 class="block-title">Trend <span class="label-badge">Last ${points.length} day${
-    points.length === 1 ? "" : "s"
-  }${
-    totalStored > points.length ? ` (${totalStored} stored)` : ""
-  }</span></h3>
+      <h3 class="block-title">Trend <span class="label-badge">${escapeHtml(badge)}</span></h3>
       <div class="trend-controls">
+        ${picker}
         <div class="trend-column-picker">${columnPicker}</div>
       </div>
       <div class="trend-svg-wrap"></div>
       <div class="trend-legend">${legend}</div>
-      <p class="empty-note trend-cohort-note">
-        Last ${SUPPORT_REPORT_TREND_CHART_MAX_POINTS} days, one point per day (the day's latest refresh). Weekly SLA bars are on the SLA Performance tab.
-        The orange line has one point per snapshot, showing the number of customer-facing replies Stellic sent on Key User tickets during that snapshot's Pacific calendar day (the latest day is partial) — counted by the day the reply was sent, on any Key User ticket whether or not it closed (human teammates only; internal notes and bot replies excluded). Click a dot to see which tickets were responded to.${
-          supportReportData && supportReportData.engagement && supportReportData.engagement.complete === false
-            ? ` <strong>Still filling in:</strong> ${supportReportData.engagement.ticketsNotYetFetched} ticket(s) haven't been scanned yet, so recent counts may be low until the next refresh.`
-            : ""
-        }
-      </p>
+      <p class="empty-note trend-cohort-note">${escapeHtml(note)}</p>
     </div>`;
 }
 
@@ -4171,12 +4297,11 @@ function renderSupportReport(data) {
       )
       .join("");
   const openTabPartner = supportReportOpenTabPartner();
+  const metricSnapshot = supportReportMetricsByColumn(openTabPartner);
   const bodyRows = SUPPORT_REPORT_ROWS.map((row) => {
-    const values = areas.map((area) => {
-      if (!openTabPartner) return area.metrics ? area.metrics[row.key] : null;
-      return supportReportScopeTickets(supportReportTicketsForMetric({ areas: [area] }, row.key)).length;
-    });
-    const total = values.reduce((sum, v) => sum + (typeof v === "number" ? v : 0), 0);
+    const byColumn = metricSnapshot[row.key] || {};
+    const values = areas.map((area) => byColumn[area.squad] || 0);
+    const total = byColumn.TOTAL || 0;
     const cells =
       `<td class="num support-squad-col support-total-col${colHighlight("TOTAL")}" data-col-key="TOTAL">${total}</td>` +
       values
@@ -4237,11 +4362,10 @@ function renderSupportReport(data) {
     ${renderSupportReportTrendChart()}
     ${renderSupportReportDebug({ responsesOnly: true })}
     <div class="squad-block">
-      <div class="trend-controls">${renderSupportReportPartnerPicker()}</div>
       <p class="quality-definitions" style="list-style: none; padding-left: 0;">
         ${
           openTabPartner
-            ? `Counts and the ticket list are for ${escapeHtml(openTabPartner)}. `
+            ? `Counts and the ticket list are ${escapeHtml(openTabPartner)}'s current tickets. `
             : ""
         }Key User tickets only. "Open" means Intercom state open or snoozed. First response SLA is
         ${data.frTargetHours} business hours (weekends don't count); resolution SLA is ${data.resTargetDays}
