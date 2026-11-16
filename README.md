@@ -404,16 +404,13 @@ section. Each squad's section has, in order:
    every squad it's linked to, not just one. Split into two groups
    (`product_status/projects.py:build_dashboard_projects_report`):
    1. **Star Project** — projects carrying the configured label (default
-      `"Star Project"`) that are in scope
-      (`projects.py:star_project_in_scope`): *not completed* and with a
-      start date on or before today, OR *completed* with a completed date
-      in the current quarter, OR *not completed* with a target date in the
-      current quarter. Canceled projects are never included. (Quarter and
-      "today" are UTC.)
-   2. **Other Projects** — projects *not* carrying that label, but with a
-      start or target date in the current calendar quarter. A project
-      matching both is only ever shown once, under "Star Project" (a labeled
-      project the rules above drop is not moved here either). Hidden
+      `"Star Project"`) whose dates overlap the current quarter
+      (`projects.py:project_overlaps_quarter`): start date in the quarter,
+      OR target (end) date in the quarter, OR start date before the quarter
+      and target date after it. Quarter bounds are UTC. Status is not used.
+   2. **Other Projects** — every other project that overlaps the quarter by
+      those same date rules and does not carry the label. A project matching
+      both is only ever shown once, under "Star Project". Hidden
       entirely when the **Only Star Projects** checkbox (see below) is
       checked; shown otherwise (collapsed under an "Other Projects" toggle
       heading in the Notion export, immediately followed by an "Other

@@ -1,6 +1,6 @@
-"""Project summaries for the dashboard's Projects section: projects tagged
-with a given label (e.g. "Star Project") plus, separately, any project whose
-start or target date falls in the current calendar quarter.
+"""Project summaries for the dashboard's Projects section: projects that
+overlap the current calendar quarter, with "Star Project"-labeled ones
+grouped separately.
 
 Fetches each matching project's milestones (name, target date, status) and
 its most recent project update (author, health, body) via Linear's GraphQL
@@ -129,50 +129,52 @@ def quarter_label(now: Optional[datetime] = None) -> str:
 def fetch_projects_in_quarter(
     client: LinearClient, quarter_start: str, quarter_end: str
 ) -> List[Dict[str, Any]]:
-    """All non-archived projects with a start date or target date falling in
-    the given quarter (`quarter_end` exclusive) - either one counts. Used to
-    build the dashboard's "Other Projects" bucket (see
-    `build_dashboard_projects_report`)."""
+    """All non-archived projects whose dates overlap the quarter: a start
+    or target date inside it, or a start before it and a target after it.
+    See `project_overlaps_quarter`."""
     return fetch_projects(
         client,
         {
             "or": [
                 {"startDate": {"gte": quarter_start, "lt": quarter_end}},
                 {"targetDate": {"gte": quarter_start, "lt": quarter_end}},
+                {
+                    "and": [
+                        {"startDate": {"lt": quarter_start}},
+                        {"targetDate": {"gte": quarter_end}},
+                    ]
+                },
             ]
         },
     )
 
 
-def _in_range(value: Optional[str], start: str, end: str) -> bool:
-    """Whether a Linear date/datetime string's date part is in `[start, end)`."""
-    return bool(value) and start <= value[:10] < end
-
-
-def star_project_in_scope(
+def project_overlaps_quarter(
     project: Dict[str, Any],
     quarter_start: str,
     quarter_end: str,
-    today: Optional[str] = None,
 ) -> bool:
-    """Whether a Star-labeled (raw Linear) project belongs in the EPD report.
+    """Whether a project's start/target dates overlap the current quarter.
 
-    A project is "completed" when its status type is `completed`; `canceled`
-    projects are never included. Otherwise it's in scope when ANY of:
-      1. it started in the past (`startDate` on or before today) and is not
-         completed;
-      2. it is completed, with a completed date in the current quarter;
-      3. it is not completed, with a target date in the current quarter
-         (e.g. due this quarter but not started yet).
-    `quarter_end` is exclusive; dates are UTC like `quarter_bounds`."""
-    today = today or datetime.now(timezone.utc).date().isoformat()
-    status_type = (project.get("status") or {}).get("type")
-    if status_type == "canceled":
-        return False
-    if status_type == "completed":
-        return _in_range(project.get("completedAt"), quarter_start, quarter_end)
-    started = bool(project.get("startDate")) and project["startDate"][:10] <= today
-    return started or _in_range(project.get("targetDate"), quarter_start, quarter_end)
+    Included when any of these is true (`quarter_end` is exclusive, dates
+    are UTC like `quarter_bounds`):
+      1. `startDate` falls in the quarter;
+      2. `targetDate` (the project's end date) falls in the quarter;
+      3. the project runs through the whole quarter: `startDate` is before
+         the quarter and `targetDate` is after it.
+    A missing date does not satisfy the rule that needs it. Status,
+    including completed or canceled, is not consulted."""
+    start = (project.get("startDate") or "")[:10]
+    end = (project.get("targetDate") or "")[:10]
+    started_this_quarter = bool(start) and quarter_start <= start < quarter_end
+    ended_this_quarter = bool(end) and quarter_start <= end < quarter_end
+    spans_quarter = bool(start) and bool(end) and start < quarter_start and end >= quarter_end
+    return started_this_quarter or ended_this_quarter or spans_quarter
+
+
+def _project_has_label(project: Dict[str, Any], label_name: str) -> bool:
+    nodes = ((project.get("labels") or {}).get("nodes")) or []
+    return any(node.get("name") == label_name for node in nodes)
 
 
 def health_label(health: Optional[str]) -> str:
@@ -287,31 +289,27 @@ def build_dashboard_projects_report(
     client: Optional[LinearClient] = None,
     summit_label: str = DEFAULT_SUMMIT_LABEL,
 ) -> Dict[str, Any]:
-    """Projects for the dashboard's Projects section, split into two groups:
+    """Projects for the dashboard's Projects section, split into two groups.
 
-    - `summitProjects` - projects carrying the `summit_label` label (e.g.
-      "Star Project") that are in scope - see `star_project_in_scope`
-      (started and not completed, completed this quarter, or not completed
-      and due this quarter; canceled are excluded).
-    - `otherProjects` - projects *not* carrying that label, but with a
-      start or target date in the current calendar quarter. The Notion
-      export shows these collapsed under a single "Other Projects" toggle
-      so the Star-labeled set stays the primary focus.
+    Both groups are drawn from projects whose dates overlap the current
+    quarter (`project_overlaps_quarter`). Of those:
+    - `summitProjects` - the ones carrying the `summit_label` label (e.g.
+      "Star Project"). The Notion export shows these under the Star toggle.
+    - `otherProjects` - every other overlapping project. The Notion export
+      shows these collapsed under a single "Other Projects" toggle.
 
-    A project that's both labeled and in the current quarter is only
-    counted once, under `summitProjects` (the explicit label wins).
+    A labeled project is only counted under `summitProjects`.
     """
     client = client or LinearClient()
     quarter_start, quarter_end = quarter_bounds()
 
-    labeled_raw = fetch_projects_by_label(client, summit_label)
-    # Every labeled project is kept out of "Other Projects", even one the
-    # scope rule drops from the Star group.
-    summit_ids = {p["id"] for p in labeled_raw}
-    summit_raw = [p for p in labeled_raw if star_project_in_scope(p, quarter_start, quarter_end)]
-
-    quarter_raw = fetch_projects_in_quarter(client, quarter_start, quarter_end)
-    other_raw = [p for p in quarter_raw if p["id"] not in summit_ids]
+    in_scope = [
+        project
+        for project in fetch_projects_in_quarter(client, quarter_start, quarter_end)
+        if project_overlaps_quarter(project, quarter_start, quarter_end)
+    ]
+    summit_raw = [project for project in in_scope if _project_has_label(project, summit_label)]
+    other_raw = [project for project in in_scope if not _project_has_label(project, summit_label)]
 
     def _sorted_summaries(raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         summaries = [_project_summary(p) for p in raw]
