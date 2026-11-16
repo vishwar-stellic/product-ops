@@ -1,7 +1,7 @@
 import { createOpenAiLlm } from "./llm";
 import { fetchPartnerRegistry } from "./registry";
 import { startRun, type RunRecord, type RunTrigger } from "./runs";
-import { postSlackMessage } from "./slack";
+import { formatSweepFailedMessage, postSlackMessage } from "./slack";
 import { createDryRunStore, getStore } from "./store";
 import { runSweep, type SweepSummary } from "./sweep";
 import { createVitallyClient } from "./vitally";
@@ -18,9 +18,29 @@ export function resolveDryRun(requestedDryRun = false): boolean {
 }
 
 /**
+ * Posts the failure to the alert channel when a live sweep throws. Dry runs
+ * stay quiet. A Slack outage while reporting is logged and swallowed so the
+ * recorded failure (and the schedule's retry) still stand.
+ */
+export async function reportFailedRun(
+  result: Pick<RunRecord, "status" | "dryRun" | "error">,
+  post: (text: string) => Promise<unknown> = (text) => postSlackMessage(text),
+): Promise<boolean> {
+  if (result.status !== "failed" || result.dryRun) return false;
+  try {
+    await post(formatSweepFailedMessage(result.error ?? "sweep failed"));
+    return true;
+  } catch (error) {
+    console.error(`[escalation-agent] failed to post the sweep-failure message: ${String(error)}`);
+    return false;
+  }
+}
+
+/**
  * Builds the real dependencies from environment variables and runs one sweep.
  * Throws (before doing any triage) when the partner registry can't be loaded,
- * so a broken registry never silently shrinks coverage.
+ * so a broken registry never silently shrinks coverage. The caller posts that
+ * failure to Slack (see reportFailedRun).
  */
 export async function runConfiguredSweep(
   options: { dryRun?: boolean; seed?: boolean } = {},
@@ -63,6 +83,10 @@ export async function startConfiguredRun(trigger: RunTrigger, requestedDryRun = 
   if (!active) return null;
   return {
     record: active.record,
-    finished: (): Promise<RunRecord> => active.complete(() => runConfiguredSweep({ dryRun, seed })),
+    finished: async (): Promise<RunRecord> => {
+      const result = await active.complete(() => runConfiguredSweep({ dryRun, seed }));
+      await reportFailedRun(result);
+      return result;
+    },
   };
 }

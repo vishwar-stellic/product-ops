@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { formatEmailReviewThread, formatSweepCompleteMessage } from "../agent/lib/slack";
+import { formatEmailReviewThread, formatSweepCompleteMessage, formatSweepFailedMessage } from "../agent/lib/slack";
 import {
   buildTriagePrompt,
   EMAIL_REVIEW_NOTE,
@@ -100,6 +100,21 @@ describe("formatSweepCompleteMessage", () => {
     expect(text).toContain(":warning: 2 could not be checked");
     expect(text).toContain(":warning: 1 alert failed to post");
     expect(text).toContain("20 emails analyzed - scores in the thread.");
+  });
+});
+
+describe("formatSweepFailedMessage", () => {
+  it("names the error and says the next run will try again", () => {
+    expect(formatSweepFailedMessage("Partner registry request failed: 500")).toBe(
+      ":x: Escalation sweep failed: Partner registry request failed: 500 The next scheduled run will try again.",
+    );
+  });
+
+  it("escapes Slack mentions and collapses a blank error", () => {
+    expect(formatSweepFailedMessage("see <!channel>")).toContain("&lt;!channel&gt;");
+    expect(formatSweepFailedMessage("  \n  ")).toBe(
+      ":x: Escalation sweep failed. The next scheduled run will try again.",
+    );
   });
 });
 

@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { checkBearer } from "../agent/lib/auth";
 import { LAST_RUN_KEY, LOCK_KEY, readRunStatus, startRun } from "../agent/lib/runs";
 import type { SweepSummary } from "../agent/lib/sweep";
+import { reportFailedRun } from "../agent/lib/run";
 import { memoryStore } from "./helpers";
 
 const summary: SweepSummary = {
@@ -108,5 +109,30 @@ describe("dry-run store and reset", () => {
     expect(await store.deleteByPrefix("partners/")).toBe(2);
     expect(await store.getJson("partners/a.json")).toBeNull();
     expect(await store.getJson("alerts/C/1.json")).toBe(3);
+  });
+});
+
+describe("reportFailedRun", () => {
+  const failed = { status: "failed" as const, dryRun: false, error: "Partner registry request failed: 500" };
+
+  it("posts the failure for a live run", async () => {
+    const post = vi.fn(async (_text: string) => ({ channel: "C", ts: "1" }));
+    expect(await reportFailedRun(failed, post)).toBe(true);
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(post.mock.calls[0]?.[0]).toContain("Partner registry request failed: 500");
+    expect(post.mock.calls[0]?.[0]).toContain("The next scheduled run will try again.");
+  });
+
+  it("stays quiet for a dry run, a success, and a Slack outage", async () => {
+    const post = vi.fn(async () => ({ channel: "C", ts: "1" }));
+    expect(await reportFailedRun({ ...failed, dryRun: true }, post)).toBe(false);
+    expect(await reportFailedRun({ ...failed, status: "succeeded" }, post)).toBe(false);
+    expect(post).not.toHaveBeenCalled();
+
+    const down = vi.fn(async () => {
+      throw new Error("channel_not_found");
+    });
+    expect(await reportFailedRun(failed, down)).toBe(false);
+    expect(down).toHaveBeenCalledTimes(1);
   });
 });

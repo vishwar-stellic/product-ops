@@ -55,6 +55,21 @@ export function formatSweepCompleteMessage(counts: SweepCounts): string {
   return [`:white_check_mark: Sweep complete: ${found} ${checked}`, ...notes].join(" ");
 }
 
+const FAILURE_DETAIL_CHARS = 500;
+
+/**
+ * Posted when a live sweep throws before it can finish (for example the partner
+ * registry is down). A quiet channel is otherwise indistinguishable from a run
+ * that never happened. Detail is escaped and clipped; Slack's own failure to
+ * accept this message is the caller's problem to log.
+ */
+export function formatSweepFailedMessage(error: string): string {
+  const detail = slackEscape(error.replace(/\s+/g, " ").trim().slice(0, FAILURE_DETAIL_CHARS));
+  return detail
+    ? `:x: Escalation sweep failed: ${detail} The next scheduled run will try again.`
+    : `:x: Escalation sweep failed. The next scheduled run will try again.`;
+}
+
 const PACIFIC = new Intl.DateTimeFormat("en-US", {
   timeZone: "America/Los_Angeles",
   month: "short",
