@@ -3426,10 +3426,16 @@ function supportReportKnownTickets() {
   return [...byId.values()];
 }
 
+function supportReportConversationIsClosed(ticket) {
+  return String(ticket.conversationState || ticket.state || "").trim().toLowerCase() === "closed";
+}
+
 function supportReportTicketsForPdl(pdl) {
   const pdlKey = supportReportPartnerKey(pdl);
   const rows = (supportReportPdlMap || []).filter((row) => supportReportPartnerKey(row.pdl) === pdlKey);
-  return supportReportKnownTickets().filter((ticket) => rows.some((row) => supportReportPdlRowMatchesTicket(row, ticket)));
+  return supportReportKnownTickets().filter(
+    (ticket) => !supportReportConversationIsClosed(ticket) && rows.some((row) => supportReportPdlRowMatchesTicket(row, ticket))
+  );
 }
 
 function renderSupportReportPdlPicker() {
@@ -3502,7 +3508,7 @@ function renderSupportReportPartnerReport() {
     tickets.length
   } ticket${tickets.length === 1 ? "" : "s"}</span></h3>
       <div class="trend-controls">${picker}</div>
-      <p class="empty-note">Partners: ${escapeHtml(partnerSummary.join("; "))}. A ticket is listed when this person is that partner's PDL for the ticket's module. Open Key User tickets, plus any other Key User ticket created in the last 6 weeks.</p>
+      <p class="empty-note">Partners: ${escapeHtml(partnerSummary.join("; "))}. A ticket is listed when this person is that partner's PDL for the ticket's module. Closed conversations are left out.</p>
       ${
         missing.length
           ? `<p class="empty-note">No tickets in this report for: ${escapeHtml(missing.join(", "))}.</p>`
