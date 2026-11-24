@@ -881,7 +881,8 @@ def post_epd_report_to_slack(title: str, url: Optional[str]) -> Dict[str, Any]:
     token = os.environ.get("SLACK_BOT_TOKEN")
     if not token:
         return {"posted": [], "errors": ["SLACK_BOT_TOKEN is not set"]}
-    text = f"*{title}*\n{url}" if url else title
+    body = f"*{title}*\n{url}" if url else title
+    text = f"New EPD Report is ready for review.\n{body}"
     posted: List[str] = []
     errors: List[str] = []
     for channel in _EPD_REPORT_SLACK_CHANNELS:
