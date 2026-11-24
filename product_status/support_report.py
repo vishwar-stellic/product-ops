@@ -7,9 +7,11 @@ isn't available to this service; it shows area-level totals only).
 
 ## The 5 metrics (Key User tickets only - see the skill for the full spec)
 1. Total open KU tickets - open + snoozed, excluding any already marked
-   "Resolved", "Waiting on fix confirmation", "Won't fix" or "Submitted
-   feature request" at the ticket level (see `RESOLVED_TICKET_STATES`; a ticket can be in one of those
-   while its conversation is still technically open in Intercom).
+   with a status in `RESOLVED_TICKET_STATES` ("Resolved", "Waiting on fix
+   confirmation", "Won't fix", "Submitted feature request", "Waiting on
+   Partner (Info needed)", "Waiting on Partner (confirm resolution)"). A
+   ticket can be in one of those while its conversation is still technically
+   open in Intercom.
 2. New KU tickets this week - created since the start of the current
    calendar week, regardless of current state.
 3. KU tickets closed this week - first closed (`statistics.first_close_at`)
@@ -209,10 +211,17 @@ RES_TARGET_DAYS = 21.0
 # Internal ticket-state labels (`ticket_custom_state_admin_label`) that mean
 # the ticket is finished from the report's point of view, even while the
 # Intercom conversation itself is still open/snoozed: it isn't counted as
-# open and its resolution clock stops. (Other labels - including "Waiting on
-# partner" - leave the ticket open with the clock running.)
+# open and its resolution clock stops. The plain "Waiting on partner" label
+# still leaves the ticket open with the clock running.
 RESOLVED_TICKET_STATES = frozenset(
-    {"Resolved", "Waiting on fix confirmation", "Won't fix", "Submitted feature request"}
+    {
+        "Resolved",
+        "Waiting on fix confirmation",
+        "Won't fix",
+        "Submitted feature request",
+        "Waiting on Partner (Info needed)",
+        "Waiting on Partner (confirm resolution)",
+    }
 )
 
 # The 5 metric row keys, in table order - mirrors the frontend's
@@ -300,8 +309,7 @@ def _resolution_close_ts(conversation: Dict[str, Any]) -> tuple:
     """`(epoch, source)` for when this ticket stopped its resolution clock, or
     `(None, None)` if it's still unresolved.
 
-    - Ticket status "Resolved" (or "Waiting on fix confirmation" / "Won't
-      fix" / "Submitted feature request" - see `RESOLVED_TICKET_STATES`) counts as finished even if the
+    - A status in `RESOLVED_TICKET_STATES` counts as finished even if the
       conversation is still open; Intercom's close stats may be stale from an earlier close
       then, so `updated_at` is used (or the latest close if the conversation
       is closed too).
@@ -1464,8 +1472,7 @@ def build_support_report(client: Optional[IntercomClient] = None) -> Dict[str, A
     cohort_raw = [c for c in updated_raw if (c.get("created_at") or 0) >= cohort_since]
 
     # "Open" = open + snoozed, always (see module docstring); a ticket
-    # marked Resolved (or Won't fix / Waiting on fix confirmation /
-    # Submitted feature request) at the ticket-state level is done even if Intercom
+    # whose status is in `RESOLVED_TICKET_STATES` is done even if Intercom
     # still shows the conversation itself as open.
     open_register = [c for c in open_raw + snoozed_raw if not _is_ticket_resolved(c)]
 
