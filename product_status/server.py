@@ -860,10 +860,10 @@ def cron_refresh_support_report(request: Request):
 _KARACHI = ZoneInfo("Asia/Karachi")
 _EPD_PUBLISH_ANCHOR = date(2026, 11, 25)
 # The productops Slack bot posts the new page here. It must already be in both
-# channels. The mention is the text in front of that channel's message.
+# channels. Each mention is a Slack user group: @pl, then @tl.
 _EPD_REPORT_SLACK_CHANNELS = (
-    ("C03U8BZB85D", "@pl"),
-    ("C0A47CX39D0", "@tl"),
+    ("C03U8BZB85D", "<!subteam^S06NT0Q8S7R>"),
+    ("C0A47CX39D0", "<!subteam^S0AE7M247KK>"),
 )
 
 
