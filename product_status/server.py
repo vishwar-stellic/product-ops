@@ -133,6 +133,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
+import requests
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -858,6 +859,8 @@ def cron_refresh_support_report(request: Request):
 # every later run is 14 days after that.
 _KARACHI = ZoneInfo("Asia/Karachi")
 _EPD_PUBLISH_ANCHOR = date(2026, 11, 25)
+# The productops Slack bot posts the new page here. It must already be in both channels.
+_EPD_REPORT_SLACK_CHANNELS = ("C03U8BZB85D", "C0A47CX39D0")
 
 
 def epd_report_publish_due(now: Optional[datetime] = None) -> bool:
@@ -870,14 +873,47 @@ def epd_report_publish_due(now: Optional[datetime] = None) -> bool:
     return (today - _EPD_PUBLISH_ANCHOR).days % 14 == 0
 
 
+def post_epd_report_to_slack(title: str, url: Optional[str]) -> Dict[str, Any]:
+    """Post the new EPD Report link to both Slack channels. A failure here
+    is reported and does not raise: the Notion page already exists, and a
+    500 would make Vercel Cron retry and publish a second page. Needs
+    SLACK_BOT_TOKEN (the productops bot) and that bot in each channel."""
+    token = os.environ.get("SLACK_BOT_TOKEN")
+    if not token:
+        return {"posted": [], "errors": ["SLACK_BOT_TOKEN is not set"]}
+    text = f"*{title}*\n{url}" if url else title
+    posted: List[str] = []
+    errors: List[str] = []
+    for channel in _EPD_REPORT_SLACK_CHANNELS:
+        try:
+            response = requests.post(
+                "https://slack.com/api/chat.postMessage",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"channel": channel, "text": text},
+                timeout=15,
+            )
+            payload = response.json()
+        except (requests.RequestException, ValueError) as exc:
+            errors.append(f"{channel}: {exc}")
+            continue
+        if payload.get("ok"):
+            posted.append(channel)
+        else:
+            errors.append(f"{channel}: {payload.get('error') or response.status_code}")
+    if errors:
+        print(f"[epd-report] Slack post incomplete: {'; '.join(errors)}", flush=True)
+    return {"posted": posted, "errors": errors}
+
+
 @app.get("/api/cron/publish-epd-report")
 def cron_publish_epd_report(request: Request):
     """Publish a new EPD Report Notion page every other Wednesday at noon
-    Karachi. Vercel Cron calls this every Wednesday at 07:00 UTC (see
-    vercel.json); Wednesdays that aren't a publish week return without
-    writing a page. The page matches a default Publish to Notion: fresh
-    Linear data, sprint sections omitted, every current-quarter project
-    included, under the Product Ops Reports page."""
+    Karachi, then post the page link to both Slack channels. Vercel Cron
+    calls this every Wednesday at 07:00 UTC (see vercel.json); Wednesdays
+    that aren't a publish week return without writing a page. The page
+    matches a default Publish to Notion: fresh Linear data, sprint sections
+    omitted, every current-quarter project included, under the Product Ops
+    Reports page."""
     _require_cron_secret(request)
     if not epd_report_publish_due():
         return {"published": False, "reason": "not a publish Wednesday"}
@@ -897,7 +933,8 @@ def cron_publish_epd_report(request: Request):
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    return {"published": True, **result}
+    slack = post_epd_report_to_slack(result.get("title") or "EPD Report", result.get("url"))
+    return {"published": True, **result, "slack": slack}
 
 
 def _require_internal_secret(request: Request) -> None:
